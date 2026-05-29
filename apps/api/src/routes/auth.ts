@@ -1,6 +1,15 @@
 import { Hono } from "hono";
-import { buildAuthorizationUrl, buildRedirectUri } from "../auth/oauth";
+import { buildSessionCookie, clearSessionCookie, readSessionCookie } from "../auth/cookies";
+import {
+  buildAuthorizationUrl,
+  buildRedirectUri,
+  clearOAuthStateCookie,
+  extractOAuthState,
+  normalizeProviderProfile
+} from "../auth/oauth";
 import { getOAuthProvider } from "../auth/providers";
+import { requireUser } from "../auth/requireUser";
+import { createSession, createSessionToken, deleteSession } from "../auth/sessions";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
 
@@ -29,5 +38,85 @@ authRoutes.get("/auth/:provider/start", (c) => {
       location,
       "set-cookie": stateCookie
     }
+  });
+});
+
+authRoutes.get("/auth/:provider/callback", async (c) => {
+  const providerName = c.req.param("provider");
+  const provider = getOAuthProvider(c.env, providerName);
+  if (!provider) throw new ApiError(404, "unknown_provider", "Unknown OAuth provider");
+
+  const code = c.req.query("code");
+  const state = c.req.query("state");
+  if (!code || !state || extractOAuthState(c.req.header("cookie") ?? null) !== state) {
+    throw new ApiError(400, "invalid_oauth_state", "Invalid OAuth state");
+  }
+
+  const redirectUri = buildRedirectUri(c.env.APP_ORIGIN, provider.id);
+  const tokenResponse = await fetch(provider.tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", accept: "application/json" },
+    body: new URLSearchParams({
+      client_id: provider.clientId,
+      client_secret: provider.clientSecret,
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri
+    })
+  });
+  if (!tokenResponse.ok) throw new ApiError(502, "oauth_token_failed", "OAuth token exchange failed");
+
+  const tokenJson = (await tokenResponse.json()) as { access_token: string };
+  const profileResponse = await fetch(provider.userInfoUrl, {
+    headers: { authorization: `Bearer ${tokenJson.access_token}`, accept: "application/json" }
+  });
+  if (!profileResponse.ok) throw new ApiError(502, "oauth_profile_failed", "OAuth profile request failed");
+
+  const profile = normalizeProviderProfile(provider.id, (await profileResponse.json()) as Record<string, unknown>);
+  const existing = await c.env.DB.prepare(
+    "SELECT user_id FROM oauth_accounts WHERE provider = ? AND provider_user_id = ?"
+  )
+    .bind(profile.provider, profile.providerUserId)
+    .first<{ user_id: string }>();
+
+  const userId = existing?.user_id ?? crypto.randomUUID();
+  if (!existing) {
+    await c.env.DB.batch([
+      c.env.DB.prepare("INSERT INTO users (id, display_name, avatar_url) VALUES (?, ?, ?)").bind(
+        userId,
+        profile.displayName,
+        profile.avatarUrl
+      ),
+      c.env.DB.prepare(
+        "INSERT INTO oauth_accounts (id, user_id, provider, provider_user_id, email) VALUES (?, ?, ?, ?, ?)"
+      ).bind(crypto.randomUUID(), userId, profile.provider, profile.providerUserId, profile.email),
+      c.env.DB.prepare("INSERT OR IGNORE INTO user_settings (user_id) VALUES (?)").bind(userId)
+    ]);
+  }
+
+  const sessionToken = createSessionToken();
+  await createSession(c.env, userId, sessionToken);
+
+  return new Response(null, {
+    status: 302,
+    headers: [
+      ["location", c.env.APP_ORIGIN],
+      ["set-cookie", clearOAuthStateCookie()],
+      ["set-cookie", buildSessionCookie(sessionToken, c.env.COOKIE_DOMAIN, 30 * 24 * 60 * 60)]
+    ]
+  });
+});
+
+authRoutes.get("/session", async (c) => {
+  const user = await requireUser(c);
+  return c.json({ user });
+});
+
+authRoutes.post("/auth/logout", async (c) => {
+  const token = readSessionCookie(c.req.header("cookie") ?? null);
+  if (token) await deleteSession(c.env, token);
+  return new Response(null, {
+    status: 204,
+    headers: { "set-cookie": clearSessionCookie(c.env.COOKIE_DOMAIN) }
   });
 });
