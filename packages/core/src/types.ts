@@ -23,6 +23,7 @@ export interface CharacterSummary {
   serverName: string;
   className: string;
   itemLevel: string;
+  combatPower: string | null;
   sortOrder: number;
   enabled: boolean;
 }

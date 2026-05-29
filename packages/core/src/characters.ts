@@ -3,6 +3,19 @@ export interface CharacterSelection {
   serverName: string;
   className: string;
   itemLevel: string;
+  combatPower?: string | null;
+}
+
+export function parseItemLevel(itemLevel: string): number {
+  return Number(itemLevel.replaceAll(",", "")) || 0;
+}
+
+export function compareCharactersByImportOrder(a: CharacterSelection, b: CharacterSelection): number {
+  return (
+    parseItemLevel(b.itemLevel) - parseItemLevel(a.itemLevel) ||
+    a.name.localeCompare(b.name, "ko-KR") ||
+    a.serverName.localeCompare(b.serverName, "ko-KR")
+  );
 }
 
 export function normalizeCharacterSelection(characters: CharacterSelection[]): CharacterSelection[] {
@@ -10,5 +23,5 @@ export function normalizeCharacterSelection(characters: CharacterSelection[]): C
   for (const character of characters) {
     byKey.set(`${character.serverName}:${character.name}`, character);
   }
-  return [...byKey.values()].sort((a, b) => a.serverName.localeCompare(b.serverName) || a.name.localeCompare(b.name));
+  return [...byKey.values()].sort(compareCharactersByImportOrder);
 }

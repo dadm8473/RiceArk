@@ -7,6 +7,7 @@ interface Candidate {
   serverName: string;
   className: string;
   itemLevel: string;
+  combatPower: string | null;
 }
 
 export function CharacterImport() {
@@ -50,6 +51,7 @@ export function CharacterImport() {
               <strong>{character.name}</strong>
               <span>{character.className}</span>
               <span>{character.itemLevel}</span>
+              <span>{character.combatPower ? `전투력 ${character.combatPower}` : "전투력 없음"}</span>
             </label>
           );
         })}

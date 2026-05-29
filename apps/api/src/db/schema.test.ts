@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
-const migration = readFileSync("apps/api/migrations/0001_initial.sql", "utf8");
+const migration = readdirSync("apps/api/migrations")
+  .filter((file) => file.endsWith(".sql"))
+  .sort()
+  .map((file) => readFileSync(`apps/api/migrations/${file}`, "utf8"))
+  .join("\n");
 
 describe("D1 schema", () => {
   it("defines required application tables", () => {
@@ -21,5 +25,9 @@ describe("D1 schema", () => {
 
   it("defines completion uniqueness by user task character and period", () => {
     expect(migration).toContain("UNIQUE (user_id, task_id, character_id, period_key)");
+  });
+
+  it("stores imported character combat power", () => {
+    expect(migration).toContain("combat_power TEXT");
   });
 });

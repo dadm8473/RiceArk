@@ -22,7 +22,9 @@ export function ChecklistMatrix({ dashboard }: Props) {
     { id: "roster", name: "원정대" },
     ...dashboard.characters.map((character) => ({
       id: character.id,
-      name: character.name
+      name: character.name,
+      itemLevel: character.item_level,
+      combatPower: character.combat_power
     }))
   ];
   const rowStyle = {
@@ -37,7 +39,13 @@ export function ChecklistMatrix({ dashboard }: Props) {
         <div className="matrix-task-cell">숙제</div>
         {columns.map((column) => (
           <div className="matrix-cell" key={column.id}>
-            {column.name}
+            <span>{column.name}</span>
+            {"itemLevel" in column ? (
+              <small>
+                {column.itemLevel}
+                {column.combatPower ? ` / 전투력 ${column.combatPower}` : ""}
+              </small>
+            ) : null}
           </div>
         ))}
       </div>

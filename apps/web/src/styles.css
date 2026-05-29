@@ -172,9 +172,15 @@ body {
   font-weight: 650;
 }
 
-.matrix-task-cell small {
+.matrix-task-cell small,
+.matrix-cell small {
   color: #2f3a4b;
   font-size: 12px;
+}
+
+.matrix-cell {
+  flex-direction: column;
+  gap: 2px;
 }
 
 .matrix-check {
@@ -252,7 +258,7 @@ button {
 
 .candidate-row {
   display: grid;
-  grid-template-columns: 24px 80px minmax(80px, 1fr) 90px 80px;
+  grid-template-columns: 24px 80px minmax(80px, 1fr) 90px 80px 110px;
   gap: 8px;
   align-items: center;
   min-height: 32px;

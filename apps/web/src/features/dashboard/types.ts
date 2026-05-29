@@ -4,6 +4,7 @@ export interface DashboardCharacter {
   server_name: string;
   class_name: string;
   item_level: string;
+  combat_power: string | null;
 }
 
 export interface DashboardTask {

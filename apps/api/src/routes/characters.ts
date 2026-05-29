@@ -30,7 +30,8 @@ characterRoutes.post(
             name: z.string().min(1).max(20),
             serverName: z.string().min(1).max(20),
             className: z.string().min(1).max(30),
-            itemLevel: z.string().min(1).max(20)
+            itemLevel: z.string().min(1).max(20),
+            combatPower: z.string().min(1).max(30).nullable().optional()
           })
         )
         .min(1)
@@ -40,7 +41,11 @@ characterRoutes.post(
   async (c) => {
     const user = await requireUser(c);
     const { characters } = c.req.valid("json");
-    await saveSelectedCharacters(c.env, user.id, characters);
+    await saveSelectedCharacters(
+      c.env,
+      user.id,
+      characters.map((character) => ({ ...character, combatPower: character.combatPower ?? null }))
+    );
     return c.json({ ok: true });
   }
 );
