@@ -2,11 +2,16 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 import { requireUser } from "../auth/requireUser";
-import { saveSelectedCharacters } from "../db/characters";
+import { saveSelectedCharacters, updateCharacterDisplayName } from "../db/characters";
 import type { Env } from "../env";
+import { ApiError } from "../http/errors";
 import { searchRosterCharacters } from "../lostark/client";
 
 export const characterRoutes = new Hono<{ Bindings: Env }>();
+
+export const characterDisplayNameSchema = z.object({
+  displayName: z.string().max(20).nullable()
+});
 
 characterRoutes.get(
   "/characters/search",
@@ -16,6 +21,19 @@ characterRoutes.get(
     const { name } = c.req.valid("query");
     const characters = await searchRosterCharacters(c.env, name);
     return c.json({ characters });
+  }
+);
+
+characterRoutes.patch(
+  "/characters/:id/display-name",
+  zValidator("json", characterDisplayNameSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    const { displayName } = c.req.valid("json");
+    const normalized = displayName?.trim() ? displayName.trim() : null;
+    const updated = await updateCharacterDisplayName(c.env, user.id, c.req.param("id"), normalized);
+    if (!updated) throw new ApiError(404, "character_not_found", "Character not found");
+    return c.json({ ok: true });
   }
 );
 

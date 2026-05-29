@@ -29,3 +29,19 @@ export async function saveSelectedCharacters(env: Env, userId: string, selected:
   );
   if (statements.length > 0) await env.DB.batch(statements);
 }
+
+export async function updateCharacterDisplayName(
+  env: Env,
+  userId: string,
+  characterId: string,
+  displayName: string | null
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE characters
+     SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL`
+  )
+    .bind(displayName, characterId, userId)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
