@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
+    "build:functions": "wrangler pages functions build functions --outdir ../../.wrangler/pages-functions-build",
     "check": "tsc -p tsconfig.json --noEmit",
     "dev": "vite --host 127.0.0.1",
-    "deploy": "wrangler pages deploy dist --project-name riceark"
+    "deploy": "wrangler pages deploy dist --project-name riceark",
+    "preview:pages": "vite build && wrangler pages functions build functions --outdir ../../.wrangler/pages-functions-build && wrangler pages dev dist --compatibility-date=2026-05-29 --compatibility-flag=nodejs_compat"
   },
   "dependencies": {
     "@riceark/api": "workspace:*",
