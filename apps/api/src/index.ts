@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import type { Env } from "./env";
 import { ApiError, jsonError, notFound } from "./http/errors";
 import { authRoutes } from "./routes/auth";
+import { characterRoutes } from "./routes/characters";
 import { healthRoutes } from "./routes/health";
 
 const app = new Hono<{ Bindings: Env }>().basePath("/api");
@@ -18,6 +19,7 @@ app.use("*", async (c, next) => {
 });
 
 app.route("/", authRoutes);
+app.route("/", characterRoutes);
 app.route("/", healthRoutes);
 
 app.notFound((c) => jsonError(c, notFound()));
