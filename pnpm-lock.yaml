@@ -42,6 +42,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@riceark/api':
+        specifier: workspace:*
+        version: link:../api
       '@riceark/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -67,6 +70,9 @@ importers:
       '@types/react-dom':
         specifier: ^19.1.0
         version: 19.2.3(@types/react@19.2.15)
+      wrangler:
+        specifier: ^4.18.0
+        version: 4.95.0(@cloudflare/workers-types@4.20260529.1)
 
   packages/core: {}
 

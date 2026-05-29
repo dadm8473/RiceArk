@@ -10,6 +10,7 @@
     "deploy": "wrangler pages deploy dist --project-name riceark"
   },
   "dependencies": {
+    "@riceark/api": "workspace:*",
     "@riceark/core": "workspace:*",
     "@vitejs/plugin-react": "^4.5.0",
     "lucide-react": "^0.511.0",
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "@types/react": "^19.1.0",
-    "@types/react-dom": "^19.1.0"
+    "@types/react-dom": "^19.1.0",
+    "wrangler": "^4.18.0"
   }
 }
