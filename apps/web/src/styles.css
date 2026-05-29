@@ -116,3 +116,83 @@ body {
 .error-text {
   color: #b42318;
 }
+
+.tool-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.4fr) minmax(260px, 1fr) minmax(220px, 0.8fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.tool-panel {
+  border: 1px solid #b7c1cf;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.tool-panel h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.inline-form input,
+.inline-form select {
+  min-height: 34px;
+  border: 1px solid #8a96a8;
+  border-radius: 6px;
+  padding: 0 8px;
+}
+
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid #8a96a8;
+  border-radius: 6px;
+  color: #111827;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.candidate-list {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.candidate-row {
+  display: grid;
+  grid-template-columns: 24px 80px minmax(80px, 1fr) 90px 80px;
+  gap: 8px;
+  align-items: center;
+  min-height: 32px;
+  color: #111827;
+}
+
+.segmented {
+  display: flex;
+  gap: 6px;
+}
+
+.segmented button.active {
+  background: #111827;
+  color: #ffffff;
+}
+
+@media (max-width: 920px) {
+  .tool-grid {
+    grid-template-columns: 1fr;
+  }
+}
