@@ -4,8 +4,8 @@ RiceArk is a Lost Ark checklist service for tracking daily, weekly, biweekly, an
 
 ## Current Architecture
 
-- Cloudflare Pages frontend
-- Cloudflare Worker API
+- Cloudflare Pages frontend on `riceark.pages.dev`
+- Cloudflare Pages Functions API on same-origin `/api/*`
 - Cloudflare D1 app database
 - Cloudflare KV/Cache for Lost Ark API caching
 
@@ -27,3 +27,14 @@ pnpm build
 ```
 
 See `docs/deployment/cloudflare.md` for deployment setup.
+
+## Deployment
+
+Production starts on the free Cloudflare Pages domain:
+
+```text
+https://riceark.pages.dev
+```
+
+Use `docs/deployment/cloudflare.md` for the required Pages, D1, KV, Google,
+Discord, and Lost Ark API setup steps.
