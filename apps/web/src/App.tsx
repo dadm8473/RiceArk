@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { apiPostNoContent } from "./api/client";
+import { apiPatch, apiPostNoContent } from "./api/client";
 import { AuthMenu } from "./features/auth/AuthMenu";
 import { useSession } from "./features/auth/useSession";
 import { ChecklistMatrix } from "./features/dashboard/ChecklistMatrix";
@@ -25,6 +25,12 @@ export function App() {
     }
   };
 
+  const handleChecklistOrientationChange = async (checklistOrientation: "tasks_rows" | "tasks_columns") => {
+    if (data?.settings.checklist_orientation === checklistOrientation) return;
+    await apiPatch("/api/settings", { checklistOrientation });
+    window.location.reload();
+  };
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -44,7 +50,14 @@ export function App() {
         {!data && !error ? <p>로스트아크 숙제 체크리스트를 불러오는 중입니다.</p> : null}
         {data ? (
           <>
-            <WorkspaceActions activeTool={activeTool} onClose={() => setActiveTool(null)} onOpen={setActiveTool} />
+            <WorkspaceActions
+              activeTool={activeTool}
+              characters={data.characters}
+              checklistOrientation={data.settings.checklist_orientation}
+              onChecklistOrientationChange={(orientation) => void handleChecklistOrientationChange(orientation)}
+              onClose={() => setActiveTool(null)}
+              onOpen={setActiveTool}
+            />
             <ChecklistMatrix dashboard={data} />
           </>
         ) : null}
