@@ -24,6 +24,15 @@ Build command: pnpm build
 Build output directory: dist
 ```
 
+The committed Pages Wrangler config lives at:
+
+```text
+apps/web/wrangler.jsonc
+```
+
+It defines the production `riceark.pages.dev` variables, compatibility flags,
+D1 binding, and KV binding used by Pages Functions.
+
 Pages Functions are stored in:
 
 ```text
