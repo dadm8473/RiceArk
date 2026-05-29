@@ -38,6 +38,84 @@ body {
   gap: 8px;
 }
 
+.auth-status {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  color: #111827;
+  font-size: 14px;
+}
+
+.auth-status-muted {
+  color: #4b5563;
+}
+
+.auth-menu {
+  position: relative;
+}
+
+.profile-button {
+  min-width: 0;
+  padding: 0 10px 0 6px;
+}
+
+.profile-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  object-fit: cover;
+}
+
+.profile-avatar-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  background: #2563eb;
+  font-weight: 700;
+}
+
+.profile-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 10;
+  width: 200px;
+  border: 1px solid #b7c1cf;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 14px 32px rgb(17 24 39 / 16%);
+  padding: 6px;
+}
+
+.profile-menu-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  color: #2f3a4b;
+  font-size: 13px;
+  border-bottom: 1px solid #e5eaf0;
+}
+
+.profile-menu button {
+  justify-content: flex-start;
+  width: 100%;
+  margin-top: 6px;
+  border-color: transparent;
+}
+
+.profile-menu button:hover:not(:disabled) {
+  background: #f3f5f8;
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -194,5 +272,36 @@ button {
 @media (max-width: 920px) {
   .tool-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .login-actions,
+  .auth-menu,
+  .profile-button {
+    width: 100%;
+  }
+
+  .login-actions {
+    flex-wrap: wrap;
+  }
+
+  .login-actions .button {
+    flex: 1 1 150px;
+  }
+
+  .profile-button {
+    justify-content: space-between;
+  }
+
+  .profile-menu {
+    left: 0;
+    right: auto;
+    width: 100%;
   }
 }

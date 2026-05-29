@@ -44,6 +44,14 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export async function apiPostNoContent(path: string): Promise<void> {
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "include"
+  });
+  if (!response.ok) throw await buildApiError(response, `POST ${path} failed`);
+}
+
 export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
     method: "PATCH",
