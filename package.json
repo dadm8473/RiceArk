@@ -1,0 +1,23 @@
+{
+  "name": "riceark",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "build": "pnpm -r build",
+    "check": "pnpm -r check",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev:api": "pnpm --filter @riceark/api dev",
+    "dev:web": "pnpm --filter @riceark/web dev",
+    "db:migrate:local": "pnpm --filter @riceark/api db:migrate:local",
+    "deploy:api": "pnpm --filter @riceark/api deploy",
+    "deploy:web": "pnpm --filter @riceark/web deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260529.0",
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.1.0"
+  }
+}
