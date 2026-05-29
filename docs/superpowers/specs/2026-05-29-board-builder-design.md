@@ -11,6 +11,7 @@ The app should still feel fast and simple for a Lost Ark user who wants the defa
 - Let a user create multiple sheets.
 - Let each sheet contain multiple checklist tables.
 - Let each table choose whether characters are rows or columns.
+- Let first-time users choose whether the default table uses characters as columns or tasks as columns.
 - Let users create tables that do not use characters at all.
 - Let users create rows and columns manually.
 - Keep first-version cells simple: checkbox cells only.
@@ -50,6 +51,8 @@ A table has:
 - Sort order within the sheet.
 - Row axis configuration.
 - Column axis configuration.
+- Row role: `character`, `task`, or `custom`.
+- Column role: `character`, `task`, or `custom`.
 - Default row height.
 - Default column width.
 - Optional default reset rule for non-task tables.
@@ -74,6 +77,29 @@ This keeps the model flexible enough for:
 - Character rows and task columns.
 - Custom rows and custom columns.
 - A simple table that only uses custom labels.
+
+### Orientation And Data Safety
+
+Table orientation is user-controlled, but orientation changes must never reinterpret existing data by position or label.
+
+On first use, the app asks the user to choose the default Lost Ark table orientation:
+
+- Characters as columns, tasks as rows.
+- Tasks as columns, characters as rows.
+
+The chosen orientation is saved on the default table. Future tables can choose their own orientation.
+
+Changing an existing table's orientation is a controlled transpose operation, not a simple settings toggle. The app must:
+
+- Preserve the original table until the transpose is complete.
+- Match data by stable linked ids, such as character id and task id, not by displayed label or current order.
+- Create new row and column axis items for the transposed orientation.
+- Copy cell visibility and completion state to the matching transposed cell.
+- Keep hidden cells hidden after transposition.
+- Show a preview or confirmation before applying the change.
+- Block or warn on unsafe transposition when custom axis items cannot be matched without ambiguity.
+
+This is especially important because a user may later rename rows, set optional character display names, reorder items, or resize axes. None of those presentation changes may affect completion identity.
 
 ### Task Metadata
 
@@ -138,7 +164,12 @@ For the first board builder release, tables are stacked vertically. Each table o
 
 ### Default Table
 
-Existing users and new users receive a default Lost Ark checklist table:
+New users choose the default Lost Ark checklist orientation during first setup:
+
+- Characters as columns and tasks as rows.
+- Tasks as columns and characters as rows.
+
+Existing users receive the current checklist orientation when migrated:
 
 - Task axis: rows.
 - Character axis: columns.
@@ -146,7 +177,7 @@ Existing users and new users receive a default Lost Ark checklist table:
 - Existing imported characters become character column items.
 - Existing completion data is migrated or mapped into cell completion state.
 
-Users can later create another table with character rows and task columns.
+Users can later create another table with a different orientation, or use a guarded transpose flow to change an existing table.
 
 ### Table Controls
 
@@ -234,14 +265,17 @@ The period key is derived from the task axis item or table default reset rule.
 
 This keeps completions stable whether the table is task-row/character-column or character-row/task-column.
 
+For orientation changes, completion migration must map from the old cell to the new cell using stable linked ids. A completion for the pair `character A + task B` remains that same semantic pair after transpose, even though the row and column ids change.
+
 ## Migration Strategy
 
 1. Add new board tables and optional character display names.
 2. Create a default sheet and default table for each user that has existing dashboard data.
-3. Convert existing tasks into row axis items in the default table.
-4. Convert existing characters into column axis items in the default table.
-5. Copy or map current completion state into the new cell completion structure.
-6. Keep read compatibility until the new dashboard endpoint is fully switched.
+3. For new users, create the default table only after the first-use orientation choice.
+4. Convert existing tasks into row axis items in the default table.
+5. Convert existing characters into column axis items in the default table.
+6. Copy or map current completion state into the new cell completion structure.
+7. Keep read compatibility until the new dashboard endpoint is fully switched.
 
 The app should avoid destructive migration steps until the new model is verified locally and against preview data.
 
@@ -267,6 +301,7 @@ Mutation endpoints should be small and explicit:
 - Update cell completion.
 - Update cell visibility.
 - Update character display name.
+- Transpose table orientation through a guarded migration flow.
 
 Batching should still be used for rapid checkbox changes.
 
@@ -275,14 +310,18 @@ Batching should still be used for rapid checkbox changes.
 Backend tests:
 
 - Existing user receives a default sheet and table.
+- New user setup can create a default table in either orientation.
 - Task rows and character columns produce the same completion behavior as the current matrix.
 - Character rows and task columns produce correct period keys.
+- Orientation transpose maps completions by stable character and task ids.
+- Orientation transpose preserves hidden cells.
 - Hidden cells are excluded from completion counts.
 - Optional character display name falls back to real name when empty.
 - Daily, weekly, biweekly, and custom reset rules still use `Asia/Seoul`.
 
 Frontend tests:
 
+- First setup asks whether characters or tasks should be columns.
 - Dashboard renders sheet tabs and at least one table.
 - Compact character label uses display name when set.
 - Compact character label falls back to real name.
@@ -295,11 +334,12 @@ Frontend tests:
 The implementation should be split into phases:
 
 1. Add optional character display names and compact character details.
-2. Add board data model and default sheet/table creation.
+2. Add board data model, first-use orientation choice, and default sheet/table creation.
 3. Render the current checklist through the new table model.
 4. Add sheet and table creation controls.
 5. Add row and column creation controls.
 6. Add cell checkbox visibility controls.
 7. Add row height and column width editing.
+8. Add guarded table orientation transpose.
 
 This keeps each deployment usable and makes it easier to verify that existing checklist behavior survives the transition.
