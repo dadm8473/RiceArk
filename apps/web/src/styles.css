@@ -54,3 +54,65 @@ body {
 .workspace {
   padding: 20px;
 }
+
+.matrix {
+  overflow: auto;
+  border: 1px solid #8f99aa;
+  background: #ffffff;
+}
+
+.matrix-row {
+  display: grid;
+  grid-template-columns: 180px repeat(var(--column-count), var(--column-width));
+  min-height: var(--row-height);
+  border-bottom: 1px solid #c8d0dc;
+}
+
+.matrix-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #e9eef5;
+  font-weight: 700;
+}
+
+.matrix-task-cell,
+.matrix-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 6px 8px;
+  border-right: 1px solid #c8d0dc;
+  color: #111827;
+}
+
+.matrix-task-cell {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 2px;
+  font-weight: 650;
+}
+
+.matrix-task-cell small {
+  color: #2f3a4b;
+  font-size: 12px;
+}
+
+.matrix-check {
+  border-top: 0;
+  border-left: 0;
+  border-bottom: 0;
+  background: #ffffff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.matrix-check:disabled {
+  cursor: default;
+  background: #f3f5f8;
+}
+
+.error-text {
+  color: #b42318;
+}
