@@ -202,7 +202,7 @@ body {
 
 .matrix-check:disabled {
   cursor: default;
-  background: #f3f5f8;
+  background: #ffffff;
 }
 
 .error-text {
