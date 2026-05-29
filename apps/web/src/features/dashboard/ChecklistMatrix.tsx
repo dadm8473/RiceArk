@@ -1,4 +1,7 @@
+import { getPeriodKey, type ResetRule } from "@riceark/core";
 import type { CSSProperties } from "react";
+import { useState } from "react";
+import { useCompletionQueue } from "./useCompletionQueue";
 import type { DashboardPayload } from "./types";
 
 interface Props {
@@ -6,6 +9,15 @@ interface Props {
 }
 
 export function ChecklistMatrix({ dashboard }: Props) {
+  const { enqueue } = useCompletionQueue();
+  const [checked, setChecked] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(
+      dashboard.completions.map((completion) => [
+        `${completion.task_id}:${completion.character_id ?? "roster"}:${completion.period_key}`,
+        completion.completed === 1
+      ])
+    )
+  );
   const columns = [
     { id: "roster", name: "원정대" },
     ...dashboard.characters.map((character) => ({
@@ -29,26 +41,39 @@ export function ChecklistMatrix({ dashboard }: Props) {
           </div>
         ))}
       </div>
-      {dashboard.tasks.map((task) => (
-        <div className="matrix-row" key={task.id} style={rowStyle}>
-          <div className="matrix-task-cell">
-            <span>{task.name}</span>
-            <small>{task.reset_type}</small>
+      {dashboard.tasks.map((task) => {
+        const resetRule = JSON.parse(task.reset_rule_json) as ResetRule;
+        const periodKey = getPeriodKey(resetRule);
+        return (
+          <div className="matrix-row" key={task.id} style={rowStyle}>
+            <div className="matrix-task-cell">
+              <span>{task.name}</span>
+              <small>{task.reset_type}</small>
+            </div>
+            {columns.map((column) => {
+              const disabled = task.scope === "character" && column.id === "roster";
+              const rosterOnly = task.scope === "roster" && column.id !== "roster";
+              const characterId = column.id === "roster" ? null : column.id;
+              const key = `${task.id}:${characterId ?? "roster"}:${periodKey}`;
+              return (
+                <button
+                  className="matrix-cell matrix-check"
+                  disabled={disabled || rosterOnly}
+                  key={key}
+                  type="button"
+                  onClick={() => {
+                    const next = !checked[key];
+                    setChecked((current) => ({ ...current, [key]: next }));
+                    enqueue({ taskId: task.id, characterId, periodKey, completed: next });
+                  }}
+                >
+                  {disabled || rosterOnly ? "" : checked[key] ? "V" : ""}
+                </button>
+              );
+            })}
           </div>
-          {columns.map((column) => {
-            const disabled = task.scope === "character" && column.id === "roster";
-            const rosterOnly = task.scope === "roster" && column.id !== "roster";
-            return (
-              <button
-                className="matrix-cell matrix-check"
-                disabled={disabled || rosterOnly}
-                key={`${task.id}:${column.id}`}
-                type="button"
-              />
-            );
-          })}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
