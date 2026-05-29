@@ -30,4 +30,9 @@ describe("D1 schema", () => {
   it("stores imported character combat power", () => {
     expect(migration).toContain("combat_power TEXT");
   });
+
+  it("stores board foundation presentation settings", () => {
+    expect(migration).toContain("display_name TEXT");
+    expect(migration).toContain("checklist_orientation TEXT");
+  });
 });
