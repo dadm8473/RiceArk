@@ -10,6 +10,42 @@ interface Candidate {
   combatPower: string | null;
 }
 
+interface CharacterCandidateListProps {
+  candidates: Candidate[];
+  selected: Record<string, boolean>;
+  onToggle: (key: string, checked: boolean) => void;
+}
+
+export function CharacterCandidateList({ candidates, selected, onToggle }: CharacterCandidateListProps) {
+  if (candidates.length === 0) return null;
+
+  return (
+    <div className="candidate-list">
+      <div className="candidate-row candidate-header">
+        <span>선택</span>
+        <span>서버</span>
+        <span>닉네임</span>
+        <span>직업</span>
+        <span>아이템 레벨</span>
+        <span>전투력</span>
+      </div>
+      {candidates.map((character) => {
+        const key = `${character.serverName}:${character.name}`;
+        return (
+          <label className="candidate-row" key={key}>
+            <input checked={Boolean(selected[key])} type="checkbox" onChange={(event) => onToggle(key, event.target.checked)} />
+            <span>{character.serverName}</span>
+            <strong>{character.name}</strong>
+            <span>{character.className}</span>
+            <span>{character.itemLevel}</span>
+            <span>{character.combatPower ?? "-"}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
 export function CharacterImport() {
   const [name, setName] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -37,25 +73,11 @@ export function CharacterImport() {
           검색
         </button>
       </div>
-      <div className="candidate-list">
-        {candidates.map((character) => {
-          const key = `${character.serverName}:${character.name}`;
-          return (
-            <label className="candidate-row" key={key}>
-              <input
-                checked={Boolean(selected[key])}
-                type="checkbox"
-                onChange={(event) => setSelected((current) => ({ ...current, [key]: event.target.checked }))}
-              />
-              <span>{character.serverName}</span>
-              <strong>{character.name}</strong>
-              <span>{character.className}</span>
-              <span>{character.itemLevel}</span>
-              <span>{character.combatPower ? `전투력 ${character.combatPower}` : "전투력 없음"}</span>
-            </label>
-          );
-        })}
-      </div>
+      <CharacterCandidateList
+        candidates={candidates}
+        selected={selected}
+        onToggle={(key, checked) => setSelected((current) => ({ ...current, [key]: checked }))}
+      />
       {candidates.length > 0 ? (
         <button type="button" onClick={() => void save()} title="선택 캐릭터 등록">
           <UserPlus size={16} />

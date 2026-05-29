@@ -201,11 +201,58 @@ body {
   color: #b42318;
 }
 
-.tool-grid {
-  display: grid;
-  grid-template-columns: minmax(280px, 1.4fr) minmax(260px, 1fr) minmax(220px, 0.8fr);
+.workspace-actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 16px;
+}
+
+.workspace-actions button {
+  min-height: 38px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 72px 20px 20px;
+  background: rgb(17 24 39 / 44%);
+}
+
+.tool-modal {
+  width: min(920px, 100%);
+  max-height: calc(100vh - 96px);
+  overflow: auto;
+  border: 1px solid #b7c1cf;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 24px 60px rgb(17 24 39 / 28%);
+}
+
+.tool-modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border-bottom: 1px solid #d9e0ea;
+  background: #ffffff;
+}
+
+.tool-modal-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.tool-modal-body {
+  padding: 12px;
 }
 
 .tool-panel {
@@ -265,6 +312,12 @@ button {
   color: #111827;
 }
 
+.candidate-header {
+  color: #2f3a4b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .segmented {
   display: flex;
   gap: 6px;
@@ -273,12 +326,6 @@ button {
 .segmented button.active {
   background: #111827;
   color: #ffffff;
-}
-
-@media (max-width: 920px) {
-  .tool-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 560px) {
@@ -309,5 +356,21 @@ button {
     left: 0;
     right: auto;
     width: 100%;
+  }
+
+  .workspace-actions button {
+    flex: 1 1 160px;
+  }
+
+  .modal-backdrop {
+    padding: 56px 10px 10px;
+  }
+
+  .candidate-list {
+    overflow-x: auto;
+  }
+
+  .candidate-row {
+    min-width: 620px;
   }
 }

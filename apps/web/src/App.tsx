@@ -2,17 +2,16 @@ import { useState } from "react";
 import { apiPostNoContent } from "./api/client";
 import { AuthMenu } from "./features/auth/AuthMenu";
 import { useSession } from "./features/auth/useSession";
-import { CharacterImport } from "./features/characters/CharacterImport";
 import { ChecklistMatrix } from "./features/dashboard/ChecklistMatrix";
 import { useDashboard } from "./features/dashboard/useDashboard";
-import { DensityControls } from "./features/settings/DensityControls";
-import { TaskForm } from "./features/tasks/TaskForm";
+import { WorkspaceActions, type WorkspaceTool } from "./features/tools/WorkspaceActions";
 
 export function App() {
   const { data, error } = useDashboard();
   const session = useSession();
   const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
+  const [activeTool, setActiveTool] = useState<WorkspaceTool | null>(null);
 
   const handleLogout = async () => {
     setLogoutPending(true);
@@ -45,15 +44,7 @@ export function App() {
         {!data && !error ? <p>로스트아크 숙제 체크리스트를 불러오는 중입니다.</p> : null}
         {data ? (
           <>
-            <div className="tool-grid">
-              <CharacterImport />
-              <TaskForm />
-              <DensityControls
-                density={data.settings.density}
-                rowHeight={data.settings.row_height}
-                columnWidth={data.settings.column_width}
-              />
-            </div>
+            <WorkspaceActions activeTool={activeTool} onClose={() => setActiveTool(null)} onOpen={setActiveTool} />
             <ChecklistMatrix dashboard={data} />
           </>
         ) : null}
