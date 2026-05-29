@@ -1,1 +1,14 @@
 .superpowers/
+.worktrees/
+
+# Local secrets
+.dev.vars
+.env
+.env.*
+!.env.example
+!.dev.vars.example
+
+# Cloudflare / build output
+.wrangler/
+dist/
+node_modules/
