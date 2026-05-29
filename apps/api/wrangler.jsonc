@@ -7,14 +7,14 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "riceark-local",
-      "database_id": "local-development-placeholder"
+      "database_name": "riceark",
+      "database_id": "c93687c6-a34f-474a-a096-08b78c4fadd3"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "CACHE",
-      "id": "local-development-placeholder"
+      "id": "edf3d42b486a46bb8a18da43359a118e"
     }
   ],
   "vars": {

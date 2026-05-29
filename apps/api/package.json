@@ -8,7 +8,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "dev": "wrangler dev --local",
     "deploy": "wrangler deploy",
-    "db:migrate:local": "wrangler d1 migrations apply riceark-local --local"
+    "db:migrate:local": "wrangler d1 migrations apply riceark --local"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.5.0",

@@ -42,6 +42,13 @@ wrangler d1 create riceark
 wrangler kv namespace create riceark-cache
 ```
 
+Current created resource IDs:
+
+```text
+D1 riceark: c93687c6-a34f-474a-a096-08b78c4fadd3
+KV riceark-cache: edf3d42b486a46bb8a18da43359a118e
+```
+
 Then bind them to the Pages project:
 
 ```text
