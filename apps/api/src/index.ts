@@ -6,6 +6,8 @@ import { authRoutes } from "./routes/auth";
 import { characterRoutes } from "./routes/characters";
 import { dashboardRoutes } from "./routes/dashboard";
 import { healthRoutes } from "./routes/health";
+import { settingsRoutes } from "./routes/settings";
+import { taskRoutes } from "./routes/tasks";
 
 const app = new Hono<{ Bindings: Env }>().basePath("/api");
 
@@ -23,6 +25,8 @@ app.route("/", authRoutes);
 app.route("/", characterRoutes);
 app.route("/", dashboardRoutes);
 app.route("/", healthRoutes);
+app.route("/", settingsRoutes);
+app.route("/", taskRoutes);
 
 app.notFound((c) => jsonError(c, notFound()));
 
