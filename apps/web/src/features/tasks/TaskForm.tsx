@@ -14,7 +14,6 @@ export function TaskForm() {
 
   return (
     <section className="tool-panel">
-      <h2>숙제 추가</h2>
       <div className="inline-form">
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder="숙제 이름" />
         <select value={scope} onChange={(event) => setScope(event.target.value as "character" | "roster")}>
