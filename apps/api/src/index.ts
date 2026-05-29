@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./env";
 import { ApiError, jsonError, notFound } from "./http/errors";
+import { authRoutes } from "./routes/auth";
 import { healthRoutes } from "./routes/health";
 
 const app = new Hono<{ Bindings: Env }>().basePath("/api");
@@ -16,6 +17,7 @@ app.use("*", async (c, next) => {
   })(c, next);
 });
 
+app.route("/", authRoutes);
 app.route("/", healthRoutes);
 
 app.notFound((c) => jsonError(c, notFound()));
