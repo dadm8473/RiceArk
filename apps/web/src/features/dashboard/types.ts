@@ -1,6 +1,7 @@
 export interface DashboardCharacter {
   id: string;
   name: string;
+  display_name: string | null;
   server_name: string;
   class_name: string;
   item_level: string;
@@ -28,5 +29,6 @@ export interface DashboardPayload {
     density: "comfortable" | "default" | "compact";
     row_height: number;
     column_width: number;
+    checklist_orientation: "tasks_rows" | "tasks_columns";
   };
 }

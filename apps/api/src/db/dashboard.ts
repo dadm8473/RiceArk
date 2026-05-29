@@ -20,6 +20,6 @@ export async function loadDashboard(env: Env, userId: string) {
     characters: characters.results,
     tasks: tasks.results,
     completions: completions.results,
-    settings: settings ?? { density: "default", row_height: 40, column_width: 132 }
+    settings: settings ?? { density: "default", row_height: 40, column_width: 132, checklist_orientation: "tasks_rows" }
   };
 }
