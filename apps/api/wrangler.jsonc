@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "riceark-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "riceark-local",
+      "database_id": "local-development-placeholder"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "local-development-placeholder"
+    }
+  ],
+  "vars": {
+    "APP_ORIGIN": "http://127.0.0.1:5173",
+    "COOKIE_DOMAIN": "127.0.0.1",
+    "ENVIRONMENT": "local"
+  }
+}
