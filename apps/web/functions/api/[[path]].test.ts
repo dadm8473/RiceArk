@@ -21,8 +21,9 @@ describe("Pages API function", () => {
       waitUntil() {},
       passThroughOnException() {},
       next: async () => new Response("not found", { status: 404 }),
-      data: {}
-    } as EventContext<Env, "api/[[path]]", { path: string[] }>);
+      data: {},
+      functionPath: "api/[[path]]"
+    } as unknown as EventContext<Env, "api/[[path]]", { path: string[] }>);
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, service: "riceark-api" });
