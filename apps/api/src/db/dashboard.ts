@@ -7,8 +7,14 @@ export async function loadDashboard(env: Env, userId: string) {
     )
       .bind(userId)
       .all(),
-    env.DB.prepare("SELECT * FROM tasks WHERE (user_id = ? OR is_template = 1) AND enabled = 1 ORDER BY sort_order, name")
-      .bind(userId)
+    env.DB.prepare(
+      `SELECT tasks.*
+       FROM tasks
+       LEFT JOIN task_orders ON task_orders.task_id = tasks.id AND task_orders.user_id = ?
+       WHERE (tasks.user_id = ? OR tasks.is_template = 1) AND tasks.enabled = 1
+       ORDER BY COALESCE(task_orders.sort_order, tasks.sort_order), tasks.name`
+    )
+      .bind(userId, userId)
       .all(),
     env.DB.prepare("SELECT task_id, character_id, period_key, completed FROM completions WHERE user_id = ?")
       .bind(userId)

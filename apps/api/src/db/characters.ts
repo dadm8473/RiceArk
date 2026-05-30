@@ -45,3 +45,27 @@ export async function updateCharacterDisplayName(
     .run();
   return (result.meta.changes ?? 0) > 0;
 }
+
+export async function reorderCharacters(env: Env, userId: string, characterIds: string[]): Promise<boolean> {
+  if (characterIds.length === 0) return true;
+
+  const placeholders = characterIds.map(() => "?").join(", ");
+  const existing = await env.DB.prepare(
+    `SELECT id FROM characters
+     WHERE user_id = ? AND enabled = 1 AND deleted_at IS NULL AND id IN (${placeholders})`
+  )
+    .bind(userId, ...characterIds)
+    .all<{ id: string }>();
+  if (existing.results.length !== characterIds.length) return false;
+
+  await env.DB.batch(
+    characterIds.map((id, index) =>
+      env.DB.prepare(
+        `UPDATE characters
+         SET sort_order = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL`
+      ).bind(index * 10, id, userId)
+    )
+  );
+  return true;
+}

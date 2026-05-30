@@ -15,6 +15,7 @@ describe("D1 schema", () => {
       "sessions",
       "characters",
       "tasks",
+      "task_orders",
       "completions",
       "user_settings",
       "rate_limit_events"
@@ -34,5 +35,10 @@ describe("D1 schema", () => {
   it("stores board foundation presentation settings", () => {
     expect(migration).toContain("display_name TEXT");
     expect(migration).toContain("checklist_orientation TEXT");
+  });
+
+  it("stores per-user task ordering without mutating shared templates", () => {
+    expect(migration).toContain("CREATE TABLE IF NOT EXISTS task_orders");
+    expect(migration).toContain("PRIMARY KEY (user_id, task_id)");
   });
 });

@@ -2,7 +2,7 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 import { requireUser } from "../auth/requireUser";
-import { saveSelectedCharacters, updateCharacterDisplayName } from "../db/characters";
+import { reorderCharacters, saveSelectedCharacters, updateCharacterDisplayName } from "../db/characters";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
 import { searchRosterCharacters } from "../lostark/client";
@@ -13,6 +13,19 @@ export const characterDisplayNameSchema = z.object({
   displayName: z.string().max(20).nullable()
 });
 
+function hasDuplicates(values: string[]): boolean {
+  return new Set(values).size !== values.length;
+}
+
+export const characterOrderSchema = z
+  .object({
+    characterIds: z.array(z.string().min(1)).max(100)
+  })
+  .refine((input) => !hasDuplicates(input.characterIds), {
+    message: "Duplicate character ids are not allowed",
+    path: ["characterIds"]
+  });
+
 characterRoutes.get(
   "/characters/search",
   zValidator("query", z.object({ name: z.string().min(1).max(20) })),
@@ -21,6 +34,18 @@ characterRoutes.get(
     const { name } = c.req.valid("query");
     const characters = await searchRosterCharacters(c.env, name);
     return c.json({ characters });
+  }
+);
+
+characterRoutes.patch(
+  "/characters/order",
+  zValidator("json", characterOrderSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    const { characterIds } = c.req.valid("json");
+    const updated = await reorderCharacters(c.env, user.id, characterIds);
+    if (!updated) throw new ApiError(400, "invalid_character_order", "Character order contains unavailable characters");
+    return c.json({ ok: true });
   }
 );
 

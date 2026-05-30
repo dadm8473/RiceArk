@@ -22,3 +22,29 @@ export async function createUserTask(
     .run();
   return id;
 }
+
+export async function reorderTasks(env: Env, userId: string, taskIds: string[]): Promise<boolean> {
+  if (taskIds.length === 0) return true;
+
+  const placeholders = taskIds.map(() => "?").join(", ");
+  const existing = await env.DB.prepare(
+    `SELECT id FROM tasks
+     WHERE enabled = 1 AND (is_template = 1 OR user_id = ?) AND id IN (${placeholders})`
+  )
+    .bind(userId, ...taskIds)
+    .all<{ id: string }>();
+  if (existing.results.length !== taskIds.length) return false;
+
+  await env.DB.batch(
+    taskIds.map((id, index) =>
+      env.DB.prepare(
+        `INSERT INTO task_orders (user_id, task_id, sort_order, updated_at)
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(user_id, task_id)
+         DO UPDATE SET sort_order = excluded.sort_order,
+                       updated_at = CURRENT_TIMESTAMP`
+      ).bind(userId, id, index * 10)
+    )
+  );
+  return true;
+}
