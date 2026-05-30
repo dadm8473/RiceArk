@@ -51,4 +51,12 @@ describe("ChecklistMatrix", () => {
     expect(html.indexOf("캐릭터")).toBeLessThan(html.indexOf("쿠르잔 전선"));
     expect(html).toContain('title="루페온 / 냠수나이스1 / 소서리스 / 1,640.00 / 2,549.41"');
   });
+
+  it("renders drag handles for reorderable tasks and characters", () => {
+    const html = renderToStaticMarkup(createElement(ChecklistMatrix, { dashboard: createDashboard("tasks_rows") }));
+
+    expect(html).toContain('data-reorder-kind="task"');
+    expect(html).toContain('data-reorder-kind="character"');
+    expect(html).not.toContain('data-reorder-id="roster"');
+  });
 });

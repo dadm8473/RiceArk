@@ -1,11 +1,21 @@
 import { getPeriodKey, type ResetRule } from "@riceark/core";
-import type { CSSProperties, Dispatch, SetStateAction } from "react";
+import { GripVertical } from "lucide-react";
+import type { CSSProperties, Dispatch, PointerEvent, ReactNode, SetStateAction } from "react";
 import { useState } from "react";
+import { apiPatch } from "../../api/client";
+import { moveItem } from "./reorder";
 import { useCompletionQueue } from "./useCompletionQueue";
 import type { DashboardCharacter, DashboardPayload, DashboardTask } from "./types";
 
 interface Props {
   dashboard: DashboardPayload;
+}
+
+type ReorderKind = "task" | "character";
+
+interface DragState {
+  kind: ReorderKind;
+  id: string;
 }
 
 function getTaskPeriodKey(task: DashboardTask): string {
@@ -32,6 +42,16 @@ function getCompletionKey(task: DashboardTask, characterId: string | null): stri
   return `${task.id}:${characterId ?? "roster"}:${getTaskPeriodKey(task)}`;
 }
 
+function orderItems<T extends { id: string }>(items: T[], orderedIds: string[]): T[] {
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  const ordered = orderedIds.flatMap((id) => {
+    const item = itemById.get(id);
+    return item ? [item] : [];
+  });
+  const missing = items.filter((item) => !orderedIds.includes(item.id));
+  return [...ordered, ...missing];
+}
+
 export function ChecklistMatrix({ dashboard }: Props) {
   const { enqueue } = useCompletionQueue();
   const [checked, setChecked] = useState<Record<string, boolean>>(() =>
@@ -42,24 +62,109 @@ export function ChecklistMatrix({ dashboard }: Props) {
       ])
     )
   );
+  const [taskOrder, setTaskOrder] = useState<string[]>(() => dashboard.tasks.map((task) => task.id));
+  const [characterOrder, setCharacterOrder] = useState<string[]>(() =>
+    dashboard.characters.map((character) => character.id)
+  );
+  const [dragging, setDragging] = useState<DragState | null>(null);
   const orientation = dashboard.settings.checklist_orientation ?? "tasks_rows";
+  const orderedTasks = orderItems(dashboard.tasks, taskOrder);
+  const orderedCharacters = orderItems(dashboard.characters, characterOrder);
 
-  if (orientation === "tasks_columns") {
-    return <TaskColumnsMatrix checked={checked} dashboard={dashboard} setChecked={setChecked} onToggle={enqueue} />;
+  function beginDrag(kind: ReorderKind, id: string, event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragging({ kind, id });
   }
 
-  return <TaskRowsMatrix checked={checked} dashboard={dashboard} setChecked={setChecked} onToggle={enqueue} />;
+  function moveDrag(kind: ReorderKind, targetId: string) {
+    if (!dragging || dragging.kind !== kind || dragging.id === targetId) return;
+    const setter = kind === "task" ? setTaskOrder : setCharacterOrder;
+    setter((current) => {
+      const fromIndex = current.indexOf(dragging.id);
+      const toIndex = current.indexOf(targetId);
+      return moveItem(current, fromIndex, toIndex);
+    });
+  }
+
+  async function saveOrder(kind: ReorderKind, ids: string[]) {
+    try {
+      if (kind === "task") {
+        await apiPatch("/api/tasks/order", { taskIds: ids });
+      } else {
+        await apiPatch("/api/characters/order", { characterIds: ids });
+      }
+    } catch {
+      window.location.reload();
+    }
+  }
+
+  function endDrag() {
+    if (!dragging) return;
+    const kind = dragging.kind;
+    setDragging(null);
+    void saveOrder(kind, kind === "task" ? taskOrder : characterOrder);
+  }
+
+  function renderDragHandle(kind: ReorderKind, id: string, label: string) {
+    const active = dragging?.kind === kind && dragging.id === id;
+    return (
+      <button
+        className={`drag-handle${active ? " active" : ""}`}
+        data-reorder-id={id}
+        data-reorder-kind={kind}
+        type="button"
+        aria-label={`${label} 순서 이동`}
+        title="드래그해서 순서 변경"
+        onPointerCancel={endDrag}
+        onPointerDown={(event) => beginDrag(kind, id, event)}
+        onPointerEnter={() => moveDrag(kind, id)}
+        onPointerUp={endDrag}
+      >
+        <GripVertical size={14} />
+      </button>
+    );
+  }
+
+  if (orientation === "tasks_columns") {
+    return (
+      <TaskColumnsMatrix
+        characters={orderedCharacters}
+        checked={checked}
+        dashboard={dashboard}
+        renderDragHandle={renderDragHandle}
+        setChecked={setChecked}
+        tasks={orderedTasks}
+        onToggle={enqueue}
+      />
+    );
+  }
+
+  return (
+    <TaskRowsMatrix
+      characters={orderedCharacters}
+      checked={checked}
+      dashboard={dashboard}
+      renderDragHandle={renderDragHandle}
+      setChecked={setChecked}
+      tasks={orderedTasks}
+      onToggle={enqueue}
+    />
+  );
 }
 
 interface MatrixRendererProps {
   dashboard: DashboardPayload;
+  characters: DashboardCharacter[];
+  tasks: DashboardTask[];
   checked: Record<string, boolean>;
+  renderDragHandle: (kind: ReorderKind, id: string, label: string) => ReactNode;
   setChecked: Dispatch<SetStateAction<Record<string, boolean>>>;
   onToggle: (patch: { taskId: string; characterId: string | null; periodKey: string; completed: boolean }) => void;
 }
 
-function TaskRowsMatrix({ dashboard, checked, setChecked, onToggle }: MatrixRendererProps) {
-  const columns = [{ id: "roster", name: "원정대" }, ...dashboard.characters];
+function TaskRowsMatrix({ dashboard, characters, tasks, checked, renderDragHandle, setChecked, onToggle }: MatrixRendererProps) {
+  const columns = [{ id: "roster", name: "원정대" }, ...characters];
   const rowStyle = {
     "--column-count": columns.length,
     "--row-height": `${dashboard.settings.row_height}px`,
@@ -73,20 +178,26 @@ function TaskRowsMatrix({ dashboard, checked, setChecked, onToggle }: MatrixRend
         {columns.map((column) => (
           <div className="matrix-cell" key={column.id}>
             {"server_name" in column ? (
-              <span className="character-label" title={getCharacterDetail(column)}>
-                {getCharacterLabel(column)}
+              <span className="matrix-label-line">
+                {renderDragHandle("character", column.id, getCharacterLabel(column))}
+                <span className="character-label" title={getCharacterDetail(column)}>
+                  {getCharacterLabel(column)}
+                </span>
               </span>
             ) : null}
             {"server_name" in column ? <small>{column.item_level}</small> : <span>{column.name}</span>}
           </div>
         ))}
       </div>
-      {dashboard.tasks.map((task) => {
+      {tasks.map((task) => {
         const periodKey = getTaskPeriodKey(task);
         return (
           <div className="matrix-row" key={task.id} style={rowStyle}>
             <div className="matrix-task-cell">
-              <span>{task.name}</span>
+              <span className="matrix-label-line">
+                {renderDragHandle("task", task.id, task.name)}
+                <span>{task.name}</span>
+              </span>
               <small>{task.reset_type}</small>
             </div>
             {columns.map((column) => {
@@ -117,10 +228,18 @@ function TaskRowsMatrix({ dashboard, checked, setChecked, onToggle }: MatrixRend
   );
 }
 
-function TaskColumnsMatrix({ dashboard, checked, setChecked, onToggle }: MatrixRendererProps) {
-  const rows = [{ id: "roster", name: "원정대" }, ...dashboard.characters];
+function TaskColumnsMatrix({
+  dashboard,
+  characters,
+  tasks,
+  checked,
+  renderDragHandle,
+  setChecked,
+  onToggle
+}: MatrixRendererProps) {
+  const rows = [{ id: "roster", name: "원정대" }, ...characters];
   const rowStyle = {
-    "--column-count": dashboard.tasks.length,
+    "--column-count": tasks.length,
     "--row-height": `${dashboard.settings.row_height}px`,
     "--column-width": `${dashboard.settings.column_width}px`
   } as CSSProperties;
@@ -129,9 +248,12 @@ function TaskColumnsMatrix({ dashboard, checked, setChecked, onToggle }: MatrixR
     <div className={`matrix density-${dashboard.settings.density}`}>
       <div className="matrix-row matrix-header" style={rowStyle}>
         <div className="matrix-task-cell">캐릭터</div>
-        {dashboard.tasks.map((task) => (
+        {tasks.map((task) => (
           <div className="matrix-cell" key={task.id}>
-            <span>{task.name}</span>
+            <span className="matrix-label-line">
+              {renderDragHandle("task", task.id, task.name)}
+              <span>{task.name}</span>
+            </span>
             <small>{task.reset_type}</small>
           </div>
         ))}
@@ -143,8 +265,11 @@ function TaskColumnsMatrix({ dashboard, checked, setChecked, onToggle }: MatrixR
             <div className="matrix-task-cell">
               {"server_name" in row ? (
                 <>
-                  <span className="character-label" title={getCharacterDetail(row)}>
-                    {getCharacterLabel(row)}
+                  <span className="matrix-label-line">
+                    {renderDragHandle("character", row.id, getCharacterLabel(row))}
+                    <span className="character-label" title={getCharacterDetail(row)}>
+                      {getCharacterLabel(row)}
+                    </span>
                   </span>
                   <small>{row.item_level}</small>
                 </>
@@ -152,7 +277,7 @@ function TaskColumnsMatrix({ dashboard, checked, setChecked, onToggle }: MatrixR
                 <span>{row.name}</span>
               )}
             </div>
-            {dashboard.tasks.map((task) => {
+            {tasks.map((task) => {
               const disabled = task.scope === "character" && row.id === "roster";
               const rosterOnly = task.scope === "roster" && row.id !== "roster";
               const periodKey = getTaskPeriodKey(task);
