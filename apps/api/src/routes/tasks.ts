@@ -22,6 +22,14 @@ export const taskOrderSchema = z
     path: ["taskIds"]
   });
 
+export const createTaskSchema = z.object({
+  name: z.string().min(1).max(40),
+  scope: z.literal("character").optional().default("character"),
+  resetType: z.enum(["daily", "weekly", "biweekly", "custom"]),
+  anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  intervalDays: z.number().int().min(1).max(365).optional()
+});
+
 taskRoutes.patch(
   "/tasks/order",
   zValidator("json", taskOrderSchema),
@@ -36,16 +44,7 @@ taskRoutes.patch(
 
 taskRoutes.post(
   "/tasks",
-  zValidator(
-    "json",
-    z.object({
-      name: z.string().min(1).max(40),
-      scope: z.enum(["character", "roster"]),
-      resetType: z.enum(["daily", "weekly", "biweekly", "custom"]),
-      anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-      intervalDays: z.number().int().min(1).max(365).optional()
-    })
-  ),
+  zValidator("json", createTaskSchema),
   async (c) => {
     const user = await requireUser(c);
     const input = c.req.valid("json");

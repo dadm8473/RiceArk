@@ -9,4 +9,11 @@ describe("TaskForm", () => {
 
     expect(html).not.toContain("<h2");
   });
+
+  it("does not expose a special roster task option", () => {
+    const html = renderToStaticMarkup(createElement(TaskForm));
+
+    expect(html).not.toContain("원정대");
+    expect(html).not.toContain('value="roster"');
+  });
 });

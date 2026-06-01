@@ -43,6 +43,7 @@ describe("ChecklistMatrix", () => {
     expect(html.indexOf("숙제")).toBeLessThan(html.indexOf("냠1"));
     expect(html).toContain("냠1");
     expect(html).not.toContain(">냠수나이스1<");
+    expect(html).not.toContain("원정대");
   });
 
   it("can render tasks as columns without changing character identity", () => {
@@ -50,6 +51,7 @@ describe("ChecklistMatrix", () => {
 
     expect(html.indexOf("캐릭터")).toBeLessThan(html.indexOf("쿠르잔 전선"));
     expect(html).toContain('title="루페온 / 냠수나이스1 / 소서리스 / 1,640.00 / 2,549.41"');
+    expect(html).not.toContain("원정대");
   });
 
   it("renders reorder as an explicit mode instead of always-visible drag handles", () => {

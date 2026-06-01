@@ -49,8 +49,8 @@ function getCharacterDetail(character: DashboardCharacter): string {
     .join(" / ");
 }
 
-function getCompletionKey(task: DashboardTask, characterId: string | null): string {
-  return `${task.id}:${characterId ?? "roster"}:${getTaskPeriodKey(task)}`;
+function getCompletionKey(task: DashboardTask, characterId: string): string {
+  return `${task.id}:${characterId}:${getTaskPeriodKey(task)}`;
 }
 
 function orderItems<T extends { id: string }>(items: T[], orderedIds: string[]): T[] {
@@ -309,7 +309,7 @@ function TaskRowsMatrix({
   setChecked,
   onToggle
 }: MatrixRendererProps) {
-  const columns = [{ id: "roster", name: "원정대" }, ...characters];
+  const columns = characters;
   const rowStyle = {
     "--column-count": columns.length,
     "--row-height": `${dashboard.settings.row_height}px`,
@@ -319,14 +319,6 @@ function TaskRowsMatrix({
   const characterSortableIds = characters.map((character) => getSortableItemId("character", character.id));
 
   const headerCells = columns.map((column) => {
-    if (!("server_name" in column)) {
-      return (
-        <div className="matrix-cell" key={column.id}>
-          <span>{column.name}</span>
-        </div>
-      );
-    }
-
     return (
       <LabelCell
         className="matrix-cell"
@@ -349,15 +341,12 @@ function TaskRowsMatrix({
           <TaskLabelContent task={task} />
         </LabelCell>
         {columns.map((column) => {
-          const unavailable =
-            (task.scope === "character" && column.id === "roster") ||
-            (task.scope === "roster" && column.id !== "roster");
-          const characterId = column.id === "roster" ? null : column.id;
+          const characterId = column.id;
           const key = getCompletionKey(task, characterId);
           return (
             <button
               className="matrix-cell matrix-check"
-              disabled={isReorderMode || unavailable}
+              disabled={isReorderMode}
               key={key}
               type="button"
               onClick={() => {
@@ -366,7 +355,7 @@ function TaskRowsMatrix({
                 onToggle({ taskId: task.id, characterId, periodKey, completed: next });
               }}
             >
-              {unavailable ? "" : checked[key] ? "V" : ""}
+              {checked[key] ? "V" : ""}
             </button>
           );
         })}
@@ -406,7 +395,7 @@ function TaskColumnsMatrix({
   setChecked,
   onToggle
 }: MatrixRendererProps) {
-  const rows = [{ id: "roster", name: "원정대" }, ...characters];
+  const rows = characters;
   const rowStyle = {
     "--column-count": tasks.length,
     "--row-height": `${dashboard.settings.row_height}px`,
@@ -429,34 +418,25 @@ function TaskColumnsMatrix({
   ));
 
   const matrixRows = rows.map((row) => {
-    const characterId = row.id === "roster" ? null : row.id;
+    const characterId = row.id;
     return (
       <div className="matrix-row" key={row.id} style={rowStyle}>
-        {"server_name" in row ? (
-          <LabelCell
-            className="matrix-task-cell"
-            id={row.id}
-            isReorderMode={isReorderMode}
-            kind="character"
-            label={getCharacterLabel(row)}
-          >
-            <CharacterLabelContent character={row} isReorderMode={isReorderMode} />
-          </LabelCell>
-        ) : (
-          <div className="matrix-task-cell">
-            <span>{row.name}</span>
-          </div>
-        )}
+        <LabelCell
+          className="matrix-task-cell"
+          id={row.id}
+          isReorderMode={isReorderMode}
+          kind="character"
+          label={getCharacterLabel(row)}
+        >
+          <CharacterLabelContent character={row} isReorderMode={isReorderMode} />
+        </LabelCell>
         {tasks.map((task) => {
-          const unavailable =
-            (task.scope === "character" && row.id === "roster") ||
-            (task.scope === "roster" && row.id !== "roster");
           const periodKey = getTaskPeriodKey(task);
           const key = getCompletionKey(task, characterId);
           return (
             <button
               className="matrix-cell matrix-check"
-              disabled={isReorderMode || unavailable}
+              disabled={isReorderMode}
               key={key}
               type="button"
               onClick={() => {
@@ -465,7 +445,7 @@ function TaskColumnsMatrix({
                 onToggle({ taskId: task.id, characterId, periodKey, completed: next });
               }}
             >
-              {unavailable ? "" : checked[key] ? "V" : ""}
+              {checked[key] ? "V" : ""}
             </button>
           );
         })}
