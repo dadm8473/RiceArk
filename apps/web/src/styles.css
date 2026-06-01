@@ -176,6 +176,37 @@ body {
   gap: 8px;
 }
 
+.board-display-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  margin: 0;
+  padding: 4px 8px;
+  border: 1px solid #c7d2e1;
+  background: #ffffff;
+}
+
+.board-display-options legend {
+  padding: 0 4px;
+  color: #42526a;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.board-display-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #1f2a37;
+  font-size: 12px;
+}
+
+.board-display-options input {
+  width: 14px;
+  height: 14px;
+}
+
 .board-create-form {
   display: inline-flex;
   align-items: center;
@@ -310,6 +341,23 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+
+.board-character-axis-label {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  line-height: 1.15;
+}
+
+.board-character-meta {
+  max-width: 100%;
+  overflow: hidden;
+  color: #526174;
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .board-task-color-swatch {

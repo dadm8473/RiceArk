@@ -45,6 +45,17 @@ interface Props {
   onBoardChanged?: () => Promise<BoardPayload> | void;
 }
 
+type BoardDisplaySettings = BoardPayload["settings"];
+type BoardDisplaySettingKey = keyof BoardDisplaySettings;
+
+interface BoardCharacterDisplaySettings {
+  displayName: boolean;
+  serverName: boolean;
+  className: boolean;
+  itemLevel: boolean;
+  combatPower: boolean;
+}
+
 type BoardTableLayoutDragMode = "move" | "resize";
 
 interface ActiveBoardTableLayoutDrag {
@@ -100,6 +111,48 @@ function getTaskColor(row: BoardAxisItem, column: BoardAxisItem): string | null 
   if (row.kind === "task") return row.task_color;
   if (column.kind === "task") return column.task_color;
   return null;
+}
+
+function getCharacterDisplaySettings(settings: BoardDisplaySettings): BoardCharacterDisplaySettings {
+  return {
+    displayName: settings.show_display_name !== 0,
+    serverName: settings.show_server_name === 1,
+    className: settings.show_class_name === 1,
+    itemLevel: settings.show_item_level !== 0,
+    combatPower: settings.show_combat_power === 1
+  };
+}
+
+function getBoardCharacterName(item: BoardAxisItem): string {
+  return item.character_name?.trim() || item.label;
+}
+
+function getBoardCharacterLabel(item: BoardAxisItem, settings: BoardDisplaySettings): string {
+  const display = getCharacterDisplaySettings(settings);
+  if (!display.displayName) return getBoardCharacterName(item);
+  return item.character_display_name?.trim() || getBoardCharacterName(item);
+}
+
+function getBoardCharacterDetail(item: BoardAxisItem): string {
+  return [
+    item.character_server_name,
+    getBoardCharacterName(item),
+    item.character_class_name,
+    item.character_item_level,
+    item.character_combat_power
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function getBoardCharacterMeta(item: BoardAxisItem, settings: BoardDisplaySettings): string[] {
+  const display = getCharacterDisplaySettings(settings);
+  return [
+    display.serverName ? item.character_server_name : null,
+    display.className ? item.character_class_name : null,
+    display.itemLevel ? item.character_item_level : null,
+    display.combatPower ? item.character_combat_power : null
+  ].filter((value): value is string => Boolean(value));
 }
 
 function buildGridColumns(table: BoardTable, columns: BoardAxisItem[]): string {
@@ -173,6 +226,7 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   const [cellStates, setCellStates] = useState(board.cellStates);
   const [axisItems, setAxisItems] = useState(board.axisItems);
   const [tables, setTables] = useState(board.tables);
+  const [displaySettings, setDisplaySettings] = useState(board.settings);
   const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
   const [sheetName, setSheetName] = useState("");
   const [tableName, setTableName] = useState("");
@@ -224,9 +278,26 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     setTables(board.tables);
   }, [board.tables]);
 
+  useEffect(() => {
+    setDisplaySettings(board.settings);
+  }, [board.settings]);
+
   function handleCompletionToggle(patch: BoardCompletionPatch) {
     setCompletions((current) => applyBoardCompletionPatch(current, patch));
     enqueue(patch);
+  }
+
+  async function handleDisplaySettingChange(key: BoardDisplaySettingKey, value: boolean) {
+    const next = {
+      ...displaySettings,
+      [key]: value ? 1 : 0
+    };
+    setDisplaySettings(next);
+    try {
+      await apiPatch("/api/settings", { characterDisplay: getCharacterDisplaySettings(next) });
+    } catch {
+      window.location.reload();
+    }
   }
 
   function handleCellVisibilityToggle(patch: BoardCellStatePatch) {
@@ -578,6 +649,7 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
                 onAxisItemEdit={setEditingAxisItem}
                 onCellVisibilityToggle={handleCellVisibilityToggle}
                 onToggle={handleCompletionToggle}
+                settings={displaySettings}
               />
               <button
                 className="board-table-resize-handle"
@@ -650,6 +722,7 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
         >
           {isCellVisibilityMode ? "표시 편집 완료" : "표시 편집"}
         </button>
+        <BoardDisplayOptions settings={displaySettings} onChange={(key, value) => void handleDisplaySettingChange(key, value)} />
         <form className="board-create-form" aria-label="표 추가" onSubmit={handleCreateTable}>
           <input
             aria-label="새 표 이름"
@@ -881,6 +954,38 @@ function TableLayoutInput({
   );
 }
 
+function BoardDisplayOptions({
+  onChange,
+  settings
+}: {
+  onChange: (key: BoardDisplaySettingKey, value: boolean) => void;
+  settings: BoardDisplaySettings;
+}) {
+  const options: Array<{ key: BoardDisplaySettingKey; label: string }> = [
+    { key: "show_display_name", label: "축약" },
+    { key: "show_server_name", label: "서버" },
+    { key: "show_class_name", label: "직업" },
+    { key: "show_item_level", label: "레벨" },
+    { key: "show_combat_power", label: "전투력" }
+  ];
+
+  return (
+    <fieldset className="board-display-options">
+      <legend>표시 옵션</legend>
+      {options.map((option) => (
+        <label key={option.key}>
+          <input
+            checked={settings[option.key] !== 0}
+            type="checkbox"
+            onChange={(event) => onChange(option.key, event.currentTarget.checked)}
+          />
+          {option.label}
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
 function BoardTableGrid({
   axisItems,
   cellStates,
@@ -891,7 +996,8 @@ function BoardTableGrid({
   onAxisSizeChange,
   onAxisItemEdit,
   onCellVisibilityToggle,
-  onToggle
+  onToggle,
+  settings
 }: {
   axisItems: BoardAxisItem[];
   cellStates: BoardPayload["cellStates"];
@@ -903,6 +1009,7 @@ function BoardTableGrid({
   onAxisItemEdit: (item: BoardAxisItem) => void;
   onCellVisibilityToggle: (patch: BoardCellStatePatch) => void;
   onToggle: (patch: BoardCompletionPatch) => void;
+  settings: BoardDisplaySettings;
 }) {
   const rows = axisItems
     .filter((item) => item.table_id === table.id && item.axis === "row" && item.visible === 1)
@@ -939,6 +1046,7 @@ function BoardTableGrid({
             isReorderMode={isReorderMode}
             onAxisItemEdit={onAxisItemEdit}
             onAxisSizeChange={onAxisSizeChange}
+            settings={settings}
             table={table}
           />
         ))}
@@ -961,6 +1069,7 @@ function BoardTableGrid({
             onAxisSizeChange={onAxisSizeChange}
             row={row}
             rowHeight={row.size_px ?? table.default_row_height}
+            settings={settings}
             tableId={table.id}
           />
         ))}
@@ -974,12 +1083,14 @@ function BoardColumnHeader({
   isReorderMode,
   onAxisItemEdit,
   onAxisSizeChange,
+  settings,
   table
 }: {
   column: BoardAxisItem;
   isReorderMode: boolean;
   onAxisItemEdit: (item: BoardAxisItem) => void;
   onAxisSizeChange: (axisItemId: string, sizePx: number) => void;
+  settings: BoardDisplaySettings;
   table: BoardTable;
 }) {
   const columnSeparator = getSeparatorBorder(column);
@@ -993,7 +1104,7 @@ function BoardColumnHeader({
       style={columnSeparator ? { borderRight: columnSeparator } : undefined}
       tableId={table.id}
     >
-      <BoardAxisLabelText item={column} />
+      <BoardAxisLabelText isReorderMode={isReorderMode} item={column} settings={settings} />
       {!isReorderMode ? (
         <AxisSizeInput
           label={`${column.label} 열 너비`}
@@ -1005,7 +1116,28 @@ function BoardColumnHeader({
   );
 }
 
-function BoardAxisLabelText({ item }: { item: BoardAxisItem }) {
+function BoardAxisLabelText({
+  isReorderMode,
+  item,
+  settings
+}: {
+  isReorderMode: boolean;
+  item: BoardAxisItem;
+  settings: BoardDisplaySettings;
+}) {
+  if (item.kind === "character") {
+    const meta = getBoardCharacterMeta(item, settings);
+    const detail = getBoardCharacterDetail(item);
+    return (
+      <span className="board-axis-label-text board-character-axis-label">
+        <span className="board-character-label" title={isReorderMode ? undefined : detail}>
+          {getBoardCharacterLabel(item, settings)}
+        </span>
+        {meta.length > 0 ? <small className="board-character-meta">{meta.join(" · ")}</small> : null}
+      </span>
+    );
+  }
+
   return (
     <span className="board-axis-label-text">
       {item.kind === "task" && item.task_color ? (
@@ -1108,6 +1240,7 @@ function BoardGridRow({
   onToggle,
   row,
   rowHeight,
+  settings,
   tableId
 }: {
   columns: BoardAxisItem[];
@@ -1121,6 +1254,7 @@ function BoardGridRow({
   onToggle: (patch: BoardCompletionPatch) => void;
   row: BoardAxisItem;
   rowHeight: number;
+  settings: BoardDisplaySettings;
   tableId: string;
 }) {
   const rowSeparator = getSeparatorBorder(row);
@@ -1135,7 +1269,7 @@ function BoardGridRow({
         style={{ minHeight: `${rowHeight}px`, ...(rowSeparator ? { borderBottom: rowSeparator } : {}) }}
         tableId={tableId}
       >
-        <BoardAxisLabelText item={row} />
+        <BoardAxisLabelText isReorderMode={isReorderMode} item={row} settings={settings} />
         {!isReorderMode ? (
           <AxisSizeInput
             label={`${row.label} 행 높이`}

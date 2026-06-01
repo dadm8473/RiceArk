@@ -21,6 +21,7 @@ export interface BoardRoles {
 
 export interface BoardPayload {
   userId: string;
+  settings: unknown;
   sheets: unknown[];
   tables: unknown[];
   axisItems: unknown[];
@@ -165,6 +166,13 @@ export interface DefaultAxisItemSeed {
 
 const DEFAULT_TASK_COLORS = ["#2563eb", "#13795b", "#b45309", "#7c3aed", "#be123c", "#0f766e"];
 const DEFAULT_MANUAL_TASK_RESET_RULE_JSON = '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}';
+const DEFAULT_BOARD_DISPLAY_SETTINGS = {
+  show_display_name: 1,
+  show_server_name: 0,
+  show_class_name: 0,
+  show_item_level: 1,
+  show_combat_power: 0
+};
 
 export function boardRolesForTableOrientation(orientation: BoardOrientation): BoardRoles {
   if (orientation === "custom") {
@@ -660,10 +668,25 @@ async function syncLegacyCompletionsToBoard(env: Env, userId: string, tableId: s
 export async function loadBoard(env: Env, userId: string): Promise<BoardPayload> {
   await ensureDefaultBoard(env, userId);
 
-  const [sheets, tables, axisItems, cellStates, completions] = await Promise.all([
+  const [sheets, tables, axisItems, cellStates, completions, settings] = await Promise.all([
     env.DB.prepare("SELECT * FROM sheets WHERE user_id = ? ORDER BY sort_order, name").bind(userId).all(),
     env.DB.prepare("SELECT * FROM board_tables WHERE user_id = ? ORDER BY sort_order, name").bind(userId).all(),
-    env.DB.prepare("SELECT * FROM board_axis_items WHERE user_id = ? ORDER BY table_id, axis, sort_order, label")
+    env.DB.prepare(
+      `SELECT board_axis_items.*,
+              characters.name AS character_name,
+              characters.display_name AS character_display_name,
+              characters.server_name AS character_server_name,
+              characters.class_name AS character_class_name,
+              characters.item_level AS character_item_level,
+              characters.combat_power AS character_combat_power
+       FROM board_axis_items
+       LEFT JOIN characters
+         ON characters.id = board_axis_items.character_id
+        AND characters.user_id = board_axis_items.user_id
+        AND characters.deleted_at IS NULL
+       WHERE board_axis_items.user_id = ?
+       ORDER BY board_axis_items.table_id, board_axis_items.axis, board_axis_items.sort_order, board_axis_items.label`
+    )
       .bind(userId)
       .all(),
     env.DB.prepare("SELECT * FROM board_cell_states WHERE user_id = ? ORDER BY table_id, row_item_id, column_item_id")
@@ -673,11 +696,23 @@ export async function loadBoard(env: Env, userId: string): Promise<BoardPayload>
       "SELECT table_id, row_item_id, column_item_id, period_key, completed FROM board_cell_completions WHERE user_id = ?"
     )
       .bind(userId)
-      .all()
+      .all(),
+    env.DB.prepare(
+      `SELECT show_display_name,
+              show_server_name,
+              show_class_name,
+              show_item_level,
+              show_combat_power
+       FROM user_settings
+       WHERE user_id = ?`
+    )
+      .bind(userId)
+      .first()
   ]);
 
   return {
     userId,
+    settings: settings ?? DEFAULT_BOARD_DISPLAY_SETTINGS,
     sheets: sheets.results,
     tables: tables.results,
     axisItems: axisItems.results,

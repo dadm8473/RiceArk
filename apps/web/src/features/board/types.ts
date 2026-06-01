@@ -43,6 +43,12 @@ export interface BoardAxisItem {
   sort_order: number;
   visible: number;
   separator_json?: string | null | undefined;
+  character_name?: string | null | undefined;
+  character_display_name?: string | null | undefined;
+  character_server_name?: string | null | undefined;
+  character_class_name?: string | null | undefined;
+  character_item_level?: string | null | undefined;
+  character_combat_power?: string | null | undefined;
 }
 
 export interface BoardCellState {
@@ -62,6 +68,13 @@ export interface BoardCellCompletion {
 
 export interface BoardPayload {
   userId: string;
+  settings: {
+    show_display_name: number;
+    show_server_name: number;
+    show_class_name: number;
+    show_item_level: number;
+    show_combat_power: number;
+  };
   sheets: BoardSheet[];
   tables: BoardTable[];
   axisItems: BoardAxisItem[];

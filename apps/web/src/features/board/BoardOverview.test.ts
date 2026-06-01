@@ -6,6 +6,13 @@ import type { BoardPayload } from "./types";
 
 const board: BoardPayload = {
   userId: "user-1",
+  settings: {
+    show_display_name: 1,
+    show_server_name: 0,
+    show_class_name: 0,
+    show_item_level: 1,
+    show_combat_power: 0
+  },
   sheets: [
     {
       id: "sheet-1",
@@ -150,6 +157,39 @@ describe("BoardOverview", () => {
     expect(html).toContain("background:#2563eb");
   });
 
+  it("renders character axis labels from board display settings", () => {
+    const html = renderToStaticMarkup(
+      createElement(BoardOverview, {
+        board: {
+          ...board,
+          settings: {
+            show_display_name: 1,
+            show_server_name: 1,
+            show_class_name: 1,
+            show_item_level: 1,
+            show_combat_power: 1
+          },
+          axisItems: board.axisItems.map((item) =>
+            item.kind === "character"
+              ? {
+                  ...item,
+                  character_display_name: "냠1",
+                  character_server_name: "아만",
+                  character_class_name: "브레이커",
+                  character_item_level: "1,780.00",
+                  character_combat_power: "2,500"
+                }
+              : item
+          )
+        }
+      })
+    );
+
+    expect(html).toContain("냠1");
+    expect(html).toContain("아만 · 브레이커 · 1,780.00 · 2,500");
+    expect(html).toContain("아만 / 냠수나이스1 / 브레이커 / 1,780.00 / 2,500");
+  });
+
   it("renders custom row and column separators from axis settings", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {
@@ -236,7 +276,7 @@ describe("BoardOverview", () => {
     );
 
     expect(html).toContain('class="board-check-placeholder"');
-    expect(html).not.toContain('type="checkbox"');
+    expect(html).not.toContain('aria-label="쿠르잔 전선 / 냠수나이스1" class="board-check"');
   });
 
   it("does not render an empty board as a stretching spreadsheet", () => {
