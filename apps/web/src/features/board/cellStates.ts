@@ -11,6 +11,18 @@ function cellStateKey(cell: Pick<BoardCellState, "table_id" | "row_item_id" | "c
   return JSON.stringify([cell.table_id, cell.row_item_id, cell.column_item_id]);
 }
 
+function patchKey(patch: BoardCellStatePatch): string {
+  return JSON.stringify([patch.tableId, patch.rowItemId, patch.columnItemId]);
+}
+
+export function mergeBoardCellStatePatches(patches: BoardCellStatePatch[]): BoardCellStatePatch[] {
+  const latest = new Map<string, BoardCellStatePatch>();
+  for (const patch of patches) {
+    latest.set(patchKey(patch), patch);
+  }
+  return [...latest.values()];
+}
+
 export function applyBoardCellStatePatch(
   cellStates: BoardCellState[],
   patch: BoardCellStatePatch

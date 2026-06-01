@@ -37,6 +37,7 @@ import {
   type BoardTableLayoutPointerStart
 } from "./tableLayout";
 import type { BoardAxis, BoardAxisItem, BoardAxisRole, BoardOrientation, BoardPayload, BoardTable } from "./types";
+import { useBoardCellStateQueue } from "./useBoardCellStateQueue";
 import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
 
 interface Props {
@@ -167,6 +168,7 @@ function getBoardTableStyle(table: BoardTable): CSSProperties {
 
 export function BoardOverview({ board, onBoardChanged }: Props) {
   const { enqueue } = useBoardCompletionQueue();
+  const { enqueue: enqueueCellState } = useBoardCellStateQueue();
   const [completions, setCompletions] = useState(board.completions);
   const [cellStates, setCellStates] = useState(board.cellStates);
   const [axisItems, setAxisItems] = useState(board.axisItems);
@@ -227,13 +229,9 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     enqueue(patch);
   }
 
-  async function handleCellVisibilityToggle(patch: BoardCellStatePatch) {
+  function handleCellVisibilityToggle(patch: BoardCellStatePatch) {
     setCellStates((current) => applyBoardCellStatePatch(current, patch));
-    try {
-      await apiPatch("/api/board/cell-states", patch);
-    } catch {
-      window.location.reload();
-    }
+    enqueueCellState(patch);
   }
 
   async function handleAxisItemSave(

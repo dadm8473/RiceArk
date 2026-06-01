@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   boardAxisItemIdParamSchema,
   boardAxisOrderSchema,
+  boardCellStatePatchBatchSchema,
   boardAxisSizePatchSchema,
   boardCellStatePatchSchema,
   boardCompletionPatchSchema,
@@ -149,6 +150,53 @@ describe("board route schemas", () => {
         rowItemId: "row-1",
         columnItemId: "column-1",
         checkboxVisible: "no"
+      }).success
+    ).toBe(false);
+  });
+
+  it("accepts small board cell visibility batches", () => {
+    expect(
+      boardCellStatePatchBatchSchema.safeParse({
+        patches: [
+          {
+            tableId: "table-1",
+            rowItemId: "row-1",
+            columnItemId: "column-1",
+            checkboxVisible: false
+          },
+          {
+            tableId: "table-1",
+            rowItemId: "row-1",
+            columnItemId: "column-2",
+            checkboxVisible: true
+          }
+        ]
+      }).success
+    ).toBe(true);
+  });
+
+  it("rejects oversized board cell visibility batches and unsafe ids", () => {
+    expect(
+      boardCellStatePatchBatchSchema.safeParse({
+        patches: new Array(201).fill({
+          tableId: "table-1",
+          rowItemId: "row-1",
+          columnItemId: "column-1",
+          checkboxVisible: false
+        })
+      }).success
+    ).toBe(false);
+
+    expect(
+      boardCellStatePatchBatchSchema.safeParse({
+        patches: [
+          {
+            tableId: "table-1",
+            rowItemId: "row🙂",
+            columnItemId: "column-1",
+            checkboxVisible: false
+          }
+        ]
       }).success
     ).toBe(false);
   });

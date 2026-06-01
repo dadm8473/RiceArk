@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyBoardCellStatePatch } from "./cellStates";
+import { applyBoardCellStatePatch, mergeBoardCellStatePatches } from "./cellStates";
 
 describe("board cell state helpers", () => {
   it("adds hidden cell state when a checkbox is hidden", () => {
@@ -39,5 +39,31 @@ describe("board cell state helpers", () => {
         }
       )
     ).toEqual([]);
+  });
+
+  it("keeps only the latest visibility patch per board cell", () => {
+    expect(
+      mergeBoardCellStatePatches([
+        {
+          tableId: "table-1",
+          rowItemId: "row-1",
+          columnItemId: "column-1",
+          checkboxVisible: false
+        },
+        {
+          tableId: "table-1",
+          rowItemId: "row-1",
+          columnItemId: "column-1",
+          checkboxVisible: true
+        }
+      ])
+    ).toEqual([
+      {
+        tableId: "table-1",
+        rowItemId: "row-1",
+        columnItemId: "column-1",
+        checkboxVisible: true
+      }
+    ]);
   });
 });

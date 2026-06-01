@@ -11,6 +11,7 @@ import {
   defaultOrientationForTableRoles,
   findUnauthorizedBoardCellStatePatches,
   findUnauthorizedBoardCompletionPatches,
+  mergeBoardCellStatePatches,
   mergeBoardCompletionPatches,
   transposeBoardRoles
 } from "./board";
@@ -183,6 +184,32 @@ describe("board db defaults", () => {
         columnItemId: "column-1",
         periodKey: "daily:2026-06-01",
         completed: false
+      }
+    ]);
+  });
+
+  it("keeps the latest board cell state patch per semantic cell", () => {
+    expect(
+      mergeBoardCellStatePatches([
+        {
+          tableId: "table-1",
+          rowItemId: "row-1",
+          columnItemId: "column-1",
+          checkboxVisible: false
+        },
+        {
+          tableId: "table-1",
+          rowItemId: "row-1",
+          columnItemId: "column-1",
+          checkboxVisible: true
+        }
+      ])
+    ).toEqual([
+      {
+        tableId: "table-1",
+        rowItemId: "row-1",
+        columnItemId: "column-1",
+        checkboxVisible: true
       }
     ]);
   });

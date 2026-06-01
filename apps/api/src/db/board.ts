@@ -268,6 +268,18 @@ export function mergeBoardCompletionPatches(patches: BoardCompletionPatch[]): Bo
   return [...latest.values()];
 }
 
+function boardCellStatePatchKey(patch: BoardCellStatePatch): string {
+  return JSON.stringify([patch.tableId, patch.rowItemId, patch.columnItemId]);
+}
+
+export function mergeBoardCellStatePatches(patches: BoardCellStatePatch[]): BoardCellStatePatch[] {
+  const latest = new Map<string, BoardCellStatePatch>();
+  for (const patch of patches) {
+    latest.set(boardCellStatePatchKey(patch), patch);
+  }
+  return [...latest.values()];
+}
+
 function completionTargetKey(target: AuthorizedBoardCompletionTarget): string {
   return JSON.stringify([target.tableId, target.rowItemId, target.columnItemId]);
 }
@@ -967,36 +979,48 @@ export async function saveBoardCellStatePatch(
   userId: string,
   patch: BoardCellStatePatch
 ): Promise<boolean> {
-  const authorizedTargets = await loadAuthorizedBoardCompletionTargets(env, userId, [
-    {
+  return saveBoardCellStatePatches(env, userId, [patch]);
+}
+
+export async function saveBoardCellStatePatches(
+  env: Env,
+  userId: string,
+  patches: BoardCellStatePatch[]
+): Promise<boolean> {
+  const merged = mergeBoardCellStatePatches(patches);
+  const authorizedTargets = await loadAuthorizedBoardCompletionTargets(
+    env,
+    userId,
+    merged.map((patch) => ({
       ...patch,
       periodKey: "daily:2000-01-01",
       completed: false
-    }
-  ]);
-  if (findUnauthorizedBoardCellStatePatches([patch], authorizedTargets).length > 0) {
+    }))
+  );
+  if (findUnauthorizedBoardCellStatePatches(merged, authorizedTargets).length > 0) {
     return false;
   }
 
-  if (patch.checkboxVisible) {
-    await env.DB.prepare(
-      `DELETE FROM board_cell_states
-       WHERE user_id = ? AND table_id = ? AND row_item_id = ? AND column_item_id = ?`
-    )
-      .bind(userId, patch.tableId, patch.rowItemId, patch.columnItemId)
-      .run();
-    return true;
-  }
+  const statements = merged.map((patch) => {
+    if (patch.checkboxVisible) {
+      return env.DB.prepare(
+        `DELETE FROM board_cell_states
+         WHERE user_id = ? AND table_id = ? AND row_item_id = ? AND column_item_id = ?`
+      ).bind(userId, patch.tableId, patch.rowItemId, patch.columnItemId);
+    }
 
-  await env.DB.prepare(
-    `INSERT INTO board_cell_states
-       (id, user_id, table_id, row_item_id, column_item_id, checkbox_visible, updated_at)
-     VALUES (?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
-     ON CONFLICT(table_id, row_item_id, column_item_id)
-     DO UPDATE SET checkbox_visible = 0, updated_at = CURRENT_TIMESTAMP`
-  )
-    .bind(crypto.randomUUID(), userId, patch.tableId, patch.rowItemId, patch.columnItemId)
-    .run();
+    return env.DB.prepare(
+      `INSERT INTO board_cell_states
+         (id, user_id, table_id, row_item_id, column_item_id, checkbox_visible, updated_at)
+       VALUES (?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
+       ON CONFLICT(table_id, row_item_id, column_item_id)
+       DO UPDATE SET checkbox_visible = 0, updated_at = CURRENT_TIMESTAMP`
+    ).bind(crypto.randomUUID(), userId, patch.tableId, patch.rowItemId, patch.columnItemId);
+  });
+
+  if (statements.length > 0) {
+    await env.DB.batch(statements);
+  }
   return true;
 }
 

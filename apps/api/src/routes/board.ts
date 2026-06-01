@@ -9,7 +9,7 @@ import {
   hideBoardAxisItem,
   loadBoard,
   reorderBoardAxisItems,
-  saveBoardCellStatePatch,
+  saveBoardCellStatePatches,
   saveBoardCompletionPatches,
   transposeBoardTable,
   updateBoardAxisItem,
@@ -92,6 +92,10 @@ export const boardCellStatePatchSchema = z.object({
   rowItemId: resourceIdSchema,
   columnItemId: resourceIdSchema,
   checkboxVisible: z.boolean()
+});
+
+export const boardCellStatePatchBatchSchema = z.object({
+  patches: z.array(boardCellStatePatchSchema).max(200)
 });
 
 export const boardAxisSizePatchSchema = z.object({
@@ -223,10 +227,10 @@ boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchS
   return c.json({ ok: true });
 });
 
-boardRoutes.patch("/board/cell-states", zValidator("json", boardCellStatePatchSchema), async (c) => {
+boardRoutes.patch("/board/cell-states", zValidator("json", boardCellStatePatchBatchSchema), async (c) => {
   const user = await requireUser(c);
-  const patch = c.req.valid("json");
-  const saved = await saveBoardCellStatePatch(c.env, user.id, patch as BoardCellStatePatch);
+  const { patches } = c.req.valid("json");
+  const saved = await saveBoardCellStatePatches(c.env, user.id, patches as BoardCellStatePatch[]);
   if (!saved) {
     throw new ApiError(400, "invalid_board_cell_state_target", "셀 표시 상태를 바꿀 수 없는 항목입니다.");
   }
