@@ -34,6 +34,9 @@ export interface BoardAxisItem {
   label: string;
   character_id: string | null;
   task_id: string | null;
+  task_scope?: "character" | "roster" | "custom" | null;
+  task_reset_type?: "daily" | "weekly" | "biweekly" | "custom" | "none" | null;
+  task_reset_rule_json?: string | null;
   task_color: string | null;
   size_px: number | null;
   sort_order: number;

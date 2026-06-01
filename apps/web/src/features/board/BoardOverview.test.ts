@@ -41,6 +41,7 @@ const board: BoardPayload = {
       character_id: null,
       task_id: "task-1",
       task_color: "#2563eb",
+      task_reset_rule_json: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}',
       size_px: null,
       sort_order: 0,
       visible: 1

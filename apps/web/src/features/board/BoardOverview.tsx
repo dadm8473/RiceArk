@@ -1,5 +1,7 @@
-import type { CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
+import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
 import type { BoardAxisItem, BoardAxisRole, BoardPayload, BoardTable } from "./types";
+import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
 
 interface Props {
   board: BoardPayload;
@@ -34,7 +36,18 @@ function buildGridColumns(table: BoardTable, columns: BoardAxisItem[]): string {
 }
 
 export function BoardOverview({ board }: Props) {
+  const { enqueue } = useBoardCompletionQueue();
+  const [completions, setCompletions] = useState(board.completions);
   const activeSheet = board.sheets.find((sheet) => sheet.is_default === 1) ?? board.sheets[0];
+
+  useEffect(() => {
+    setCompletions(board.completions);
+  }, [board.completions]);
+
+  function handleCompletionToggle(patch: BoardCompletionPatch) {
+    setCompletions((current) => applyBoardCompletionPatch(current, patch));
+    enqueue(patch);
+  }
 
   if (!activeSheet) {
     return (
@@ -80,7 +93,7 @@ export function BoardOverview({ board }: Props) {
               <span>행 높이 {table.default_row_height}px</span>
               <span>열 너비 {table.default_column_width}px</span>
             </div>
-            <BoardTableGrid board={board} table={table} />
+            <BoardTableGrid board={board} completions={completions} table={table} onToggle={handleCompletionToggle} />
           </article>
         ))}
       </div>
@@ -88,7 +101,17 @@ export function BoardOverview({ board }: Props) {
   );
 }
 
-function BoardTableGrid({ board, table }: { board: BoardPayload; table: BoardTable }) {
+function BoardTableGrid({
+  board,
+  completions,
+  table,
+  onToggle
+}: {
+  board: BoardPayload;
+  completions: BoardPayload["completions"];
+  table: BoardTable;
+  onToggle: (patch: BoardCompletionPatch) => void;
+}) {
   const rows = board.axisItems
     .filter((item) => item.table_id === table.id && item.axis === "row" && item.visible === 1)
     .sort((left, right) => left.sort_order - right.sort_order || left.label.localeCompare(right.label));
@@ -101,7 +124,7 @@ function BoardTableGrid({ board, table }: { board: BoardPayload; table: BoardTab
       .map((cell) => cellKey(cell.row_item_id, cell.column_item_id))
   );
   const completedCells = new Set(
-    board.completions
+    completions
       .filter((completion) => completion.table_id === table.id && completion.completed === 1)
       .map((completion) => cellKey(completion.row_item_id, completion.column_item_id))
   );
@@ -124,8 +147,10 @@ function BoardTableGrid({ board, table }: { board: BoardPayload; table: BoardTab
           columns={columns}
           completedCells={completedCells}
           hiddenCells={hiddenCells}
+          onToggle={onToggle}
           row={row}
           rowHeight={row.size_px ?? table.default_row_height}
+          tableId={table.id}
         />
       ))}
     </div>
@@ -136,14 +161,18 @@ function BoardGridRow({
   columns,
   completedCells,
   hiddenCells,
+  onToggle,
   row,
-  rowHeight
+  rowHeight,
+  tableId
 }: {
   columns: BoardAxisItem[];
   completedCells: Set<string>;
   hiddenCells: Set<string>;
+  onToggle: (patch: BoardCompletionPatch) => void;
   row: BoardAxisItem;
   rowHeight: number;
+  tableId: string;
 }) {
   return (
     <>
@@ -154,6 +183,7 @@ function BoardGridRow({
         const key = cellKey(row.id, column.id);
         const taskColor = getTaskColor(row, column);
         const colorStyle = taskColor ? ({ "--task-color": taskColor } as CSSProperties) : undefined;
+        const periodKey = getBoardCellPeriodKey(row, column);
 
         return (
           <div key={column.id} className="board-check-cell" style={{ minHeight: `${rowHeight}px` }}>
@@ -164,7 +194,17 @@ function BoardGridRow({
                 aria-label={`${row.label} / ${column.label}`}
                 checked={completedCells.has(key)}
                 className="board-check"
-                readOnly
+                disabled={!periodKey}
+                onChange={(event) => {
+                  if (!periodKey) return;
+                  onToggle({
+                    tableId,
+                    rowItemId: row.id,
+                    columnItemId: column.id,
+                    periodKey,
+                    completed: event.currentTarget.checked
+                  });
+                }}
                 style={colorStyle}
                 type="checkbox"
               />
