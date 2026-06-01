@@ -230,18 +230,23 @@ body {
 }
 
 .board-canvas {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  overflow-x: auto;
+  overflow: auto;
   min-height: 72px;
   padding: 10px;
   border: 1px solid #b9c3d1;
   background: #eef2f7;
 }
 
+.board-canvas-space {
+  position: relative;
+  width: var(--board-canvas-width);
+  height: var(--board-canvas-height);
+}
+
 .board-table-summary {
-  flex: 0 0 auto;
+  position: absolute;
+  box-sizing: border-box;
+  width: max-content;
   min-width: 240px;
   padding: 10px;
   border: 1px solid #8f99aa;
@@ -404,6 +409,33 @@ body {
   color: #334155;
   font-size: 12px;
   background: #f8fafc;
+}
+
+.board-table-layout-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.board-table-layout-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.board-table-layout-field input {
+  width: 58px;
+  min-width: 0;
+  height: 24px;
+  border: 1px solid #aab5c4;
+  border-radius: 0;
+  color: #111827;
+  background: #ffffff;
+  font-size: 12px;
 }
 
 .board-empty {

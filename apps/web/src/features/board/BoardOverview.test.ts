@@ -161,6 +161,24 @@ describe("BoardOverview", () => {
     expect(html).toContain('value="150"');
   });
 
+  it("renders compact table layout controls", () => {
+    const html = renderToStaticMarkup(
+      createElement(BoardOverview, {
+        board: {
+          ...board,
+          tables: board.tables.map((table) => ({ ...table, x: 18, y: 24, width: 420, height: 260 }))
+        }
+      })
+    );
+
+    expect(html).toContain('aria-label="숙제 X 위치"');
+    expect(html).toContain('aria-label="숙제 Y 위치"');
+    expect(html).toContain('aria-label="숙제 너비"');
+    expect(html).toContain('aria-label="숙제 높이"');
+    expect(html).toContain('value="18"');
+    expect(html).toContain('value="420"');
+  });
+
   it("keeps hidden cells present for layout without rendering a checkbox", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {

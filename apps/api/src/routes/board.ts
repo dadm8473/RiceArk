@@ -13,6 +13,8 @@ import {
   saveBoardCompletionPatches,
   updateBoardAxisItem,
   updateBoardAxisItemSize,
+  updateBoardTableLayout,
+  type BoardTableLayoutPatch,
   type BoardCellStatePatch,
   type BoardCompletionPatch
 } from "../db/board";
@@ -88,6 +90,17 @@ export const boardAxisItemIdParamSchema = z.object({
   id: resourceIdSchema
 });
 
+export const boardTableIdParamSchema = z.object({
+  id: resourceIdSchema
+});
+
+export const boardTableLayoutPatchSchema = z.object({
+  x: z.number().int().min(0).max(10000),
+  y: z.number().int().min(0).max(10000),
+  width: z.number().int().min(160).max(4000).nullable(),
+  height: z.number().int().min(120).max(4000).nullable()
+});
+
 export const boardRoutes = new Hono<{ Bindings: Env }>();
 
 boardRoutes.get("/board", async (c) => {
@@ -135,6 +148,22 @@ boardRoutes.patch("/board/axis-items/order", zValidator("json", boardAxisOrderSc
   }
   return c.json({ ok: true });
 });
+
+boardRoutes.patch(
+  "/board/tables/:id/layout",
+  zValidator("param", boardTableIdParamSchema),
+  zValidator("json", boardTableLayoutPatchSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    const { id } = c.req.valid("param");
+    const patch = c.req.valid("json");
+    const updated = await updateBoardTableLayout(c.env, user.id, id, patch as BoardTableLayoutPatch);
+    if (!updated) {
+      throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
+    }
+    return c.json({ ok: true });
+  }
+);
 
 boardRoutes.patch(
   "/board/axis-items/:id",

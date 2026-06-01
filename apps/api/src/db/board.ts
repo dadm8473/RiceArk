@@ -63,6 +63,13 @@ export interface BoardAxisOrderInput {
   axisItemIds: string[];
 }
 
+export interface BoardTableLayoutPatch {
+  x: number;
+  y: number;
+  width: number | null;
+  height: number | null;
+}
+
 export interface UpdateBoardAxisItemInput {
   label: string;
 }
@@ -746,6 +753,22 @@ export async function reorderBoardAxisItems(
     await env.DB.batch([...temporaryUpdates, ...finalUpdates]);
   }
   return true;
+}
+
+export async function updateBoardTableLayout(
+  env: Env,
+  userId: string,
+  tableId: string,
+  patch: BoardTableLayoutPatch
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE board_tables
+     SET x = ?, y = ?, width = ?, height = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ?`
+  )
+    .bind(patch.x, patch.y, patch.width, patch.height, tableId, userId)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
 }
 
 export async function updateBoardAxisItem(

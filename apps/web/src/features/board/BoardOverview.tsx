@@ -28,6 +28,11 @@ import {
   moveBoardAxisItemIds,
   parseBoardAxisSortableId
 } from "./reorder";
+import {
+  applyBoardTableLayoutPatch,
+  normalizeBoardTableLayoutNumber,
+  type BoardTableLayoutPatch
+} from "./tableLayout";
 import type { BoardAxis, BoardAxisItem, BoardAxisRole, BoardOrientation, BoardPayload, BoardTable } from "./types";
 import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
 
@@ -46,6 +51,11 @@ const axisLabels: Record<BoardAxis, string> = {
   row: "행",
   column: "열"
 };
+
+const BOARD_CANVAS_MIN_WIDTH = 480;
+const BOARD_CANVAS_MIN_HEIGHT = 260;
+const BOARD_TABLE_FALLBACK_WIDTH = 360;
+const BOARD_TABLE_FALLBACK_HEIGHT = 240;
 
 function tableOrientationLabel(table: BoardTable): string {
   return `${roleLabels[table.row_role]} 행 / ${roleLabels[table.column_role]} 열`;
@@ -78,11 +88,37 @@ function axisDraftKey(tableId: string, axis: BoardAxis): string {
   return `${tableId}:${axis}`;
 }
 
+function getBoardCanvasStyle(tables: BoardTable[]): CSSProperties {
+  const width = Math.max(
+    BOARD_CANVAS_MIN_WIDTH,
+    ...tables.map((table) => table.x + (table.width ?? BOARD_TABLE_FALLBACK_WIDTH))
+  );
+  const height = Math.max(
+    BOARD_CANVAS_MIN_HEIGHT,
+    ...tables.map((table) => table.y + (table.height ?? BOARD_TABLE_FALLBACK_HEIGHT))
+  );
+
+  return {
+    "--board-canvas-width": `${width}px`,
+    "--board-canvas-height": `${height}px`
+  } as CSSProperties;
+}
+
+function getBoardTableStyle(table: BoardTable): CSSProperties {
+  return {
+    left: `${table.x}px`,
+    top: `${table.y}px`,
+    width: table.width === null ? undefined : `${table.width}px`,
+    minHeight: table.height === null ? undefined : `${table.height}px`
+  };
+}
+
 export function BoardOverview({ board, onBoardChanged }: Props) {
   const { enqueue } = useBoardCompletionQueue();
   const [completions, setCompletions] = useState(board.completions);
   const [cellStates, setCellStates] = useState(board.cellStates);
   const [axisItems, setAxisItems] = useState(board.axisItems);
+  const [tables, setTables] = useState(board.tables);
   const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
   const [sheetName, setSheetName] = useState("");
   const [tableName, setTableName] = useState("");
@@ -125,6 +161,10 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   useEffect(() => {
     setAxisItems(board.axisItems);
   }, [board.axisItems]);
+
+  useEffect(() => {
+    setTables(board.tables);
+  }, [board.tables]);
 
   function handleCompletionToggle(patch: BoardCompletionPatch) {
     setCompletions((current) => applyBoardCompletionPatch(current, patch));
@@ -244,6 +284,16 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     }
   }
 
+  async function handleTableLayoutChange(tableId: string, patch: BoardTableLayoutPatch) {
+    setTables((current) => applyBoardTableLayoutPatch(current, tableId, patch));
+
+    try {
+      await apiPatch("/api/board/tables/" + encodeURIComponent(tableId) + "/layout", patch);
+    } catch {
+      window.location.reload();
+    }
+  }
+
   async function saveAxisOrder(tableId: string, axis: BoardAxis, axisItemIds: string[]) {
     try {
       await apiPatch("/api/board/axis-items/order", { tableId, axis, axisItemIds });
@@ -289,63 +339,68 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     );
   }
 
-  const tables = board.tables
+  const activeTables = tables
     .filter((table) => table.sheet_id === activeSheet.id)
     .sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name));
 
   const boardCanvas = (
-    <div className="board-canvas">
-      {tables.length === 0 ? <p className="board-empty">이 시트에는 아직 표가 없습니다.</p> : null}
-      {tables.map((table) => (
-        <article key={table.id} className="board-table-summary">
-          <div className="board-table-heading">
-            <strong>{table.name}</strong>
-            <span>{tableOrientationLabel(table)}</span>
-          </div>
-          <div className="board-table-metrics">
-            <span>행 {axisCount(axisItems, table.id, "row")}</span>
-            <span>열 {axisCount(axisItems, table.id, "column")}</span>
-            <span>행 높이 {table.default_row_height}px</span>
-            <span>열 너비 {table.default_column_width}px</span>
-          </div>
-          <div className="board-axis-create-row">
-            {(["row", "column"] as const).map((axis) => {
-              const key = axisDraftKey(table.id, axis);
-              return (
-                <form
-                  key={axis}
-                  className="board-create-form board-axis-create-form"
-                  aria-label={`${table.name} ${axisLabels[axis]} 추가`}
-                  onSubmit={(event) => handleCreateAxisItem(event, table, axis)}
-                >
-                  <input
-                    aria-label={`${table.name} ${axisLabels[axis]} 이름`}
-                    maxLength={30}
-                    placeholder={`${axisLabels[axis]} 이름`}
-                    value={axisDrafts[key] ?? ""}
-                    onChange={(event) => handleAxisDraftChange(table.id, axis, event.currentTarget.value)}
-                  />
-                  <button disabled={pendingAxisKey === key} type="submit">
-                    {axisLabels[axis]} 추가
-                  </button>
-                </form>
-              );
-            })}
-          </div>
-          <BoardTableGrid
-            axisItems={axisItems}
-            cellStates={cellStates}
-            completions={completions}
-            isCellVisibilityMode={isCellVisibilityMode}
-            isReorderMode={isReorderMode}
-            table={table}
-            onAxisSizeChange={handleAxisSizeChange}
-            onAxisItemEdit={setEditingAxisItem}
-            onCellVisibilityToggle={handleCellVisibilityToggle}
-            onToggle={handleCompletionToggle}
-          />
-        </article>
-      ))}
+    <div className="board-canvas" style={getBoardCanvasStyle(activeTables)}>
+      {activeTables.length === 0 ? <p className="board-empty">이 시트에는 아직 표가 없습니다.</p> : null}
+      {activeTables.length > 0 ? (
+        <div className="board-canvas-space">
+          {activeTables.map((table) => (
+            <article key={table.id} className="board-table-summary" style={getBoardTableStyle(table)}>
+              <div className="board-table-heading">
+                <strong>{table.name}</strong>
+                <span>{tableOrientationLabel(table)}</span>
+              </div>
+              <div className="board-table-metrics">
+                <span>행 {axisCount(axisItems, table.id, "row")}</span>
+                <span>열 {axisCount(axisItems, table.id, "column")}</span>
+                <span>행 높이 {table.default_row_height}px</span>
+                <span>열 너비 {table.default_column_width}px</span>
+              </div>
+              <BoardTableLayoutControls table={table} onChange={handleTableLayoutChange} />
+              <div className="board-axis-create-row">
+                {(["row", "column"] as const).map((axis) => {
+                  const key = axisDraftKey(table.id, axis);
+                  return (
+                    <form
+                      key={axis}
+                      className="board-create-form board-axis-create-form"
+                      aria-label={`${table.name} ${axisLabels[axis]} 추가`}
+                      onSubmit={(event) => handleCreateAxisItem(event, table, axis)}
+                    >
+                      <input
+                        aria-label={`${table.name} ${axisLabels[axis]} 이름`}
+                        maxLength={30}
+                        placeholder={`${axisLabels[axis]} 이름`}
+                        value={axisDrafts[key] ?? ""}
+                        onChange={(event) => handleAxisDraftChange(table.id, axis, event.currentTarget.value)}
+                      />
+                      <button disabled={pendingAxisKey === key} type="submit">
+                        {axisLabels[axis]} 추가
+                      </button>
+                    </form>
+                  );
+                })}
+              </div>
+              <BoardTableGrid
+                axisItems={axisItems}
+                cellStates={cellStates}
+                completions={completions}
+                isCellVisibilityMode={isCellVisibilityMode}
+                isReorderMode={isReorderMode}
+                table={table}
+                onAxisSizeChange={handleAxisSizeChange}
+                onAxisItemEdit={setEditingAxisItem}
+                onCellVisibilityToggle={handleCellVisibilityToggle}
+                onToggle={handleCompletionToggle}
+              />
+            </article>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 
@@ -446,6 +501,124 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
         />
       ) : null}
     </section>
+  );
+}
+
+function BoardTableLayoutControls({
+  onChange,
+  table
+}: {
+  onChange: (tableId: string, patch: BoardTableLayoutPatch) => void;
+  table: BoardTable;
+}) {
+  function updateLayout(next: Partial<BoardTableLayoutPatch>) {
+    onChange(table.id, {
+      x: table.x,
+      y: table.y,
+      width: table.width,
+      height: table.height,
+      ...next
+    });
+  }
+
+  return (
+    <div className="board-table-layout-row" aria-label={`${table.name} 위치와 크기`}>
+      <TableLayoutInput
+        label={`${table.name} X 위치`}
+        max={10000}
+        min={0}
+        nullable={false}
+        shortLabel="X"
+        value={table.x}
+        onChange={(value) => {
+          if (value !== null) updateLayout({ x: value });
+        }}
+      />
+      <TableLayoutInput
+        label={`${table.name} Y 위치`}
+        max={10000}
+        min={0}
+        nullable={false}
+        shortLabel="Y"
+        value={table.y}
+        onChange={(value) => {
+          if (value !== null) updateLayout({ y: value });
+        }}
+      />
+      <TableLayoutInput
+        label={`${table.name} 너비`}
+        max={4000}
+        min={160}
+        nullable={true}
+        shortLabel="W"
+        value={table.width}
+        onChange={(value) => updateLayout({ width: value })}
+      />
+      <TableLayoutInput
+        label={`${table.name} 높이`}
+        max={4000}
+        min={120}
+        nullable={true}
+        shortLabel="H"
+        value={table.height}
+        onChange={(value) => updateLayout({ height: value })}
+      />
+    </div>
+  );
+}
+
+function TableLayoutInput({
+  label,
+  max,
+  min,
+  nullable,
+  onChange,
+  shortLabel,
+  value
+}: {
+  label: string;
+  max: number;
+  min: number;
+  nullable: boolean;
+  onChange: (value: number | null) => void;
+  shortLabel: string;
+  value: number | null;
+}) {
+  const [draftValue, setDraftValue] = useState(value === null ? "" : String(value));
+
+  useEffect(() => {
+    setDraftValue(value === null ? "" : String(value));
+  }, [value]);
+
+  function commitDraftValue() {
+    const nextValue = normalizeBoardTableLayoutNumber(draftValue, {
+      min,
+      max,
+      nullable
+    });
+    setDraftValue(nextValue === null ? "" : String(nextValue));
+    if (nextValue !== value) {
+      onChange(nextValue);
+    }
+  }
+
+  return (
+    <label className="board-table-layout-field">
+      <span>{shortLabel}</span>
+      <input
+        aria-label={label}
+        max={max}
+        min={min}
+        placeholder={nullable ? "auto" : undefined}
+        type="number"
+        value={draftValue}
+        onBlur={commitDraftValue}
+        onChange={(event) => setDraftValue(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+        }}
+      />
+    </label>
   );
 }
 

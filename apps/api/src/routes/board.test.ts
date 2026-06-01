@@ -5,6 +5,8 @@ import {
   boardAxisSizePatchSchema,
   boardCellStatePatchSchema,
   boardCompletionPatchSchema,
+  boardTableIdParamSchema,
+  boardTableLayoutPatchSchema,
   createBoardAxisItemSchema,
   createBoardSheetSchema,
   createBoardTableSchema,
@@ -65,6 +67,21 @@ describe("board route schemas", () => {
   it("validates board axis item ids for size updates", () => {
     expect(boardAxisItemIdParamSchema.safeParse({ id: "axis-item-1" }).success).toBe(true);
     expect(boardAxisItemIdParamSchema.safeParse({ id: "axis🙂" }).success).toBe(false);
+  });
+
+  it("accepts bounded board table layout patches", () => {
+    expect(boardTableIdParamSchema.safeParse({ id: "table-1" }).success).toBe(true);
+    expect(boardTableIdParamSchema.safeParse({ id: "table🙂" }).success).toBe(false);
+    expect(boardTableLayoutPatchSchema.safeParse({ x: 24, y: 48, width: 360, height: 240 }).success).toBe(true);
+    expect(boardTableLayoutPatchSchema.safeParse({ x: 0, y: 0, width: null, height: null }).success).toBe(true);
+  });
+
+  it("rejects unsafe board table layout patches", () => {
+    expect(boardTableLayoutPatchSchema.safeParse({ x: -1, y: 0, width: 360, height: 240 }).success).toBe(false);
+    expect(boardTableLayoutPatchSchema.safeParse({ x: 0, y: -1, width: 360, height: 240 }).success).toBe(false);
+    expect(boardTableLayoutPatchSchema.safeParse({ x: 0, y: 0, width: 120, height: 240 }).success).toBe(false);
+    expect(boardTableLayoutPatchSchema.safeParse({ x: 0, y: 0, width: 360, height: 80 }).success).toBe(false);
+    expect(boardTableLayoutPatchSchema.safeParse({ x: 10001, y: 0, width: 360, height: 240 }).success).toBe(false);
   });
 
   it("accepts complete board axis order payloads", () => {
