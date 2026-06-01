@@ -158,6 +158,8 @@ body {
 .matrix-row {
   display: grid;
   grid-template-columns: 180px repeat(var(--column-count), var(--column-width));
+  width: max-content;
+  min-width: 100%;
   min-height: var(--row-height);
   border-bottom: 1px solid #c8d0dc;
 }

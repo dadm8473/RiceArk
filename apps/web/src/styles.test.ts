@@ -8,4 +8,11 @@ describe("matrix styles", () => {
     expect(styles).toContain(".matrix-check:disabled");
     expect(styles).toContain(".matrix-check:disabled {\n  cursor: default;\n  background: #ffffff;");
   });
+
+  it("lets matrix rows cover the full scrollable grid width", () => {
+    const rowBlock = styles.match(/\.matrix-row\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(rowBlock).toContain("width: max-content;");
+    expect(rowBlock).toContain("min-width: 100%;");
+  });
 });
