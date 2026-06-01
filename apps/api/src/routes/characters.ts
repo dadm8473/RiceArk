@@ -1,4 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
+import { isValidLostArkCharacterName, LOSTARK_CHARACTER_NAME_MAX_LENGTH } from "@riceark/core";
 import { Hono } from "hono";
 import { z } from "zod";
 import { requireUser } from "../auth/requireUser";
@@ -18,6 +19,14 @@ export const characterRoutes = new Hono<{ Bindings: Env }>();
 
 export const characterDisplayNameSchema = z.object({
   displayName: safeText({ allowEmpty: true, maxChars: 20 }).nullable()
+});
+
+const lostArkCharacterNameSchema = safeText({ maxChars: LOSTARK_CHARACTER_NAME_MAX_LENGTH }).refine(isValidLostArkCharacterName, {
+  message: "Lost Ark character name must be 12 characters or fewer and contain only Hangul, Latin letters, or numbers"
+});
+
+export const characterSearchSchema = z.object({
+  name: lostArkCharacterNameSchema
 });
 
 const editableCharacterText = (max: number) => safeText({ maxChars: max });
@@ -53,7 +62,7 @@ export const characterOrderSchema = z
 
 characterRoutes.get(
   "/characters/search",
-  zValidator("query", z.object({ name: safeText({ maxChars: 20 }) })),
+  zValidator("query", characterSearchSchema),
   async (c) => {
     await requireUser(c);
     const { name } = c.req.valid("query");
@@ -132,7 +141,7 @@ characterRoutes.post(
       characters: z
         .array(
           z.object({
-            name: editableCharacterText(20),
+            name: lostArkCharacterNameSchema,
             serverName: editableCharacterText(20),
             className: editableCharacterText(20),
             itemLevel: editableCharacterText(20),

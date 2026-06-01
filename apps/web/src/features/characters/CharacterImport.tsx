@@ -1,3 +1,8 @@
+import {
+  isValidLostArkCharacterName,
+  LOSTARK_CHARACTER_NAME_MAX_LENGTH,
+  normalizeLostArkCharacterNameInput
+} from "@riceark/core";
 import { Search, UserPlus } from "lucide-react";
 import { useState } from "react";
 import { apiGet, apiPost } from "../../api/client";
@@ -15,6 +20,13 @@ type CharacterImportMessageTone = "notice" | "error";
 interface CharacterImportMessage {
   text: string;
   tone: CharacterImportMessageTone;
+}
+
+export const CHARACTER_SEARCH_NAME_ERROR =
+  "캐릭터 닉네임은 12자 이하의 한글, 영문, 숫자만 입력해주세요. 특수문자와 띄어쓰기는 사용할 수 없습니다.";
+
+export function getCharacterSearchNameError(name: string): string | null {
+  return isValidLostArkCharacterName(name) ? null : CHARACTER_SEARCH_NAME_ERROR;
 }
 
 interface CharacterCandidateListProps {
@@ -83,7 +95,12 @@ export function CharacterImportPanel({
   return (
     <section className="tool-panel">
       <div className="inline-form">
-        <input maxLength={20} value={name} onChange={(event) => onNameChange(event.target.value)} placeholder="대표 캐릭터명" />
+        <input
+          maxLength={LOSTARK_CHARACTER_NAME_MAX_LENGTH}
+          value={name}
+          onChange={(event) => onNameChange(event.target.value)}
+          placeholder="대표 캐릭터명"
+        />
         <button disabled={searching} type="button" onClick={onSearch} title="원정대 검색">
           <Search size={16} />
           {searching ? "검색 중..." : "검색"}
@@ -114,10 +131,20 @@ export function CharacterImport() {
   const [saving, setSaving] = useState(false);
 
   async function search() {
+    const normalizedName = normalizeLostArkCharacterNameInput(name);
+    const validationError = getCharacterSearchNameError(normalizedName);
+    setName(normalizedName);
+    if (validationError) {
+      setCandidates([]);
+      setSelected({});
+      setMessage({ text: validationError, tone: "error" });
+      return;
+    }
+
     setSearching(true);
     setMessage(null);
     try {
-      const result = await apiGet<{ characters: Candidate[] }>(`/api/characters/search?name=${encodeURIComponent(name)}`);
+      const result = await apiGet<{ characters: Candidate[] }>(`/api/characters/search?name=${encodeURIComponent(normalizedName)}`);
       setCandidates(result.characters);
       setSelected(Object.fromEntries(result.characters.map((character) => [`${character.serverName}:${character.name}`, true])));
       if (result.characters.length === 0) {

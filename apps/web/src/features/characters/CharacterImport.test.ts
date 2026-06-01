@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { CharacterCandidateList, CharacterImportPanel } from "./CharacterImport";
+import { CHARACTER_SEARCH_NAME_ERROR, CharacterCandidateList, CharacterImportPanel, getCharacterSearchNameError } from "./CharacterImport";
 
 describe("CharacterCandidateList", () => {
   it("renders column headers and combat power as a plain value", () => {
@@ -53,6 +53,22 @@ describe("CharacterImportPanel", () => {
 
     expect(html.indexOf("검색")).toBeLessThan(html.indexOf("선택 캐릭터 등록"));
     expect(html.indexOf("선택 캐릭터 등록")).toBeLessThan(html.indexOf("서버"));
+  });
+
+  it("limits search input to Lost Ark character name length", () => {
+    const html = renderToStaticMarkup(
+      createElement(CharacterImportPanel, {
+        name: "",
+        candidates: [],
+        selected: {},
+        onNameChange: vi.fn(),
+        onSearch: vi.fn(),
+        onSave: vi.fn(),
+        onToggle: vi.fn()
+      })
+    );
+
+    expect(html).toContain('maxLength="12"');
   });
 
   it("shows a message when a search returns no characters", () => {
@@ -125,5 +141,18 @@ describe("CharacterImportPanel", () => {
 
     expect(html).not.toContain("축약 이름");
     expect(html).not.toContain("냠1");
+  });
+});
+
+describe("getCharacterSearchNameError", () => {
+  it("allows valid Lost Ark character names", () => {
+    expect(getCharacterSearchNameError("냠수나이스1")).toBeNull();
+    expect(getCharacterSearchNameError("RiceArk123")).toBeNull();
+  });
+
+  it("explains names that are too long or contain unsupported characters", () => {
+    expect(getCharacterSearchNameError("가나다라마바사아자차카타파")).toBe(CHARACTER_SEARCH_NAME_ERROR);
+    expect(getCharacterSearchNameError("냠수 나이스1")).toBe(CHARACTER_SEARCH_NAME_ERROR);
+    expect(getCharacterSearchNameError("냠수-나이스1")).toBe(CHARACTER_SEARCH_NAME_ERROR);
   });
 });

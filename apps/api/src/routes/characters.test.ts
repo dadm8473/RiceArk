@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { characterDetailsSchema, characterDisplayNameSchema, characterIdParamSchema, characterOrderSchema } from "./characters";
+import {
+  characterDetailsSchema,
+  characterDisplayNameSchema,
+  characterIdParamSchema,
+  characterOrderSchema,
+  characterSearchSchema
+} from "./characters";
 
 describe("characterDisplayNameSchema", () => {
   it("accepts optional compact display names", () => {
@@ -15,6 +21,19 @@ describe("characterDisplayNameSchema", () => {
   it("rejects emoji and invisible control characters", () => {
     expect(characterDisplayNameSchema.safeParse({ displayName: "냠🙂" }).success).toBe(false);
     expect(characterDisplayNameSchema.safeParse({ displayName: "냠\u200B1" }).success).toBe(false);
+  });
+});
+
+describe("characterSearchSchema", () => {
+  it("accepts valid Lost Ark character names", () => {
+    expect(characterSearchSchema.safeParse({ name: "냠수나이스1" }).success).toBe(true);
+    expect(characterSearchSchema.safeParse({ name: "RiceArk123" }).success).toBe(true);
+  });
+
+  it("rejects names over 12 characters or containing spaces and special characters", () => {
+    expect(characterSearchSchema.safeParse({ name: "가나다라마바사아자차카타파" }).success).toBe(false);
+    expect(characterSearchSchema.safeParse({ name: "냠수 나이스1" }).success).toBe(false);
+    expect(characterSearchSchema.safeParse({ name: "냠수-나이스1" }).success).toBe(false);
   });
 });
 
