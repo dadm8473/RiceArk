@@ -7,6 +7,7 @@ import {
   createBoardSheet,
   createBoardTable,
   loadBoard,
+  reorderBoardAxisItems,
   saveBoardCompletionPatches,
   updateBoardAxisItemSize,
   type BoardCompletionPatch
@@ -18,6 +19,10 @@ import { periodKeySchema, resourceIdSchema, safeText } from "../http/input";
 const safeBoardNameSchema = safeText({ maxChars: 30, maxBytes: 120 });
 
 export const boardTableOrientationSchema = z.enum(["tasks_rows", "tasks_columns", "custom"]);
+
+function hasDuplicates(values: string[]): boolean {
+  return new Set(values).size !== values.length;
+}
 
 export const createBoardSheetSchema = z.object({
   name: safeBoardNameSchema
@@ -34,6 +39,17 @@ export const createBoardAxisItemSchema = z.object({
   axis: z.enum(["row", "column"]),
   label: safeBoardNameSchema
 });
+
+export const boardAxisOrderSchema = z
+  .object({
+    tableId: resourceIdSchema,
+    axis: z.enum(["row", "column"]),
+    axisItemIds: z.array(resourceIdSchema).max(300)
+  })
+  .refine((input) => !hasDuplicates(input.axisItemIds), {
+    message: "Duplicate board axis item ids are not allowed",
+    path: ["axisItemIds"]
+  });
 
 export const boardCompletionPatchSchema = z.object({
   patches: z
@@ -93,6 +109,16 @@ boardRoutes.post("/board/axis-items", zValidator("json", createBoardAxisItemSche
     throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
   }
   return c.json(axisItem, 201);
+});
+
+boardRoutes.patch("/board/axis-items/order", zValidator("json", boardAxisOrderSchema), async (c) => {
+  const user = await requireUser(c);
+  const input = c.req.valid("json");
+  const updated = await reorderBoardAxisItems(c.env, user.id, input);
+  if (!updated) {
+    throw new ApiError(400, "invalid_board_axis_order", "행 또는 열 순서에 사용할 수 없는 항목이 있습니다.");
+  }
+  return c.json({ ok: true });
 });
 
 boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchSchema), async (c) => {

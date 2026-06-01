@@ -98,6 +98,12 @@ describe("BoardOverview", () => {
     expect(html).toContain("열 추가");
   });
 
+  it("renders a board reorder mode control", () => {
+    const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
+
+    expect(html).toContain("순서 변경");
+  });
+
   it("renders compact checkbox cells from board axis and completion state", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {

@@ -50,6 +50,12 @@ export interface CreateBoardAxisItemInput {
   label: string;
 }
 
+export interface BoardAxisOrderInput {
+  tableId: string;
+  axis: BoardAxis;
+  axisItemIds: string[];
+}
+
 export interface ManualBoardAxisItemDraft {
   axis: BoardAxis;
   kind: "task" | "custom";
@@ -676,6 +682,51 @@ export async function createBoardAxisItem(
     .run();
 
   return { id };
+}
+
+export async function reorderBoardAxisItems(
+  env: Env,
+  userId: string,
+  input: BoardAxisOrderInput
+): Promise<boolean> {
+  const table = await env.DB.prepare("SELECT id FROM board_tables WHERE id = ? AND user_id = ?")
+    .bind(input.tableId, userId)
+    .first<{ id: string }>();
+  if (!table) return false;
+
+  const existing = await env.DB.prepare(
+    `SELECT id
+     FROM board_axis_items
+     WHERE user_id = ? AND table_id = ? AND axis = ?
+     ORDER BY sort_order, label`
+  )
+    .bind(userId, input.tableId, input.axis)
+    .all<{ id: string }>();
+  const existingIds = existing.results.map((item) => item.id);
+  if (existingIds.length !== input.axisItemIds.length) return false;
+
+  const existingSet = new Set(existingIds);
+  if (input.axisItemIds.some((id) => !existingSet.has(id))) return false;
+
+  const temporaryUpdates = input.axisItemIds.map((id, index) =>
+    env.DB.prepare(
+      `UPDATE board_axis_items
+       SET sort_order = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ? AND table_id = ? AND axis = ?`
+    ).bind(-((index + 1) * 10), id, userId, input.tableId, input.axis)
+  );
+  const finalUpdates = input.axisItemIds.map((id, index) =>
+    env.DB.prepare(
+      `UPDATE board_axis_items
+       SET sort_order = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ? AND table_id = ? AND axis = ?`
+    ).bind(index * 10, id, userId, input.tableId, input.axis)
+  );
+
+  if (temporaryUpdates.length > 0) {
+    await env.DB.batch([...temporaryUpdates, ...finalUpdates]);
+  }
+  return true;
 }
 
 export async function saveBoardCompletionPatches(

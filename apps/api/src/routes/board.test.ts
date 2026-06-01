@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   boardAxisItemIdParamSchema,
+  boardAxisOrderSchema,
   boardAxisSizePatchSchema,
   boardCompletionPatchSchema,
   createBoardAxisItemSchema,
@@ -62,6 +63,40 @@ describe("board route schemas", () => {
   it("validates board axis item ids for size updates", () => {
     expect(boardAxisItemIdParamSchema.safeParse({ id: "axis-item-1" }).success).toBe(true);
     expect(boardAxisItemIdParamSchema.safeParse({ id: "axis🙂" }).success).toBe(false);
+  });
+
+  it("accepts complete board axis order payloads", () => {
+    expect(
+      boardAxisOrderSchema.safeParse({
+        tableId: "table-1",
+        axis: "row",
+        axisItemIds: ["row-1", "row-2"]
+      }).success
+    ).toBe(true);
+  });
+
+  it("rejects duplicate or unsafe board axis order payloads", () => {
+    expect(
+      boardAxisOrderSchema.safeParse({
+        tableId: "table-1",
+        axis: "row",
+        axisItemIds: ["row-1", "row-1"]
+      }).success
+    ).toBe(false);
+    expect(
+      boardAxisOrderSchema.safeParse({
+        tableId: "table🙂",
+        axis: "row",
+        axisItemIds: ["row-1"]
+      }).success
+    ).toBe(false);
+    expect(
+      boardAxisOrderSchema.safeParse({
+        tableId: "table-1",
+        axis: "diagonal",
+        axisItemIds: ["row-1"]
+      }).success
+    ).toBe(false);
   });
 
   it("accepts normalized sheet and table names for board creation", () => {

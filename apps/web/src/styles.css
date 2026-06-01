@@ -204,6 +204,12 @@ body {
   white-space: nowrap;
 }
 
+.board-reorder-button.active {
+  color: #ffffff;
+  border-color: #1f4fd1;
+  background: #2563eb;
+}
+
 .board-form-error {
   margin: 0;
   color: #b42318;
@@ -288,6 +294,29 @@ body {
   border-right: 1px solid #d2d9e4;
   border-bottom: 1px solid #d2d9e4;
   font-size: 13px;
+}
+
+.board-sortable-axis-label {
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+}
+
+.board-sortable-axis-label.dragging {
+  opacity: 0.2;
+}
+
+.board-drag-overlay {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #64748b;
+  color: #111827;
+  background: #ffffff;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.18);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .board-check-cell {

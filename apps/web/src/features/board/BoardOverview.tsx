@@ -1,6 +1,31 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import {
+  closestCenter,
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent
+} from "@dnd-kit/core";
+import {
+  horizontalListSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { apiPatch, apiPost } from "../../api/client";
 import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
+import {
+  applyBoardAxisOrder,
+  getBoardAxisSortableId,
+  moveBoardAxisItemIds,
+  parseBoardAxisSortableId
+} from "./reorder";
 import type { BoardAxis, BoardAxisItem, BoardAxisRole, BoardOrientation, BoardPayload, BoardTable } from "./types";
 import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
 
@@ -63,6 +88,8 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   const [pendingAxisKey, setPendingAxisKey] = useState<string | null>(null);
   const [axisDrafts, setAxisDrafts] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
+  const [isReorderMode, setIsReorderMode] = useState(false);
+  const [activeSortableId, setActiveSortableId] = useState<string | null>(null);
   const sortedSheets = useMemo(
     () => board.sheets.slice().sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name)),
     [board.sheets]
@@ -71,6 +98,16 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     sortedSheets.find((sheet) => sheet.id === activeSheetId) ??
     sortedSheets.find((sheet) => sheet.is_default === 1) ??
     sortedSheets[0];
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 6
+      }
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates
+    })
+  );
 
   useEffect(() => {
     setCompletions(board.completions);
@@ -177,6 +214,43 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     }
   }
 
+  async function saveAxisOrder(tableId: string, axis: BoardAxis, axisItemIds: string[]) {
+    try {
+      await apiPatch("/api/board/axis-items/order", { tableId, axis, axisItemIds });
+    } catch {
+      window.location.reload();
+    }
+  }
+
+  function moveAxisOrder(tableId: string, axis: BoardAxis, activeId: string, overId: string) {
+    const orderedIds = axisItems
+      .filter((item) => item.table_id === tableId && item.axis === axis)
+      .sort((left, right) => left.sort_order - right.sort_order || left.label.localeCompare(right.label))
+      .map((item) => item.id);
+    const nextIds = moveBoardAxisItemIds(orderedIds, activeId, overId);
+    if (nextIds === orderedIds) return;
+
+    setAxisItems((current) => applyBoardAxisOrder(current, tableId, axis, nextIds));
+    void saveAxisOrder(tableId, axis, nextIds);
+  }
+
+  function handleDragStart(event: DragStartEvent) {
+    setActiveSortableId(String(event.active.id));
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    setActiveSortableId(null);
+    const active = parseBoardAxisSortableId(String(event.active.id));
+    const over = event.over ? parseBoardAxisSortableId(String(event.over.id)) : null;
+    if (!active || !over) return;
+    if (active.tableId !== over.tableId || active.axis !== over.axis || active.axisItemId === over.axisItemId) return;
+    moveAxisOrder(active.tableId, active.axis, active.axisItemId, over.axisItemId);
+  }
+
+  function handleDragCancel() {
+    setActiveSortableId(null);
+  }
+
   if (!activeSheet) {
     return (
       <section className="board-overview" aria-label="보드">
@@ -188,6 +262,59 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   const tables = board.tables
     .filter((table) => table.sheet_id === activeSheet.id)
     .sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name));
+
+  const boardCanvas = (
+    <div className="board-canvas">
+      {tables.length === 0 ? <p className="board-empty">이 시트에는 아직 표가 없습니다.</p> : null}
+      {tables.map((table) => (
+        <article key={table.id} className="board-table-summary">
+          <div className="board-table-heading">
+            <strong>{table.name}</strong>
+            <span>{tableOrientationLabel(table)}</span>
+          </div>
+          <div className="board-table-metrics">
+            <span>행 {axisCount(axisItems, table.id, "row")}</span>
+            <span>열 {axisCount(axisItems, table.id, "column")}</span>
+            <span>행 높이 {table.default_row_height}px</span>
+            <span>열 너비 {table.default_column_width}px</span>
+          </div>
+          <div className="board-axis-create-row">
+            {(["row", "column"] as const).map((axis) => {
+              const key = axisDraftKey(table.id, axis);
+              return (
+                <form
+                  key={axis}
+                  className="board-create-form board-axis-create-form"
+                  aria-label={`${table.name} ${axisLabels[axis]} 추가`}
+                  onSubmit={(event) => handleCreateAxisItem(event, table, axis)}
+                >
+                  <input
+                    aria-label={`${table.name} ${axisLabels[axis]} 이름`}
+                    maxLength={30}
+                    placeholder={`${axisLabels[axis]} 이름`}
+                    value={axisDrafts[key] ?? ""}
+                    onChange={(event) => handleAxisDraftChange(table.id, axis, event.currentTarget.value)}
+                  />
+                  <button disabled={pendingAxisKey === key} type="submit">
+                    {axisLabels[axis]} 추가
+                  </button>
+                </form>
+              );
+            })}
+          </div>
+          <BoardTableGrid
+            axisItems={axisItems}
+            board={board}
+            completions={completions}
+            isReorderMode={isReorderMode}
+            table={table}
+            onAxisSizeChange={handleAxisSizeChange}
+            onToggle={handleCompletionToggle}
+          />
+        </article>
+      ))}
+    </div>
+  );
 
   return (
     <section className="board-overview" aria-label="보드">
@@ -218,6 +345,16 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
         </form>
       </div>
       <div className="board-toolbar">
+        <button
+          className={`button board-reorder-button${isReorderMode ? " active" : ""}`}
+          type="button"
+          onClick={() => {
+            setActiveSortableId(null);
+            setIsReorderMode((current) => !current);
+          }}
+        >
+          {isReorderMode ? "순서 변경 완료" : "순서 변경"}
+        </button>
         <form className="board-create-form" aria-label="표 추가" onSubmit={handleCreateTable}>
           <input
             aria-label="새 표 이름"
@@ -241,55 +378,20 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
         </form>
         {formError ? <p className="board-form-error">{formError}</p> : null}
       </div>
-      <div className="board-canvas">
-        {tables.length === 0 ? <p className="board-empty">이 시트에는 아직 표가 없습니다.</p> : null}
-        {tables.map((table) => (
-          <article key={table.id} className="board-table-summary">
-            <div className="board-table-heading">
-              <strong>{table.name}</strong>
-              <span>{tableOrientationLabel(table)}</span>
-            </div>
-            <div className="board-table-metrics">
-              <span>행 {axisCount(axisItems, table.id, "row")}</span>
-              <span>열 {axisCount(axisItems, table.id, "column")}</span>
-              <span>행 높이 {table.default_row_height}px</span>
-              <span>열 너비 {table.default_column_width}px</span>
-            </div>
-            <div className="board-axis-create-row">
-              {(["row", "column"] as const).map((axis) => {
-                const key = axisDraftKey(table.id, axis);
-                return (
-                  <form
-                    key={axis}
-                    className="board-create-form board-axis-create-form"
-                    aria-label={`${table.name} ${axisLabels[axis]} 추가`}
-                    onSubmit={(event) => handleCreateAxisItem(event, table, axis)}
-                  >
-                    <input
-                      aria-label={`${table.name} ${axisLabels[axis]} 이름`}
-                      maxLength={30}
-                      placeholder={`${axisLabels[axis]} 이름`}
-                      value={axisDrafts[key] ?? ""}
-                      onChange={(event) => handleAxisDraftChange(table.id, axis, event.currentTarget.value)}
-                    />
-                    <button disabled={pendingAxisKey === key} type="submit">
-                      {axisLabels[axis]} 추가
-                    </button>
-                  </form>
-                );
-              })}
-            </div>
-            <BoardTableGrid
-              axisItems={axisItems}
-              board={board}
-              completions={completions}
-              table={table}
-              onAxisSizeChange={handleAxisSizeChange}
-              onToggle={handleCompletionToggle}
-            />
-          </article>
-        ))}
-      </div>
+      {isReorderMode ? (
+        <DndContext
+          collisionDetection={closestCenter}
+          sensors={sensors}
+          onDragCancel={handleDragCancel}
+          onDragEnd={handleDragEnd}
+          onDragStart={handleDragStart}
+        >
+          {boardCanvas}
+          <DragOverlay>{renderBoardDragOverlay(activeSortableId, axisItems)}</DragOverlay>
+        </DndContext>
+      ) : (
+        boardCanvas
+      )}
     </section>
   );
 }
@@ -298,6 +400,7 @@ function BoardTableGrid({
   axisItems,
   board,
   completions,
+  isReorderMode,
   table,
   onAxisSizeChange,
   onToggle
@@ -305,6 +408,7 @@ function BoardTableGrid({
   axisItems: BoardAxisItem[];
   board: BoardPayload;
   completions: BoardPayload["completions"];
+  isReorderMode: boolean;
   table: BoardTable;
   onAxisSizeChange: (axisItemId: string, sizePx: number) => void;
   onToggle: (patch: BoardCompletionPatch) => void;
@@ -333,29 +437,115 @@ function BoardTableGrid({
   return (
     <div className="board-check-grid" style={{ gridTemplateColumns: buildGridColumns(table, columns) }}>
       <div className="board-axis-corner" />
-      {columns.map((column) => (
-        <div key={column.id} className="board-axis-label board-column-label">
-          <span>{column.label}</span>
-          <AxisSizeInput
-            label={`${column.label} 열 너비`}
-            value={column.size_px ?? table.default_column_width}
-            onChange={(sizePx) => onAxisSizeChange(column.id, sizePx)}
+      <SortableContext
+        items={columns.map((column) => getBoardAxisSortableId(table.id, "column", column.id))}
+        strategy={horizontalListSortingStrategy}
+      >
+        {columns.map((column) => (
+          <BoardAxisLabel
+            key={column.id}
+            className="board-axis-label board-column-label"
+            isReorderMode={isReorderMode}
+            item={column}
+            tableId={table.id}
+          >
+            <span>{column.label}</span>
+            {!isReorderMode ? (
+              <AxisSizeInput
+                label={`${column.label} 열 너비`}
+                value={column.size_px ?? table.default_column_width}
+                onChange={(sizePx) => onAxisSizeChange(column.id, sizePx)}
+              />
+            ) : null}
+          </BoardAxisLabel>
+        ))}
+      </SortableContext>
+      <SortableContext
+        items={rows.map((row) => getBoardAxisSortableId(table.id, "row", row.id))}
+        strategy={verticalListSortingStrategy}
+      >
+        {rows.map((row) => (
+          <BoardGridRow
+            key={row.id}
+            columns={columns}
+            completedCells={completedCells}
+            hiddenCells={hiddenCells}
+            isReorderMode={isReorderMode}
+            onToggle={onToggle}
+            onAxisSizeChange={onAxisSizeChange}
+            row={row}
+            rowHeight={row.size_px ?? table.default_row_height}
+            tableId={table.id}
           />
-        </div>
-      ))}
-      {rows.map((row) => (
-        <BoardGridRow
-          key={row.id}
-          columns={columns}
-          completedCells={completedCells}
-          hiddenCells={hiddenCells}
-          onToggle={onToggle}
-          onAxisSizeChange={onAxisSizeChange}
-          row={row}
-          rowHeight={row.size_px ?? table.default_row_height}
-          tableId={table.id}
-        />
-      ))}
+        ))}
+      </SortableContext>
+    </div>
+  );
+}
+
+function BoardAxisLabel({
+  children,
+  className,
+  isReorderMode,
+  item,
+  style,
+  tableId
+}: {
+  children: ReactNode;
+  className: string;
+  isReorderMode: boolean;
+  item: BoardAxisItem;
+  style?: CSSProperties;
+  tableId: string;
+}) {
+  if (!isReorderMode) {
+    return (
+      <div className={className} style={style}>
+        {children}
+      </div>
+    );
+  }
+
+  return (
+    <SortableBoardAxisLabel className={className} item={item} style={style} tableId={tableId}>
+      {children}
+    </SortableBoardAxisLabel>
+  );
+}
+
+function SortableBoardAxisLabel({
+  children,
+  className,
+  item,
+  style,
+  tableId
+}: {
+  children: ReactNode;
+  className: string;
+  item: BoardAxisItem;
+  style: CSSProperties | undefined;
+  tableId: string;
+}) {
+  const sortableId = getBoardAxisSortableId(tableId, item.axis, item.id);
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: sortableId });
+  const sortableStyle: CSSProperties = {
+    ...style,
+    transform: CSS.Transform.toString(transform),
+    transition
+  };
+
+  return (
+    <div
+      className={`${className} board-sortable-axis-label${isDragging ? " dragging" : ""}`}
+      ref={setNodeRef}
+      style={sortableStyle}
+      {...attributes}
+      {...listeners}
+      aria-label={`${item.label} 순서 이동`}
+      data-board-axis-id={item.id}
+      data-board-axis={item.axis}
+    >
+      {children}
     </div>
   );
 }
@@ -364,6 +554,7 @@ function BoardGridRow({
   columns,
   completedCells,
   hiddenCells,
+  isReorderMode,
   onAxisSizeChange,
   onToggle,
   row,
@@ -373,6 +564,7 @@ function BoardGridRow({
   columns: BoardAxisItem[];
   completedCells: Set<string>;
   hiddenCells: Set<string>;
+  isReorderMode: boolean;
   onAxisSizeChange: (axisItemId: string, sizePx: number) => void;
   onToggle: (patch: BoardCompletionPatch) => void;
   row: BoardAxisItem;
@@ -381,14 +573,22 @@ function BoardGridRow({
 }) {
   return (
     <>
-      <div className="board-axis-label board-row-label" style={{ minHeight: `${rowHeight}px` }}>
+      <BoardAxisLabel
+        className="board-axis-label board-row-label"
+        isReorderMode={isReorderMode}
+        item={row}
+        style={{ minHeight: `${rowHeight}px` }}
+        tableId={tableId}
+      >
         <span>{row.label}</span>
-        <AxisSizeInput
-          label={`${row.label} 행 높이`}
-          value={row.size_px ?? rowHeight}
-          onChange={(sizePx) => onAxisSizeChange(row.id, sizePx)}
-        />
-      </div>
+        {!isReorderMode ? (
+          <AxisSizeInput
+            label={`${row.label} 행 높이`}
+            value={row.size_px ?? rowHeight}
+            onChange={(sizePx) => onAxisSizeChange(row.id, sizePx)}
+          />
+        ) : null}
+      </BoardAxisLabel>
       {columns.map((column) => {
         const key = cellKey(row.id, column.id);
         const taskColor = getTaskColor(row, column);
@@ -424,6 +624,15 @@ function BoardGridRow({
       })}
     </>
   );
+}
+
+function renderBoardDragOverlay(activeSortableId: string | null, axisItems: BoardAxisItem[]) {
+  if (!activeSortableId) return null;
+  const active = parseBoardAxisSortableId(activeSortableId);
+  if (!active) return null;
+  const item = axisItems.find((axisItem) => axisItem.id === active.axisItemId);
+  if (!item) return null;
+  return <div className="board-drag-overlay">{item.label}</div>;
 }
 
 function AxisSizeInput({
