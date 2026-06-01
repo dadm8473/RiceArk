@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createTaskSchema, taskOrderSchema } from "./tasks";
+import { createTaskSchema, taskIdParamSchema, taskOrderSchema, updateTaskSchema } from "./tasks";
 
 describe("taskOrderSchema", () => {
   it("accepts ordered task ids", () => {
@@ -22,5 +22,32 @@ describe("createTaskSchema", () => {
 
   it("rejects roster as a special task scope", () => {
     expect(createTaskSchema.safeParse({ name: "세르카", scope: "roster", resetType: "daily" }).success).toBe(false);
+  });
+});
+
+describe("updateTaskSchema", () => {
+  it("accepts editable task name and reset type", () => {
+    expect(updateTaskSchema.parse({ name: "에브니 큐브", resetType: "weekly" })).toMatchObject({
+      name: "에브니 큐브",
+      resetType: "weekly"
+    });
+  });
+
+  it("rejects empty task names", () => {
+    expect(updateTaskSchema.safeParse({ name: "", resetType: "daily" }).success).toBe(false);
+  });
+
+  it("rejects whitespace-only task names", () => {
+    expect(updateTaskSchema.safeParse({ name: "   ", resetType: "daily" }).success).toBe(false);
+  });
+});
+
+describe("taskIdParamSchema", () => {
+  it("accepts non-empty task ids", () => {
+    expect(taskIdParamSchema.safeParse({ id: "task-1" }).success).toBe(true);
+  });
+
+  it("rejects empty task ids", () => {
+    expect(taskIdParamSchema.safeParse({ id: "" }).success).toBe(false);
   });
 });

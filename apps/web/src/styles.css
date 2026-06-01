@@ -183,6 +183,28 @@ body {
   color: #111827;
 }
 
+.matrix-label-button {
+  border-top: 0;
+  border-left: 0;
+  border-bottom: 0;
+  border-radius: 0;
+  background: #ffffff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.matrix-label-button:hover {
+  background: #f6f8fb;
+}
+
+.matrix-header .matrix-label-button {
+  background: transparent;
+}
+
+.matrix-header .matrix-label-button:hover {
+  background: #dde6f2;
+}
+
 .matrix-task-cell {
   align-items: flex-start;
   flex-direction: column;
@@ -346,6 +368,53 @@ body {
   padding: 12px;
 }
 
+.edit-modal {
+  width: min(520px, 100%);
+}
+
+.edit-form {
+  display: grid;
+  gap: 12px;
+}
+
+.edit-form label {
+  display: grid;
+  gap: 6px;
+  color: #2f3a4b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.edit-form input,
+.edit-form select,
+.edit-form textarea {
+  min-height: 36px;
+  border: 1px solid #8a96a8;
+  border-radius: 6px;
+  padding: 0 8px;
+  color: #111827;
+  background: #ffffff;
+  font: inherit;
+}
+
+.edit-form textarea {
+  min-height: 76px;
+  padding: 8px;
+  resize: vertical;
+}
+
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.danger-button {
+  border-color: #b42318;
+  color: #b42318;
+}
+
 .tool-panel {
   border: 1px solid #b7c1cf;
   border-radius: 8px;
@@ -420,55 +489,6 @@ button {
   color: #ffffff;
 }
 
-.alias-list {
-  margin-top: 14px;
-  border-top: 1px solid #d9e0ea;
-  padding-top: 12px;
-}
-
-.alias-list h3 {
-  margin: 0 0 10px;
-  font-size: 14px;
-}
-
-.alias-grid {
-  display: grid;
-  gap: 8px;
-}
-
-.alias-row {
-  display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(120px, 180px) auto;
-  gap: 8px;
-  align-items: center;
-}
-
-.alias-row div {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.alias-row strong,
-.alias-row small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.alias-row small {
-  color: #2f3a4b;
-}
-
-.alias-row input {
-  min-height: 34px;
-  min-width: 0;
-  border: 1px solid #8a96a8;
-  border-radius: 6px;
-  padding: 0 8px;
-}
-
 @media (max-width: 560px) {
   .topbar {
     align-items: flex-start;
@@ -523,7 +543,4 @@ button {
     min-width: 620px;
   }
 
-  .alias-row {
-    grid-template-columns: 1fr;
-  }
 }

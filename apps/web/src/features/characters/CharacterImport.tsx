@@ -1,7 +1,6 @@
 import { Search, UserPlus } from "lucide-react";
 import { useState } from "react";
-import { apiGet, apiPatch, apiPost } from "../../api/client";
-import type { DashboardCharacter } from "../dashboard/types";
+import { apiGet, apiPost } from "../../api/client";
 
 interface Candidate {
   name: string;
@@ -50,8 +49,6 @@ export function CharacterCandidateList({ candidates, selected, onToggle }: Chara
 interface CharacterImportPanelProps {
   name: string;
   candidates: Candidate[];
-  existingCharacters?: DashboardCharacter[];
-  displayNames?: Record<string, string>;
   selected: Record<string, boolean>;
   message?: string | null;
   searching?: boolean;
@@ -60,15 +57,11 @@ interface CharacterImportPanelProps {
   onSearch: () => void;
   onSave: () => void;
   onToggle: (key: string, checked: boolean) => void;
-  onDisplayNameChange?: (characterId: string, displayName: string) => void;
-  onDisplayNameSave?: (characterId: string) => void;
 }
 
 export function CharacterImportPanel({
   name,
   candidates,
-  existingCharacters = [],
-  displayNames = {},
   selected,
   message,
   searching = false,
@@ -76,9 +69,7 @@ export function CharacterImportPanel({
   onNameChange,
   onSearch,
   onSave,
-  onToggle,
-  onDisplayNameChange,
-  onDisplayNameSave
+  onToggle
 }: CharacterImportPanelProps) {
   return (
     <section className="tool-panel">
@@ -97,48 +88,14 @@ export function CharacterImportPanel({
       </div>
       {message ? <p className="notice-text">{message}</p> : null}
       <CharacterCandidateList candidates={candidates} selected={selected} onToggle={onToggle} />
-      {existingCharacters.length > 0 ? (
-        <section className="alias-list">
-          <h3>축약 이름</h3>
-          <div className="alias-grid">
-            {existingCharacters.map((character) => (
-              <div className="alias-row" key={character.id}>
-                <div>
-                  <strong>{character.name}</strong>
-                  <small>
-                    {character.server_name} / {character.class_name} / {character.item_level}
-                  </small>
-                </div>
-                <input
-                  aria-label={`${character.name} 축약 이름`}
-                  maxLength={20}
-                  placeholder={character.name}
-                  value={displayNames[character.id] ?? character.display_name ?? ""}
-                  onChange={(event) => onDisplayNameChange?.(character.id, event.target.value)}
-                />
-                <button type="button" onClick={() => onDisplayNameSave?.(character.id)}>
-                  저장
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
     </section>
   );
 }
 
-interface CharacterImportProps {
-  existingCharacters?: DashboardCharacter[];
-}
-
-export function CharacterImport({ existingCharacters = [] }: CharacterImportProps) {
+export function CharacterImport() {
   const [name, setName] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [displayNames, setDisplayNames] = useState<Record<string, string>>(() =>
-    Object.fromEntries(existingCharacters.map((character) => [character.id, character.display_name ?? ""]))
-  );
   const [message, setMessage] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -176,22 +133,9 @@ export function CharacterImport({ existingCharacters = [] }: CharacterImportProp
     }
   }
 
-  async function saveDisplayName(characterId: string) {
-    try {
-      await apiPatch(`/api/characters/${characterId}/display-name`, {
-        displayName: displayNames[characterId] ?? ""
-      });
-      window.location.reload();
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "축약 이름 저장에 실패했습니다.");
-    }
-  }
-
   return (
     <CharacterImportPanel
       candidates={candidates}
-      displayNames={displayNames}
-      existingCharacters={existingCharacters}
       message={message}
       name={name}
       saving={saving}
@@ -201,10 +145,6 @@ export function CharacterImport({ existingCharacters = [] }: CharacterImportProp
       onSave={() => void save()}
       onSearch={() => void search()}
       onToggle={(key, checked) => setSelected((current) => ({ ...current, [key]: checked }))}
-      onDisplayNameChange={(characterId, displayName) =>
-        setDisplayNames((current) => ({ ...current, [characterId]: displayName }))
-      }
-      onDisplayNameSave={(characterId) => void saveDisplayName(characterId)}
     />
   );
 }

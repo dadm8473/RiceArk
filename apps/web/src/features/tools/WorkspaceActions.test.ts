@@ -8,7 +8,6 @@ describe("WorkspaceActions", () => {
     const html = renderToStaticMarkup(
       createElement(WorkspaceActions, {
         activeTool: null,
-        characters: [],
         checklistOrientation: "tasks_rows",
         onChecklistOrientationChange: vi.fn(),
         onOpen: vi.fn(),
@@ -28,7 +27,6 @@ describe("WorkspaceActions", () => {
     const html = renderToStaticMarkup(
       createElement(WorkspaceActions, {
         activeTool: "characters",
-        characters: [],
         checklistOrientation: "tasks_rows",
         onChecklistOrientationChange: vi.fn(),
         onOpen: vi.fn(),

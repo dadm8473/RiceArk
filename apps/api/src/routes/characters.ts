@@ -2,7 +2,13 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 import { requireUser } from "../auth/requireUser";
-import { reorderCharacters, saveSelectedCharacters, updateCharacterDisplayName } from "../db/characters";
+import {
+  deleteCharacter,
+  reorderCharacters,
+  saveSelectedCharacters,
+  updateCharacterDetails,
+  updateCharacterDisplayName
+} from "../db/characters";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
 import { searchRosterCharacters } from "../lostark/client";
@@ -11,6 +17,23 @@ export const characterRoutes = new Hono<{ Bindings: Env }>();
 
 export const characterDisplayNameSchema = z.object({
   displayName: z.string().max(20).nullable()
+});
+
+const editableCharacterText = (max: number) => z.string().trim().min(1).max(max);
+
+export const characterDetailsSchema = z
+  .object({
+    displayName: z.string().max(20).nullable(),
+    serverName: editableCharacterText(20),
+    className: editableCharacterText(30),
+    itemLevel: editableCharacterText(20),
+    combatPower: z.string().min(1).max(30).nullable(),
+    memo: z.string().max(200).nullable()
+  })
+  .strict();
+
+export const characterIdParamSchema = z.object({
+  id: z.string().min(1)
 });
 
 function hasDuplicates(values: string[]): boolean {
@@ -50,15 +73,52 @@ characterRoutes.patch(
 );
 
 characterRoutes.patch(
+  "/characters/:id",
+  zValidator("param", characterIdParamSchema),
+  zValidator("json", characterDetailsSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    const { id } = c.req.valid("param");
+    const input = c.req.valid("json");
+    const normalized = {
+      ...input,
+      displayName: input.displayName?.trim() ? input.displayName.trim() : null,
+      serverName: input.serverName.trim(),
+      className: input.className.trim(),
+      itemLevel: input.itemLevel.trim(),
+      combatPower: input.combatPower?.trim() ? input.combatPower.trim() : null,
+      memo: input.memo?.trim() ? input.memo.trim() : null
+    };
+    const updated = await updateCharacterDetails(c.env, user.id, id, normalized);
+    if (!updated) throw new ApiError(404, "character_not_found", "Character not found");
+    return c.json({ ok: true });
+  }
+);
+
+characterRoutes.patch(
   "/characters/:id/display-name",
+  zValidator("param", characterIdParamSchema),
   zValidator("json", characterDisplayNameSchema),
   async (c) => {
     const user = await requireUser(c);
     const { displayName } = c.req.valid("json");
     const normalized = displayName?.trim() ? displayName.trim() : null;
-    const updated = await updateCharacterDisplayName(c.env, user.id, c.req.param("id"), normalized);
+    const { id } = c.req.valid("param");
+    const updated = await updateCharacterDisplayName(c.env, user.id, id, normalized);
     if (!updated) throw new ApiError(404, "character_not_found", "Character not found");
     return c.json({ ok: true });
+  }
+);
+
+characterRoutes.delete(
+  "/characters/:id",
+  zValidator("param", characterIdParamSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    const { id } = c.req.valid("param");
+    const deleted = await deleteCharacter(c.env, user.id, id);
+    if (!deleted) throw new ApiError(404, "character_not_found", "Character not found");
+    return c.body(null, 204);
   }
 );
 

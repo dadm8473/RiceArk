@@ -52,7 +52,6 @@ export function App() {
           <>
             <WorkspaceActions
               activeTool={activeTool}
-              characters={data.characters}
               checklistOrientation={data.settings.checklist_orientation}
               onChecklistOrientationChange={(orientation) => void handleChecklistOrientationChange(orientation)}
               onClose={() => setActiveTool(null)}

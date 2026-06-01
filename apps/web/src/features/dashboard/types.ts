@@ -6,6 +6,7 @@ export interface DashboardCharacter {
   class_name: string;
   item_level: string;
   combat_power: string | null;
+  memo?: string | null;
 }
 
 export interface DashboardTask {

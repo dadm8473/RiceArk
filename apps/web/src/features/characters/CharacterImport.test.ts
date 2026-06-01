@@ -88,25 +88,12 @@ describe("CharacterImportPanel", () => {
     expect(html).not.toContain("<h2");
   });
 
-  it("renders optional display name controls for existing characters", () => {
+  it("does not edit existing character display names inside the import panel", () => {
     const html = renderToStaticMarkup(
       createElement(CharacterImportPanel, {
         name: "",
         candidates: [],
         selected: {},
-        existingCharacters: [
-          {
-            id: "character-1",
-            name: "냠수나이스1",
-            display_name: "냠1",
-            server_name: "루페온",
-            class_name: "소서리스",
-            item_level: "1,640.00",
-            combat_power: "2,549.41"
-          }
-        ],
-        onDisplayNameChange: vi.fn(),
-        onDisplayNameSave: vi.fn(),
         onNameChange: vi.fn(),
         onSearch: vi.fn(),
         onSave: vi.fn(),
@@ -114,8 +101,7 @@ describe("CharacterImportPanel", () => {
       })
     );
 
-    expect(html).toContain("축약 이름");
-    expect(html).toContain("냠수나이스1");
-    expect(html).toContain("냠1");
+    expect(html).not.toContain("축약 이름");
+    expect(html).not.toContain("냠1");
   });
 });

@@ -20,7 +20,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import type { CSSProperties, Dispatch, ReactNode, SetStateAction } from "react";
 import { useRef, useState } from "react";
-import { apiPatch } from "../../api/client";
+import { apiDelete, apiPatch } from "../../api/client";
 import { getSortableItemId, moveItem, parseSortableItemId, type ReorderKind } from "./reorder";
 import { useCompletionQueue } from "./useCompletionQueue";
 import type { DashboardCharacter, DashboardPayload, DashboardTask } from "./types";
@@ -79,6 +79,8 @@ export function ChecklistMatrix({ dashboard }: Props) {
   );
   const [isReorderMode, setIsReorderMode] = useState(false);
   const [activeSortableId, setActiveSortableId] = useState<string | null>(null);
+  const [editingCharacter, setEditingCharacter] = useState<DashboardCharacter | null>(null);
+  const [editingTask, setEditingTask] = useState<DashboardTask | null>(null);
   const taskOrderRef = useRef(taskOrder);
   const characterOrderRef = useRef(characterOrder);
   const orientation = dashboard.settings.checklist_orientation ?? "tasks_rows";
@@ -143,6 +145,8 @@ export function ChecklistMatrix({ dashboard }: Props) {
       isReorderMode={isReorderMode}
       setChecked={setChecked}
       tasks={orderedTasks}
+      onEditCharacter={setEditingCharacter}
+      onEditTask={setEditingTask}
       onToggle={enqueue}
     />
   ) : (
@@ -153,6 +157,8 @@ export function ChecklistMatrix({ dashboard }: Props) {
       isReorderMode={isReorderMode}
       setChecked={setChecked}
       tasks={orderedTasks}
+      onEditCharacter={setEditingCharacter}
+      onEditTask={setEditingTask}
       onToggle={enqueue}
     />
   );
@@ -185,6 +191,10 @@ export function ChecklistMatrix({ dashboard }: Props) {
       ) : (
         matrix
       )}
+      {editingCharacter ? (
+        <CharacterEditModal character={editingCharacter} onClose={() => setEditingCharacter(null)} />
+      ) : null}
+      {editingTask ? <TaskEditModal task={editingTask} onClose={() => setEditingTask(null)} /> : null}
     </div>
   );
 }
@@ -197,6 +207,8 @@ interface MatrixRendererProps {
   isReorderMode: boolean;
   setChecked: Dispatch<SetStateAction<Record<string, boolean>>>;
   onToggle: (patch: { taskId: string; characterId: string | null; periodKey: string; completed: boolean }) => void;
+  onEditCharacter?: (character: DashboardCharacter) => void;
+  onEditTask?: (task: DashboardTask) => void;
 }
 
 interface LabelCellProps {
@@ -206,10 +218,18 @@ interface LabelCellProps {
   isReorderMode: boolean;
   kind: ReorderKind;
   label: string;
+  onEdit?: () => void;
 }
 
-function LabelCell({ children, className, id, isReorderMode, kind, label }: LabelCellProps) {
+function LabelCell({ children, className, id, isReorderMode, kind, label, onEdit }: LabelCellProps) {
   if (!isReorderMode) {
+    if (onEdit) {
+      return (
+        <button className={`${className} matrix-label-button`} type="button" aria-label={`${label} 편집`} onClick={onEdit}>
+          {children}
+        </button>
+      );
+    }
     return <div className={className}>{children}</div>;
   }
 
@@ -251,7 +271,7 @@ function TaskLabelContent({ task }: { task: DashboardTask }) {
       <span className="matrix-label-line">
         <span>{task.name}</span>
       </span>
-      <small>{task.reset_type}</small>
+      <small>{getResetTypeLabel(task.reset_type)}</small>
     </>
   );
 }
@@ -272,6 +292,159 @@ function CharacterLabelContent({
       </span>
       <small>{character.item_level}</small>
     </>
+  );
+}
+
+function getResetTypeLabel(resetType: DashboardTask["reset_type"]): string {
+  return resetType === "daily" ? "일간" : resetType === "weekly" ? "주간" : resetType === "biweekly" ? "격주간" : "커스텀";
+}
+
+function CharacterEditModal({ character, onClose }: { character: DashboardCharacter; onClose: () => void }) {
+  const [displayName, setDisplayName] = useState(character.display_name ?? "");
+  const [serverName, setServerName] = useState(character.server_name);
+  const [className, setClassName] = useState(character.class_name);
+  const [itemLevel, setItemLevel] = useState(character.item_level);
+  const [combatPower, setCombatPower] = useState(character.combat_power ?? "");
+  const [memo, setMemo] = useState(character.memo ?? "");
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function save() {
+    try {
+      await apiPatch(`/api/characters/${character.id}`, {
+        displayName,
+        serverName,
+        className,
+        itemLevel,
+        combatPower: combatPower.trim() ? combatPower : null,
+        memo: memo.trim() ? memo : null
+      });
+      window.location.reload();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "캐릭터 저장에 실패했습니다.");
+    }
+  }
+
+  async function remove() {
+    try {
+      await apiDelete(`/api/characters/${character.id}`);
+      window.location.reload();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "캐릭터 삭제에 실패했습니다.");
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <section className="tool-modal edit-modal">
+        <div className="tool-modal-header">
+          <h2>캐릭터 수정</h2>
+          <button type="button" onClick={onClose}>
+            닫기
+          </button>
+        </div>
+        <div className="tool-modal-body edit-form">
+          <label>
+            캐릭터 이름
+            <input readOnly value={character.name} />
+          </label>
+          <label>
+            축약 이름
+            <input maxLength={20} placeholder={character.name} value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+          </label>
+          <label>
+            서버
+            <input maxLength={20} value={serverName} onChange={(event) => setServerName(event.target.value)} />
+          </label>
+          <label>
+            직업
+            <input maxLength={30} value={className} onChange={(event) => setClassName(event.target.value)} />
+          </label>
+          <label>
+            레벨
+            <input maxLength={20} value={itemLevel} onChange={(event) => setItemLevel(event.target.value)} />
+          </label>
+          <label>
+            전투력
+            <input maxLength={30} value={combatPower} onChange={(event) => setCombatPower(event.target.value)} />
+          </label>
+          <label>
+            메모
+            <textarea maxLength={200} value={memo} onChange={(event) => setMemo(event.target.value)} />
+          </label>
+          {message ? <p className="error-text">{message}</p> : null}
+          <div className="edit-actions">
+            <button type="button" onClick={() => void save()}>
+              저장
+            </button>
+            <button className="danger-button" type="button" onClick={() => void remove()}>
+              삭제
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function TaskEditModal({ task, onClose }: { task: DashboardTask; onClose: () => void }) {
+  const [name, setName] = useState(task.name);
+  const [resetType, setResetType] = useState<DashboardTask["reset_type"]>(task.reset_type);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function save() {
+    try {
+      await apiPatch(`/api/tasks/${task.id}`, { name, resetType });
+      window.location.reload();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "숙제 저장에 실패했습니다.");
+    }
+  }
+
+  async function remove() {
+    try {
+      await apiDelete(`/api/tasks/${task.id}`);
+      window.location.reload();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "숙제 삭제에 실패했습니다.");
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <section className="tool-modal edit-modal">
+        <div className="tool-modal-header">
+          <h2>숙제 수정</h2>
+          <button type="button" onClick={onClose}>
+            닫기
+          </button>
+        </div>
+        <div className="tool-modal-body edit-form">
+          <label>
+            이름
+            <input maxLength={40} value={name} onChange={(event) => setName(event.target.value)} />
+          </label>
+          <label>
+            초기화 기간
+            <select value={resetType} onChange={(event) => setResetType(event.target.value as DashboardTask["reset_type"])}>
+              <option value="daily">일간</option>
+              <option value="weekly">주간</option>
+              <option value="biweekly">격주간</option>
+              <option value="custom">커스텀</option>
+            </select>
+          </label>
+          <p className="notice-text">현재 설정: {getResetTypeLabel(task.reset_type)}</p>
+          {message ? <p className="error-text">{message}</p> : null}
+          <div className="edit-actions">
+            <button type="button" onClick={() => void save()}>
+              저장
+            </button>
+            <button className="danger-button" type="button" onClick={() => void remove()}>
+              삭제
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -307,7 +480,9 @@ function TaskRowsMatrix({
   checked,
   isReorderMode,
   setChecked,
-  onToggle
+  onToggle,
+  onEditCharacter,
+  onEditTask
 }: MatrixRendererProps) {
   const columns = characters;
   const rowStyle = {
@@ -327,6 +502,7 @@ function TaskRowsMatrix({
         key={column.id}
         kind="character"
         label={getCharacterLabel(column)}
+        onEdit={() => onEditCharacter?.(column)}
       >
         <CharacterLabelContent character={column} isReorderMode={isReorderMode} />
       </LabelCell>
@@ -337,7 +513,14 @@ function TaskRowsMatrix({
     const periodKey = getTaskPeriodKey(task);
     return (
       <div className="matrix-row" key={task.id} style={rowStyle}>
-        <LabelCell className="matrix-task-cell" id={task.id} isReorderMode={isReorderMode} kind="task" label={task.name}>
+        <LabelCell
+          className="matrix-task-cell"
+          id={task.id}
+          isReorderMode={isReorderMode}
+          kind="task"
+          label={task.name}
+          onEdit={() => onEditTask?.(task)}
+        >
           <TaskLabelContent task={task} />
         </LabelCell>
         {columns.map((column) => {
@@ -393,7 +576,9 @@ function TaskColumnsMatrix({
   checked,
   isReorderMode,
   setChecked,
-  onToggle
+  onToggle,
+  onEditCharacter,
+  onEditTask
 }: MatrixRendererProps) {
   const rows = characters;
   const rowStyle = {
@@ -412,6 +597,7 @@ function TaskColumnsMatrix({
       key={task.id}
       kind="task"
       label={task.name}
+      onEdit={() => onEditTask?.(task)}
     >
       <TaskLabelContent task={task} />
     </LabelCell>
@@ -427,6 +613,7 @@ function TaskColumnsMatrix({
           isReorderMode={isReorderMode}
           kind="character"
           label={getCharacterLabel(row)}
+          onEdit={() => onEditCharacter?.(row)}
         >
           <CharacterLabelContent character={row} isReorderMode={isReorderMode} />
         </LabelCell>

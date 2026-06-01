@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { characterDisplayNameSchema, characterOrderSchema } from "./characters";
+import { characterDetailsSchema, characterDisplayNameSchema, characterIdParamSchema, characterOrderSchema } from "./characters";
 
 describe("characterDisplayNameSchema", () => {
   it("accepts optional compact display names", () => {
@@ -13,6 +13,53 @@ describe("characterDisplayNameSchema", () => {
   });
 });
 
+describe("characterDetailsSchema", () => {
+  it("accepts editable character details except the character name", () => {
+    expect(
+      characterDetailsSchema.parse({
+        displayName: "냠1",
+        serverName: "루페온",
+        className: "소서리스",
+        itemLevel: "1,640.00",
+        combatPower: "2,549.41",
+        memo: "상아탑 고정"
+      })
+    ).toMatchObject({
+      displayName: "냠1",
+      serverName: "루페온",
+      className: "소서리스",
+      itemLevel: "1,640.00",
+      combatPower: "2,549.41",
+      memo: "상아탑 고정"
+    });
+  });
+
+  it("does not accept character name edits", () => {
+    expect(
+      characterDetailsSchema.safeParse({
+        name: "다른이름",
+        displayName: "냠1",
+        serverName: "루페온",
+        className: "소서리스",
+        itemLevel: "1,640.00"
+      }).success
+    ).toBe(false);
+  });
+
+  it("rejects blank required editable details", () => {
+    expect(
+      characterDetailsSchema.safeParse({
+        displayName: null,
+        serverName: " ",
+        className: "소서리스",
+        itemLevel: "1,640.00",
+        combatPower: null,
+        memo: null
+      }).success
+    ).toBe(false);
+  });
+});
+
 describe("characterOrderSchema", () => {
   it("accepts ordered character ids", () => {
     expect(characterOrderSchema.safeParse({ characterIds: ["character-a", "character-b"] }).success).toBe(true);
@@ -20,5 +67,15 @@ describe("characterOrderSchema", () => {
 
   it("rejects duplicate character ids", () => {
     expect(characterOrderSchema.safeParse({ characterIds: ["character-a", "character-a"] }).success).toBe(false);
+  });
+});
+
+describe("characterIdParamSchema", () => {
+  it("accepts non-empty character ids", () => {
+    expect(characterIdParamSchema.safeParse({ id: "character-1" }).success).toBe(true);
+  });
+
+  it("rejects empty character ids", () => {
+    expect(characterIdParamSchema.safeParse({ id: "" }).success).toBe(false);
   });
 });

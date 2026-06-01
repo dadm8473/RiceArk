@@ -46,6 +46,57 @@ export async function updateCharacterDisplayName(
   return (result.meta.changes ?? 0) > 0;
 }
 
+export async function updateCharacterDetails(
+  env: Env,
+  userId: string,
+  characterId: string,
+  input: {
+    displayName: string | null;
+    serverName: string;
+    className: string;
+    itemLevel: string;
+    combatPower: string | null;
+    memo: string | null;
+  }
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE characters
+     SET display_name = ?,
+         server_name = ?,
+         class_name = ?,
+         item_level = ?,
+         combat_power = ?,
+         memo = ?,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL`
+  )
+    .bind(
+      input.displayName,
+      input.serverName,
+      input.className,
+      input.itemLevel,
+      input.combatPower,
+      input.memo,
+      characterId,
+      userId
+    )
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+export async function deleteCharacter(env: Env, userId: string, characterId: string): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE characters
+     SET enabled = 0,
+         deleted_at = CURRENT_TIMESTAMP,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL`
+  )
+    .bind(characterId, userId)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
 export async function reorderCharacters(env: Env, userId: string, characterIds: string[]): Promise<boolean> {
   if (characterIds.length === 0) return true;
 

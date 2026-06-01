@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiGet, apiPostNoContent } from "./client";
+import { apiDelete, apiGet, apiPostNoContent } from "./client";
 
 describe("api client", () => {
   afterEach(() => {
@@ -32,6 +32,17 @@ describe("api client", () => {
     await expect(apiPostNoContent("/api/auth/logout")).resolves.toBeUndefined();
     expect(fetchMock).toHaveBeenCalledWith("/api/auth/logout", {
       method: "POST",
+      credentials: "include"
+    });
+  });
+
+  it("sends DELETE requests with credentials", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(apiDelete("/api/characters/character-1")).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith("/api/characters/character-1", {
+      method: "DELETE",
       credentials: "include"
     });
   });

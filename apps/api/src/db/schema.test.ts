@@ -16,6 +16,7 @@ describe("D1 schema", () => {
       "characters",
       "tasks",
       "task_orders",
+      "task_overrides",
       "completions",
       "user_settings",
       "rate_limit_events"
@@ -32,6 +33,10 @@ describe("D1 schema", () => {
     expect(migration).toContain("combat_power TEXT");
   });
 
+  it("stores user-managed character memo text", () => {
+    expect(migration).toContain("memo TEXT");
+  });
+
   it("stores board foundation presentation settings", () => {
     expect(migration).toContain("display_name TEXT");
     expect(migration).toContain("checklist_orientation TEXT");
@@ -40,5 +45,11 @@ describe("D1 schema", () => {
   it("stores per-user task ordering without mutating shared templates", () => {
     expect(migration).toContain("CREATE TABLE IF NOT EXISTS task_orders");
     expect(migration).toContain("PRIMARY KEY (user_id, task_id)");
+  });
+
+  it("stores per-user task edits without mutating shared templates", () => {
+    expect(migration).toContain("CREATE TABLE IF NOT EXISTS task_overrides");
+    expect(migration).toContain("PRIMARY KEY (user_id, task_id)");
+    expect(migration).toContain("reset_rule_json TEXT");
   });
 });

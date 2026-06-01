@@ -8,13 +8,25 @@ export async function loadDashboard(env: Env, userId: string) {
       .bind(userId)
       .all(),
     env.DB.prepare(
-      `SELECT tasks.*
+      `SELECT tasks.id,
+              tasks.user_id,
+              COALESCE(task_overrides.name, tasks.name) AS name,
+              tasks.scope,
+              COALESCE(task_overrides.reset_type, tasks.reset_type) AS reset_type,
+              COALESCE(task_overrides.reset_rule_json, tasks.reset_rule_json) AS reset_rule_json,
+              tasks.sort_order,
+              tasks.enabled,
+              tasks.is_template,
+              tasks.created_at,
+              tasks.updated_at
        FROM tasks
        LEFT JOIN task_orders ON task_orders.task_id = tasks.id AND task_orders.user_id = ?
+       LEFT JOIN task_overrides ON task_overrides.task_id = tasks.id AND task_overrides.user_id = ?
        WHERE (tasks.user_id = ? OR tasks.is_template = 1) AND tasks.enabled = 1
-       ORDER BY COALESCE(task_orders.sort_order, tasks.sort_order), tasks.name`
+         AND COALESCE(task_overrides.enabled, 1) = 1
+       ORDER BY COALESCE(task_orders.sort_order, tasks.sort_order), COALESCE(task_overrides.name, tasks.name)`
     )
-      .bind(userId, userId)
+      .bind(userId, userId, userId)
       .all(),
     env.DB.prepare("SELECT task_id, character_id, period_key, completed FROM completions WHERE user_id = ?")
       .bind(userId)

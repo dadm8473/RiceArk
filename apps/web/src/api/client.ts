@@ -62,3 +62,11 @@ export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   if (!response.ok) throw await buildApiError(response, `PATCH ${path} failed`);
   return response.json() as Promise<T>;
 }
+
+export async function apiDelete(path: string): Promise<void> {
+  const response = await fetch(path, {
+    method: "DELETE",
+    credentials: "include"
+  });
+  if (!response.ok) throw await buildApiError(response, `DELETE ${path} failed`);
+}
