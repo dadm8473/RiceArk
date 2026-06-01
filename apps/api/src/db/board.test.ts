@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SHEET_NAME,
   DEFAULT_TABLE_NAME,
+  buildBoardCompletionPatchesFromLegacy,
   buildDefaultAxisItemSeeds,
   defaultBoardRolesForOrientation,
   defaultOrientationForTableRoles,
@@ -79,7 +80,7 @@ describe("board db defaults", () => {
         characters: [{ id: "character-a", name: "냠수나이스1", sortOrder: 10 }]
       })
     ).toMatchObject([
-      { axis: "row", kind: "task", taskId: "task-a", label: "쿠르잔 전선", sortOrder: 0 },
+      { axis: "row", kind: "task", taskId: "task-a", label: "쿠르잔 전선", sortOrder: 0, taskColor: "#2563eb" },
       { axis: "column", kind: "character", characterId: "character-a", label: "냠수나이스1", sortOrder: 0 }
     ]);
   });
@@ -103,6 +104,46 @@ describe("board db defaults", () => {
     ).toMatchObject([
       { axis: "row", kind: "character", characterId: "character-a", label: "냠수나이스1", sortOrder: 0 },
       { axis: "column", kind: "task", taskId: "task-a", label: "쿠르잔 전선", sortOrder: 0 }
+    ]);
+  });
+
+  it("maps legacy task-character completions to board row and column item ids", () => {
+    expect(
+      buildBoardCompletionPatchesFromLegacy({
+        tableId: "table-1",
+        axisItems: [
+          {
+            id: "row-task-1",
+            axis: "row",
+            kind: "task",
+            taskId: "task-1",
+            characterId: null
+          },
+          {
+            id: "column-character-1",
+            axis: "column",
+            kind: "character",
+            taskId: null,
+            characterId: "character-1"
+          }
+        ],
+        completions: [
+          {
+            taskId: "task-1",
+            characterId: "character-1",
+            periodKey: "daily:2026-06-01",
+            completed: true
+          }
+        ]
+      })
+    ).toEqual([
+      {
+        tableId: "table-1",
+        rowItemId: "row-task-1",
+        columnItemId: "column-character-1",
+        periodKey: "daily:2026-06-01",
+        completed: true
+      }
     ]);
   });
 });

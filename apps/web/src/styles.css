@@ -189,6 +189,66 @@ body {
   background: #ffffff;
 }
 
+.board-check-grid {
+  display: grid;
+  align-items: stretch;
+  overflow: auto;
+  width: max-content;
+  max-width: 100%;
+  margin-top: 10px;
+  border-top: 1px solid #d2d9e4;
+}
+
+.board-axis-corner,
+.board-axis-label,
+.board-check-cell {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  color: #111827;
+}
+
+.board-axis-corner,
+.board-column-label {
+  min-height: 30px;
+  border-bottom: 1px solid #c6cfdd;
+  background: #edf2f8;
+}
+
+.board-column-label,
+.board-row-label {
+  overflow: hidden;
+  padding: 4px 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board-row-label {
+  justify-content: flex-start;
+  border-right: 1px solid #d2d9e4;
+  border-bottom: 1px solid #d2d9e4;
+  font-size: 13px;
+}
+
+.board-check-cell {
+  justify-content: center;
+  border-bottom: 1px solid #edf1f6;
+}
+
+.board-check {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--task-color, #2563eb);
+}
+
+.board-check-placeholder {
+  width: 18px;
+  height: 18px;
+  border: 1px dashed #c6cfdd;
+  background: #f8fafc;
+}
+
 .board-table-heading {
   display: flex;
   align-items: baseline;

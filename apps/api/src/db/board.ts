@@ -28,6 +28,21 @@ export interface BoardCompletionPatch {
   completed: boolean;
 }
 
+export interface BoardAxisItemForCompletionMapping {
+  id: string;
+  axis: BoardAxis;
+  kind: "character" | "task" | "custom";
+  taskId: string | null;
+  characterId: string | null;
+}
+
+export interface LegacyCompletionSource {
+  taskId: string;
+  characterId: string | null;
+  periodKey: string;
+  completed: boolean;
+}
+
 export interface DefaultBoardTaskSource {
   id: string;
   name: string;
@@ -52,8 +67,11 @@ export interface DefaultAxisItemSeed {
   taskScope: "character" | "roster" | null;
   taskResetType: "daily" | "weekly" | "biweekly" | "custom" | null;
   taskResetRuleJson: string | null;
+  taskColor: string | null;
   sortOrder: number;
 }
+
+const DEFAULT_TASK_COLORS = ["#2563eb", "#13795b", "#b45309", "#7c3aed", "#be123c", "#0f766e"];
 
 export function defaultBoardRolesForOrientation(orientation: ChecklistOrientation): BoardRoles {
   if (orientation === "tasks_columns") {
@@ -88,6 +106,41 @@ export function mergeBoardCompletionPatches(patches: BoardCompletionPatch[]): Bo
   return [...latest.values()];
 }
 
+export function buildBoardCompletionPatchesFromLegacy(input: {
+  tableId: string;
+  axisItems: BoardAxisItemForCompletionMapping[];
+  completions: LegacyCompletionSource[];
+}): BoardCompletionPatch[] {
+  const taskItems = new Map<string, BoardAxisItemForCompletionMapping>();
+  const characterItems = new Map<string, BoardAxisItemForCompletionMapping>();
+
+  for (const item of input.axisItems) {
+    if (item.kind === "task" && item.taskId) taskItems.set(item.taskId, item);
+    if (item.kind === "character" && item.characterId) characterItems.set(item.characterId, item);
+  }
+
+  return input.completions.flatMap((completion) => {
+    if (!completion.characterId) return [];
+
+    const taskItem = taskItems.get(completion.taskId);
+    const characterItem = characterItems.get(completion.characterId);
+    if (!taskItem || !characterItem || taskItem.axis === characterItem.axis) return [];
+
+    const rowItem = taskItem.axis === "row" ? taskItem : characterItem;
+    const columnItem = taskItem.axis === "column" ? taskItem : characterItem;
+
+    return [
+      {
+        tableId: input.tableId,
+        rowItemId: rowItem.id,
+        columnItemId: columnItem.id,
+        periodKey: completion.periodKey,
+        completed: completion.completed
+      }
+    ];
+  });
+}
+
 function bySortOrderThenName<T extends { sortOrder: number; name: string }>(left: T, right: T): number {
   return left.sortOrder - right.sortOrder || left.name.localeCompare(right.name);
 }
@@ -102,6 +155,7 @@ function buildTaskSeeds(axis: BoardAxis, tasks: DefaultBoardTaskSource[]): Defau
     taskScope: task.scope,
     taskResetType: task.resetType,
     taskResetRuleJson: task.resetRuleJson,
+    taskColor: DEFAULT_TASK_COLORS[index % DEFAULT_TASK_COLORS.length]!,
     sortOrder: index * 10
   }));
 }
@@ -116,6 +170,7 @@ function buildCharacterSeeds(axis: BoardAxis, characters: DefaultBoardCharacterS
     taskScope: null,
     taskResetType: null,
     taskResetRuleJson: null,
+    taskColor: null,
     sortOrder: index * 10
   }));
 }
@@ -301,9 +356,10 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
            task_scope,
            task_reset_type,
            task_reset_rule_json,
+           task_color,
            sort_order
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
         crypto.randomUUID(),
         userId,
@@ -316,6 +372,7 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
         seed.taskScope,
         seed.taskResetType,
         seed.taskResetRuleJson,
+        seed.taskColor,
         sortOrder
       );
     });
@@ -323,6 +380,44 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
   if (statements.length > 0) {
     await env.DB.batch(statements);
   }
+
+  await syncLegacyCompletionsToBoard(env, userId, table.id);
+}
+
+async function syncLegacyCompletionsToBoard(env: Env, userId: string, tableId: string): Promise<void> {
+  const [axisItems, completions] = await Promise.all([
+    env.DB.prepare("SELECT id, axis, kind, task_id, character_id FROM board_axis_items WHERE user_id = ? AND table_id = ?")
+      .bind(userId, tableId)
+      .all<{
+        id: string;
+        axis: BoardAxis;
+        kind: "character" | "task" | "custom";
+        task_id: string | null;
+        character_id: string | null;
+      }>(),
+    env.DB.prepare("SELECT task_id, character_id, period_key, completed FROM completions WHERE user_id = ?")
+      .bind(userId)
+      .all<{ task_id: string; character_id: string | null; period_key: string; completed: number }>()
+  ]);
+
+  const patches = buildBoardCompletionPatchesFromLegacy({
+    tableId,
+    axisItems: axisItems.results.map((item) => ({
+      id: item.id,
+      axis: item.axis,
+      kind: item.kind,
+      taskId: item.task_id,
+      characterId: item.character_id
+    })),
+    completions: completions.results.map((completion) => ({
+      taskId: completion.task_id,
+      characterId: completion.character_id,
+      periodKey: completion.period_key,
+      completed: completion.completed === 1
+    }))
+  });
+
+  await saveBoardCompletionPatches(env, userId, patches);
 }
 
 export async function loadBoard(env: Env, userId: string): Promise<BoardPayload> {

@@ -77,6 +77,53 @@ describe("BoardOverview", () => {
     expect(html).toContain("132px");
   });
 
+  it("renders compact checkbox cells from board axis and completion state", () => {
+    const html = renderToStaticMarkup(
+      createElement(BoardOverview, {
+        board: {
+          ...board,
+          completions: [
+            {
+              table_id: "table-1",
+              row_item_id: "row-task-1",
+              column_item_id: "column-character-1",
+              period_key: "daily:2026-06-01",
+              completed: 1
+            }
+          ]
+        }
+      })
+    );
+
+    expect(html).toContain('class="board-check-grid"');
+    expect(html).toContain("쿠르잔 전선");
+    expect(html).toContain("냠수나이스1");
+    expect(html).toContain('type="checkbox"');
+    expect(html).toContain('checked=""');
+    expect(html).toContain("--task-color:#2563eb");
+  });
+
+  it("keeps hidden cells present for layout without rendering a checkbox", () => {
+    const html = renderToStaticMarkup(
+      createElement(BoardOverview, {
+        board: {
+          ...board,
+          cellStates: [
+            {
+              table_id: "table-1",
+              row_item_id: "row-task-1",
+              column_item_id: "column-character-1",
+              checkbox_visible: 0
+            }
+          ]
+        }
+      })
+    );
+
+    expect(html).toContain('class="board-check-placeholder"');
+    expect(html).not.toContain('type="checkbox"');
+  });
+
   it("does not render an empty board as a stretching spreadsheet", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {
