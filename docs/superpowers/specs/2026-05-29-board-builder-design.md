@@ -15,7 +15,11 @@ The app should still feel fast and simple for a Lost Ark user who wants the defa
 - Let users create tables that do not use characters at all.
 - Let users create rows and columns manually.
 - Keep first-version cells simple: checkbox cells only.
+- Render completion controls as compact checkbox boxes, not full bordered spreadsheet cells.
 - Let each cell hide its checkbox when that row and column combination does not apply.
+- Let users set row height and column width in pixel units.
+- Let users assign colors to tasks so task-related checkboxes are easier to scan.
+- Let users add optional custom separators while keeping the default visual structure minimal.
 - Support optional character display names such as `냠1`, without requiring every user to configure aliases.
 - Show compact names in dense tables while keeping real character details available through hover on desktop and tap on mobile.
 - Preserve Lost Ark reset behavior for daily, weekly, biweekly, and custom schedules using `Asia/Seoul`.
@@ -24,12 +28,12 @@ The app should still feel fast and simple for a Lost Ark user who wants the defa
 
 - Full spreadsheet formulas.
 - Rich text cells.
-- Arbitrary drag-and-drop canvas positioning.
 - Multi-user collaborative editing.
 - Per-cell custom reset rules.
 - PWA support.
 - CSV export.
 - Advanced icon customization beyond using the app icon and future character/task icons.
+- Full per-cell styling. The first customizable styling unit is the task, axis separator, or table, not every individual cell.
 
 These remain valid future backlog items, but they should not be included in the first board builder implementation.
 
@@ -49,12 +53,15 @@ A table has:
 
 - Name.
 - Sort order within the sheet.
+- Position inside the sheet board, stored in pixels.
+- Optional board width and height, stored in pixels.
 - Row axis configuration.
 - Column axis configuration.
 - Row role: `character`, `task`, or `custom`.
 - Column role: `character`, `task`, or `custom`.
 - Default row height.
 - Default column width.
+- Separator settings.
 - Optional default reset rule for non-task tables.
 
 ### Axis Item
@@ -70,6 +77,7 @@ An axis item has:
 - Width or height, depending on axis.
 - Sort order.
 - Visibility.
+- Optional separator style metadata. This is used for user-added visual dividers and must not affect completion identity.
 
 This keeps the model flexible enough for:
 
@@ -118,7 +126,7 @@ When the task axis is `rows`, each cell gets its reset period from the row item.
 
 ### Cell
 
-The first version has checkbox-only cells.
+The first board-builder direction uses checkbox-only cells, but visually they should feel like compact boxes placed in a grid rather than a traditional spreadsheet table with every cell outlined.
 
 A cell has:
 
@@ -126,6 +134,7 @@ A cell has:
 - Column item id.
 - Checkbox visibility.
 - Completion state for the current reset period.
+- Visual color inherited from the linked task when the row or column belongs to a task.
 
 Cell checkbox visibility states:
 
@@ -133,6 +142,22 @@ Cell checkbox visibility states:
 - `hidden`: this row and column combination does not apply.
 
 Hidden cells are excluded from completion counts and reset handling. They can be shown again later.
+
+The visible checkbox box is the main scannable element. Its color should come from the task metadata when a task exists on either axis. This lets users distinguish chores by color even when character separators are sparse.
+
+### Visual Separation
+
+The grid must not rely on full cell borders for readability.
+
+Default visual separation:
+
+- Task-axis separators are visible by default.
+- Character-axis separators are not mandatory by default.
+- Users can add custom separators on either axis when they need stronger grouping.
+- Separators are presentation metadata on axis items or table settings.
+- Separator changes never alter row ids, column ids, cell ids, completion state, or reset behavior.
+
+This is important because the final UI is expected to be dense. It should read as a board of small task-colored checkbox boxes, not as a large bordered spreadsheet.
 
 ## Character Display Names
 
@@ -160,7 +185,7 @@ The dashboard shows:
 3. Active sheet content.
 4. One or more tables inside the active sheet.
 
-For the first board builder release, tables are stacked vertically. Each table owns its own horizontal scroll area so a wide table does not break the entire page layout.
+The preferred layout direction is a sheet tab system with a board canvas inside each sheet. A sheet can show multiple tables at once. Each table keeps its own content-sized grid, so wide browser windows expand the available board area rather than stretching the checklist grid.
 
 ### Default Table
 
@@ -213,18 +238,64 @@ For character axis items:
 
 ## Layout Rules
 
-The first board builder version should prioritize predictable layout over freeform placement.
+The board builder should prioritize predictable data identity while still allowing high layout freedom.
 
 - Sheet tabs sit above the active sheet.
-- Tables stack vertically.
+- Each sheet owns a board canvas.
+- Tables are placed on the board canvas.
+- Table placement is stored as pixel coordinates.
+- Table dimensions are stored in pixels, but the internal checkbox grid should not stretch just because the browser window is wide.
 - Each table has square corners.
-- Table cells use stable row heights and column widths.
+- Table rows use stable pixel heights.
+- Table columns use stable pixel widths.
 - Width and height values are saved per axis item.
 - Users can edit row height and column width through numeric controls or a simple size menu.
-- Direct drag resizing can be added later after the data model is stable.
+- Direct drag resizing may be added after numeric controls are stable, but it must write back to the same pixel-based settings.
+- Task separators are visible by default.
+- Character separators are optional and user-configurable.
+- Task colors are used for checkbox boxes.
 - Mobile uses horizontal scroll per table.
 
-This gives users practical control without introducing a fragile freeform canvas too early.
+This gives users practical control without making layout settings part of semantic data identity.
+
+### Synchronization And Customization Safety
+
+High customization must be treated as presentation state layered on top of stable checklist data.
+
+Stable semantic state:
+
+- User id.
+- Sheet id.
+- Table id.
+- Row item id.
+- Column item id.
+- Linked character id.
+- Linked task id or task metadata id.
+- Completion period key.
+
+Presentation state:
+
+- Sheet order and active sheet.
+- Table position and size.
+- Axis item order.
+- Row heights.
+- Column widths.
+- Separator settings.
+- Task colors.
+- Checkbox visibility.
+
+The app must synchronize presentation state independently from completion state. Moving a table, resizing a column, changing a task color, adding a character separator, or hiding a checkbox must not reinterpret completion data.
+
+For mutation APIs, prefer small scoped writes such as:
+
+- Update table placement.
+- Update axis size.
+- Update axis separator.
+- Update task color.
+- Update checkbox visibility.
+- Toggle completion.
+
+This keeps high customization manageable and reduces the risk that one visual edit corrupts checklist state.
 
 ## Data Model Direction
 

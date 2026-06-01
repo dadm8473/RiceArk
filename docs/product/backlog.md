@@ -17,5 +17,10 @@ Items here are not yet designed, prioritized, or scheduled.
 
 ## Notes
 
-- Table layout customization should be treated as a larger feature than the current density controls. It should cover per-column width, per-row height, and adding/managing multiple tables.
+- Table layout customization should be treated as a larger feature than the current density controls. It should cover per-column width, per-row height, sheet tabs, board placement, and adding/managing multiple tables.
+- The preferred board-builder direction is a sheet tab plus board canvas where multiple content-sized tables can be placed in one sheet.
+- Final checklist grids should use compact checkbox boxes rather than full bordered spreadsheet cells.
+- Task separators should exist by default, while character separators should be optional and user-configurable.
+- Task colors should drive checkbox color so dense checklists remain scannable.
+- Layout and visual customization state must stay separate from semantic completion state so resizing, moving, recoloring, or adding separators does not corrupt saved checklist data.
 - Character aliases should not replace the real character name used for Lost Ark API matching.
