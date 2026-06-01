@@ -1,0 +1,794 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RiceArk Board Builder Layout Mockup</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #142033;
+        background: #eef2f7;
+        --blue: #2563eb;
+        --ink: #111827;
+        --muted: #516074;
+        --line: #c7d0dd;
+        --panel: #ffffff;
+        --soft: #f6f8fb;
+        --green: #13795b;
+        --amber: #9a5b00;
+        --demo-width: 980px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        min-height: 34px;
+        border: 1px solid #8a96a8;
+        border-radius: 6px;
+        padding: 0 10px;
+        color: var(--ink);
+        background: #ffffff;
+        cursor: pointer;
+      }
+
+      button.active {
+        border-color: var(--blue);
+        color: #ffffff;
+        background: var(--blue);
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        border-bottom: 1px solid var(--line);
+        padding: 12px 18px;
+        background: #ffffff;
+      }
+
+      .brand {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        font-weight: 800;
+      }
+
+      .brand span {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      main {
+        display: grid;
+        gap: 16px;
+        padding: 18px;
+      }
+
+      .intro {
+        display: grid;
+        gap: 6px;
+        max-width: 980px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 22px;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 17px;
+      }
+
+      h3 {
+        font-size: 15px;
+      }
+
+      p {
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.55;
+      }
+
+      .compare-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(280px, 1fr));
+        gap: 12px;
+      }
+
+      .option-card {
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 12px;
+      }
+
+      .option-card.dimmed {
+        opacity: 0.48;
+      }
+
+      .option-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .tag {
+        min-width: max-content;
+        border: 1px solid #bdd0ff;
+        border-radius: 999px;
+        padding: 3px 8px;
+        color: #1d4ed8;
+        background: #eff5ff;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .tag.green {
+        border-color: #b7ddcc;
+        color: var(--green);
+        background: #eefaf5;
+      }
+
+      .tag.amber {
+        border-color: #f4d59a;
+        color: var(--amber);
+        background: #fff8ea;
+      }
+
+      .preview-frame {
+        overflow: auto;
+        min-height: 218px;
+        border: 1px solid #aeb8c7;
+        background: #f3f6fa;
+      }
+
+      .sheet-tabs {
+        display: flex;
+        gap: 4px;
+        border-bottom: 1px solid var(--line);
+        padding: 6px;
+        background: #ffffff;
+      }
+
+      .sheet-tab {
+        border: 1px solid #bcc7d6;
+        padding: 4px 9px;
+        color: #2f3a4b;
+        background: #f8fafc;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .sheet-tab.active {
+        border-color: var(--blue);
+        color: #ffffff;
+        background: var(--blue);
+      }
+
+      .fixed-table-wrap {
+        min-width: max-content;
+        padding: 12px;
+      }
+
+      .mini-table {
+        display: grid;
+        width: max-content;
+        border-top: 1px solid #8f99aa;
+        border-left: 1px solid #8f99aa;
+        background: #ffffff;
+        box-shadow: 0 8px 18px rgb(17 24 39 / 8%);
+      }
+
+      .mini-table.five {
+        grid-template-columns: 132px repeat(4, 86px);
+      }
+
+      .mini-table.three {
+        grid-template-columns: 116px repeat(3, 74px);
+      }
+
+      .mini-cell {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 28px;
+        min-width: 0;
+        border-right: 1px solid #8f99aa;
+        border-bottom: 1px solid #8f99aa;
+        padding: 4px 6px;
+        font-size: 12px;
+      }
+
+      .mini-head {
+        background: #e9eef5;
+        font-weight: 800;
+      }
+
+      .check {
+        color: #1f4fd1;
+        font-weight: 900;
+      }
+
+      .board-canvas {
+        position: relative;
+        min-height: 178px;
+        background-color: #f7f9fc;
+        background-image:
+          linear-gradient(#dde4ee 1px, transparent 1px),
+          linear-gradient(90deg, #dde4ee 1px, transparent 1px);
+        background-size: 28px 28px;
+      }
+
+      .board-block {
+        position: absolute;
+        display: grid;
+        gap: 6px;
+        border: 1px solid #8fa0b7;
+        background: #ffffff;
+        padding: 8px;
+        box-shadow: 0 10px 22px rgb(17 24 39 / 12%);
+      }
+
+      .board-block h4 {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 0;
+        color: #1f2937;
+        font-size: 12px;
+      }
+
+      .board-block .resize {
+        justify-self: end;
+        width: 12px;
+        height: 12px;
+        border-right: 2px solid #8a96a8;
+        border-bottom: 2px solid #8a96a8;
+      }
+
+      .block-a {
+        left: 14px;
+        top: 16px;
+      }
+
+      .block-b {
+        left: 190px;
+        top: 78px;
+      }
+
+      .flow-layout {
+        display: grid;
+        grid-template-columns: 120px 1fr;
+        min-height: 178px;
+      }
+
+      .flow-sidebar {
+        border-right: 1px solid var(--line);
+        padding: 8px;
+        background: #ffffff;
+      }
+
+      .flow-sidebar strong,
+      .flow-sidebar span {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+      }
+
+      .flow-sidebar span {
+        margin-top: 6px;
+        color: var(--muted);
+      }
+
+      .flow-workspace {
+        display: grid;
+        align-content: start;
+        gap: 8px;
+        padding: 10px;
+      }
+
+      .flow-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 38px;
+        border: 1px solid #b8c3d2;
+        background: #ffffff;
+        padding: 0 10px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .notes {
+        display: grid;
+        gap: 6px;
+        margin: 0;
+        padding-left: 18px;
+        color: #2f3a4b;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .playground-panel {
+        display: grid;
+        gap: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 12px;
+      }
+
+      .playground-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .range-control {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #2f3a4b;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .range-control input {
+        width: 220px;
+      }
+
+      .demo-width {
+        width: var(--demo-width);
+        max-width: 100%;
+        overflow: auto;
+        border: 1px solid #9aa8ba;
+        background: #eef3f9;
+      }
+
+      .demo-shell {
+        min-width: 760px;
+        padding: 10px;
+      }
+
+      .demo-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        border: 1px solid var(--line);
+        border-bottom: 0;
+        background: #ffffff;
+        padding: 8px;
+      }
+
+      .demo-toolbar .left,
+      .demo-toolbar .right {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .mini-button {
+        border: 1px solid #aab6c6;
+        padding: 3px 7px;
+        background: #f8fafc;
+        color: #2f3a4b;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .board-builder {
+        position: relative;
+        min-height: 300px;
+        border: 1px solid var(--line);
+        background-color: #f7f9fc;
+        background-image:
+          linear-gradient(#dfe6ef 1px, transparent 1px),
+          linear-gradient(90deg, #dfe6ef 1px, transparent 1px);
+        background-size: 32px 32px;
+      }
+
+      .board-builder .board-block {
+        box-shadow: 0 12px 28px rgb(17 24 39 / 14%);
+      }
+
+      .wide-table {
+        grid-template-columns: 144px repeat(5, 92px);
+      }
+
+      .board-block.large {
+        left: 18px;
+        top: 20px;
+      }
+
+      .board-block.small {
+        left: 610px;
+        top: 156px;
+      }
+
+      .compare-table {
+        width: 100%;
+        border-collapse: collapse;
+        border: 1px solid var(--line);
+        background: #ffffff;
+      }
+
+      .compare-table th,
+      .compare-table td {
+        border: 1px solid var(--line);
+        padding: 8px;
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+      }
+
+      .compare-table th {
+        background: #edf2f8;
+      }
+
+      .fit-note {
+        color: #1d4ed8;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      @media (max-width: 1020px) {
+        .compare-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .topbar,
+        .playground-head {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .range-control {
+          width: 100%;
+        }
+
+        .range-control input {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">RiceArk <span>board builder mockup</span></div>
+      <nav class="tabs" aria-label="목업 보기">
+        <button class="active" type="button" data-filter="all">전체 비교</button>
+        <button type="button" data-filter="a">A 시트형</button>
+        <button type="button" data-filter="b">B 보드형</button>
+        <button type="button" data-filter="c">C 목록형</button>
+      </nav>
+    </header>
+
+    <main>
+      <section class="intro">
+        <h1>작은 스프레드시트/보드 빌더 레이아웃 비교</h1>
+        <p>
+          넓은 화면에서도 표 자체는 내용 크기만큼 유지하고, 남는 공간은 작업 영역으로 쓰는 방향입니다.
+          아래 세 가지 중 B안은 여러 표를 한 화면에 배치하기 좋고, A안은 가장 단순합니다.
+        </p>
+      </section>
+
+      <section class="compare-grid" aria-label="레이아웃 옵션 비교">
+        <article class="option-card" data-option="a">
+          <div class="option-head">
+            <h2>A. 시트 탭 + 고정 크기 표</h2>
+            <span class="tag">단순</span>
+          </div>
+          <div class="preview-frame">
+            <div class="sheet-tabs">
+              <span class="sheet-tab active">메인</span>
+              <span class="sheet-tab">부계정</span>
+              <span class="sheet-tab">이벤트</span>
+            </div>
+            <div class="fixed-table-wrap">
+              <div class="mini-table five">
+                <div class="mini-cell mini-head">숙제</div>
+                <div class="mini-cell mini-head">냠1</div>
+                <div class="mini-cell mini-head">냠2</div>
+                <div class="mini-cell mini-head">창1</div>
+                <div class="mini-cell mini-head">바1</div>
+                <div class="mini-cell">쿠르잔</div>
+                <div class="mini-cell check">V</div>
+                <div class="mini-cell check">V</div>
+                <div class="mini-cell"></div>
+                <div class="mini-cell"></div>
+                <div class="mini-cell">카게</div>
+                <div class="mini-cell"></div>
+                <div class="mini-cell check">V</div>
+                <div class="mini-cell check">V</div>
+                <div class="mini-cell"></div>
+                <div class="mini-cell">에포나</div>
+                <div class="mini-cell check">V</div>
+                <div class="mini-cell"></div>
+                <div class="mini-cell"></div>
+                <div class="mini-cell check">V</div>
+              </div>
+            </div>
+          </div>
+          <ul class="notes">
+            <li>현재 표 경험을 가장 적게 바꾸는 방식</li>
+            <li>표 폭은 `max-content`, 큰 화면에서는 주변 여백만 늘어남</li>
+            <li>여러 표를 동시에 다루는 느낌은 약함</li>
+          </ul>
+        </article>
+
+        <article class="option-card" data-option="b">
+          <div class="option-head">
+            <h2>B. 시트 + 보드 캔버스 + 여러 표</h2>
+            <span class="tag green">추천</span>
+          </div>
+          <div class="preview-frame">
+            <div class="sheet-tabs">
+              <span class="sheet-tab active">메인</span>
+              <span class="sheet-tab">골드</span>
+              <span class="sheet-tab">이벤트</span>
+            </div>
+            <div class="board-canvas">
+              <div class="board-block block-a">
+                <h4>일간 숙제 <span>열: 캐릭터</span></h4>
+                <div class="mini-table three">
+                  <div class="mini-cell mini-head">숙제</div>
+                  <div class="mini-cell mini-head">냠1</div>
+                  <div class="mini-cell mini-head">냠2</div>
+                  <div class="mini-cell mini-head">브1</div>
+                  <div class="mini-cell">카던</div>
+                  <div class="mini-cell check">V</div>
+                  <div class="mini-cell"></div>
+                  <div class="mini-cell check">V</div>
+                  <div class="mini-cell">가토</div>
+                  <div class="mini-cell"></div>
+                  <div class="mini-cell check">V</div>
+                  <div class="mini-cell"></div>
+                </div>
+                <span class="resize" aria-hidden="true"></span>
+              </div>
+              <div class="board-block block-b">
+                <h4>주간 레이드 <span>열: 숙제</span></h4>
+                <div class="mini-table three">
+                  <div class="mini-cell mini-head">캐릭터</div>
+                  <div class="mini-cell mini-head">카멘</div>
+                  <div class="mini-cell mini-head">상아탑</div>
+                  <div class="mini-cell mini-head">에키</div>
+                  <div class="mini-cell">냠1</div>
+                  <div class="mini-cell check">V</div>
+                  <div class="mini-cell"></div>
+                  <div class="mini-cell check">V</div>
+                </div>
+                <span class="resize" aria-hidden="true"></span>
+              </div>
+            </div>
+          </div>
+          <ul class="notes">
+            <li>시트 안에 여러 표를 놓고, 표별로 행/열 방향을 따로 선택</li>
+            <li>표 위치와 크기는 스냅 그리드로 조절</li>
+            <li>구현 난이도는 오르지만 장기 요구사항과 가장 잘 맞음</li>
+          </ul>
+        </article>
+
+        <article class="option-card" data-option="c">
+          <div class="option-head">
+            <h2>C. 좌측 목록 + 작업영역</h2>
+            <span class="tag amber">관리형</span>
+          </div>
+          <div class="preview-frame">
+            <div class="flow-layout">
+              <aside class="flow-sidebar">
+                <strong>시트</strong>
+                <span>메인 숙제</span>
+                <span>원정대용</span>
+                <span>이벤트</span>
+                <strong style="margin-top: 14px">표</strong>
+                <span>일간</span>
+                <span>주간 레이드</span>
+              </aside>
+              <div class="flow-workspace">
+                <div class="flow-row"><span>일간 숙제</span><span class="fit-note">내용 폭 유지</span></div>
+                <div class="flow-row"><span>주간 레이드</span><span>아래로 정렬</span></div>
+                <div class="flow-row"><span>이벤트</span><span>접기 가능</span></div>
+              </div>
+            </div>
+          </div>
+          <ul class="notes">
+            <li>모바일과 관리 화면에는 편함</li>
+            <li>자유 배치는 약하고, 스프레드시트 느낌은 덜함</li>
+            <li>표가 많아졌을 때 탐색은 가장 안정적</li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="playground-panel" aria-label="추천안 상세 목업">
+        <div class="playground-head">
+          <div>
+            <h2>추천 조합: B안 중심, A안의 표 편집 경험 유지</h2>
+            <p>브라우저 폭을 넓혀도 각 표는 내용 크기만 유지하고, 캔버스만 넓어지는 형태입니다.</p>
+          </div>
+          <label class="range-control">
+            목업 폭 <span id="widthLabel">980px</span>
+            <input id="widthRange" type="range" min="760" max="1280" value="980" />
+          </label>
+        </div>
+
+        <div class="demo-width" id="demoWidth">
+          <div class="demo-shell">
+            <div class="sheet-tabs">
+              <span class="sheet-tab active">메인</span>
+              <span class="sheet-tab">부계정</span>
+              <span class="sheet-tab">골드</span>
+              <span class="sheet-tab">+</span>
+            </div>
+            <div class="demo-toolbar">
+              <div class="left">
+                <span class="mini-button">표 추가</span>
+                <span class="mini-button">시트 추가</span>
+                <span class="mini-button">순서 변경</span>
+              </div>
+              <div class="right">
+                <span class="mini-button">스냅 32px</span>
+                <span class="mini-button">행/열 전환</span>
+                <span class="mini-button">표시 설정</span>
+              </div>
+            </div>
+            <div class="board-builder">
+              <div class="board-block large">
+                <h4>일간 숙제 <span>폭 604px 고정</span></h4>
+                <div class="mini-table wide-table">
+                  <div class="mini-cell mini-head">숙제</div>
+                  <div class="mini-cell mini-head">냠1</div>
+                  <div class="mini-cell mini-head">냠2</div>
+                  <div class="mini-cell mini-head">창1</div>
+                  <div class="mini-cell mini-head">브1</div>
+                  <div class="mini-cell mini-head">도1</div>
+                  <div class="mini-cell">카던</div>
+                  <div class="mini-cell check">V</div>
+                  <div class="mini-cell"></div>
+                  <div class="mini-cell check">V</div>
+                  <div class="mini-cell"></div>
+                  <div class="mini-cell check">V</div>
+                  <div class="mini-cell">가토</div>
+                  <div class="mini-cell"></div>
+                  <div class="mini-cell check">V</div>
+                  <div class="mini-cell"></div>
+                  <div class="mini-cell check">V</div>
+                  <div class="mini-cell"></div>
+                  <div class="mini-cell">에포나</div>
+                  <div class="mini-cell check">V</div>
+                  <div class="mini-cell check">V</div>
+                  <div class="mini-cell"></div>
+                  <div class="mini-cell"></div>
+                  <div class="mini-cell"></div>
+                </div>
+                <span class="resize" aria-hidden="true"></span>
+              </div>
+              <div class="board-block small">
+                <h4>이벤트 격주 <span>작게 고정</span></h4>
+                <div class="mini-table three">
+                  <div class="mini-cell mini-head">항목</div>
+                  <div class="mini-cell mini-head">냠1</div>
+                  <div class="mini-cell mini-head">냠2</div>
+                  <div class="mini-cell mini-head">브1</div>
+                  <div class="mini-cell">이벤트</div>
+                  <div class="mini-cell check">V</div>
+                  <div class="mini-cell"></div>
+                  <div class="mini-cell check">V</div>
+                </div>
+                <span class="resize" aria-hidden="true"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th>기준</th>
+            <th>A 시트형</th>
+            <th>B 보드형</th>
+            <th>C 목록형</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>넓은 화면 대응</td>
+            <td>표만 고정하면 해결</td>
+            <td>캔버스가 넓어지고 표는 고정</td>
+            <td>목록과 작업영역으로 분산</td>
+          </tr>
+          <tr>
+            <td>여러 체크리스트</td>
+            <td>시트 전환 위주</td>
+            <td>한 시트에 여러 표 배치</td>
+            <td>목록에서 선택하거나 세로로 나열</td>
+          </tr>
+          <tr>
+            <td>행/열 방향 변경</td>
+            <td>시트 전체 단위가 자연스러움</td>
+            <td>표별 전환이 자연스러움</td>
+            <td>표별 전환 가능하지만 자유도는 낮음</td>
+          </tr>
+          <tr>
+            <td>초기 구현 추천</td>
+            <td>빠른 안정화</td>
+            <td>최종 방향 후보</td>
+            <td>관리 화면 보조로 유용</td>
+          </tr>
+        </tbody>
+      </table>
+    </main>
+
+    <script>
+      const filterButtons = document.querySelectorAll("[data-filter]");
+      const optionCards = document.querySelectorAll("[data-option]");
+      const widthRange = document.querySelector("#widthRange");
+      const widthLabel = document.querySelector("#widthLabel");
+      const demoWidth = document.querySelector("#demoWidth");
+
+      for (const button of filterButtons) {
+        button.addEventListener("click", () => {
+          const filter = button.dataset.filter;
+          for (const item of filterButtons) {
+            item.classList.toggle("active", item === button);
+          }
+          for (const card of optionCards) {
+            card.classList.toggle("dimmed", filter !== "all" && card.dataset.option !== filter);
+          }
+        });
+      }
+
+      widthRange.addEventListener("input", () => {
+        const width = `${widthRange.value}px`;
+        widthLabel.textContent = width;
+        demoWidth.style.setProperty("--demo-width", width);
+      });
+    </script>
+  </body>
+</html>
