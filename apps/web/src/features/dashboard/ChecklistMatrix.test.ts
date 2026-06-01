@@ -57,6 +57,7 @@ describe("ChecklistMatrix", () => {
 
     expect(html).toContain('data-reorder-kind="task"');
     expect(html).toContain('data-reorder-kind="character"');
+    expect(html).toContain('data-reorder-target="true"');
     expect(html).not.toContain('data-reorder-id="roster"');
   });
 });

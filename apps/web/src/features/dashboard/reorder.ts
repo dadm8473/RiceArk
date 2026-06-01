@@ -1,3 +1,5 @@
+export type ReorderKind = "task" | "character";
+
 export function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
   if (
     fromIndex === toIndex ||
@@ -14,4 +16,10 @@ export function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[]
   if (item === undefined) return items;
   next.splice(toIndex, 0, item);
   return next;
+}
+
+export function getReorderTargetId(element: Element | null, kind: ReorderKind): string | null {
+  const target = element?.closest("[data-reorder-kind][data-reorder-id]");
+  if (!target || target.getAttribute("data-reorder-kind") !== kind) return null;
+  return target.getAttribute("data-reorder-id");
 }

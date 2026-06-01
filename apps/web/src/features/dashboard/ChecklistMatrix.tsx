@@ -1,17 +1,15 @@
 import { getPeriodKey, type ResetRule } from "@riceark/core";
 import { GripVertical } from "lucide-react";
 import type { CSSProperties, Dispatch, PointerEvent, ReactNode, SetStateAction } from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { apiPatch } from "../../api/client";
-import { moveItem } from "./reorder";
+import { getReorderTargetId, moveItem, type ReorderKind } from "./reorder";
 import { useCompletionQueue } from "./useCompletionQueue";
 import type { DashboardCharacter, DashboardPayload, DashboardTask } from "./types";
 
 interface Props {
   dashboard: DashboardPayload;
 }
-
-type ReorderKind = "task" | "character";
 
 interface DragState {
   kind: ReorderKind;
@@ -52,6 +50,14 @@ function orderItems<T extends { id: string }>(items: T[], orderedIds: string[]):
   return [...ordered, ...missing];
 }
 
+function getReorderTargetProps(kind: ReorderKind, id: string) {
+  return {
+    "data-reorder-id": id,
+    "data-reorder-kind": kind,
+    "data-reorder-target": "true"
+  };
+}
+
 export function ChecklistMatrix({ dashboard }: Props) {
   const { enqueue } = useCompletionQueue();
   const [checked, setChecked] = useState<Record<string, boolean>>(() =>
@@ -67,6 +73,9 @@ export function ChecklistMatrix({ dashboard }: Props) {
     dashboard.characters.map((character) => character.id)
   );
   const [dragging, setDragging] = useState<DragState | null>(null);
+  const draggingRef = useRef<DragState | null>(null);
+  const taskOrderRef = useRef(taskOrder);
+  const characterOrderRef = useRef(characterOrder);
   const orientation = dashboard.settings.checklist_orientation ?? "tasks_rows";
   const orderedTasks = orderItems(dashboard.tasks, taskOrder);
   const orderedCharacters = orderItems(dashboard.characters, characterOrder);
@@ -74,17 +83,30 @@ export function ChecklistMatrix({ dashboard }: Props) {
   function beginDrag(kind: ReorderKind, id: string, event: PointerEvent<HTMLButtonElement>) {
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    setDragging({ kind, id });
+    const nextDrag = { kind, id };
+    draggingRef.current = nextDrag;
+    setDragging(nextDrag);
   }
 
   function moveDrag(kind: ReorderKind, targetId: string) {
-    if (!dragging || dragging.kind !== kind || dragging.id === targetId) return;
+    const currentDrag = draggingRef.current;
+    if (!currentDrag || currentDrag.kind !== kind || currentDrag.id === targetId) return;
     const setter = kind === "task" ? setTaskOrder : setCharacterOrder;
     setter((current) => {
-      const fromIndex = current.indexOf(dragging.id);
+      const fromIndex = current.indexOf(currentDrag.id);
       const toIndex = current.indexOf(targetId);
-      return moveItem(current, fromIndex, toIndex);
+      const next = moveItem(current, fromIndex, toIndex);
+      if (kind === "task") taskOrderRef.current = next;
+      if (kind === "character") characterOrderRef.current = next;
+      return next;
     });
+  }
+
+  function moveDragOverPointer(event: PointerEvent<HTMLButtonElement>) {
+    const currentDrag = draggingRef.current;
+    if (!currentDrag) return;
+    const targetId = getReorderTargetId(document.elementFromPoint(event.clientX, event.clientY), currentDrag.kind);
+    if (targetId) moveDrag(currentDrag.kind, targetId);
   }
 
   async function saveOrder(kind: ReorderKind, ids: string[]) {
@@ -100,10 +122,12 @@ export function ChecklistMatrix({ dashboard }: Props) {
   }
 
   function endDrag() {
-    if (!dragging) return;
-    const kind = dragging.kind;
+    const currentDrag = draggingRef.current;
+    if (!currentDrag) return;
+    const kind = currentDrag.kind;
+    draggingRef.current = null;
     setDragging(null);
-    void saveOrder(kind, kind === "task" ? taskOrder : characterOrder);
+    void saveOrder(kind, kind === "task" ? taskOrderRef.current : characterOrderRef.current);
   }
 
   function renderDragHandle(kind: ReorderKind, id: string, label: string) {
@@ -118,7 +142,7 @@ export function ChecklistMatrix({ dashboard }: Props) {
         title="드래그해서 순서 변경"
         onPointerCancel={endDrag}
         onPointerDown={(event) => beginDrag(kind, id, event)}
-        onPointerEnter={() => moveDrag(kind, id)}
+        onPointerMove={moveDragOverPointer}
         onPointerUp={endDrag}
       >
         <GripVertical size={14} />
@@ -176,7 +200,11 @@ function TaskRowsMatrix({ dashboard, characters, tasks, checked, renderDragHandl
       <div className="matrix-row matrix-header" style={rowStyle}>
         <div className="matrix-task-cell">숙제</div>
         {columns.map((column) => (
-          <div className="matrix-cell" key={column.id}>
+          <div
+            className="matrix-cell"
+            key={column.id}
+            {...("server_name" in column ? getReorderTargetProps("character", column.id) : {})}
+          >
             {"server_name" in column ? (
               <span className="matrix-label-line">
                 {renderDragHandle("character", column.id, getCharacterLabel(column))}
@@ -193,7 +221,7 @@ function TaskRowsMatrix({ dashboard, characters, tasks, checked, renderDragHandl
         const periodKey = getTaskPeriodKey(task);
         return (
           <div className="matrix-row" key={task.id} style={rowStyle}>
-            <div className="matrix-task-cell">
+            <div className="matrix-task-cell" {...getReorderTargetProps("task", task.id)}>
               <span className="matrix-label-line">
                 {renderDragHandle("task", task.id, task.name)}
                 <span>{task.name}</span>
@@ -249,7 +277,7 @@ function TaskColumnsMatrix({
       <div className="matrix-row matrix-header" style={rowStyle}>
         <div className="matrix-task-cell">캐릭터</div>
         {tasks.map((task) => (
-          <div className="matrix-cell" key={task.id}>
+          <div className="matrix-cell" key={task.id} {...getReorderTargetProps("task", task.id)}>
             <span className="matrix-label-line">
               {renderDragHandle("task", task.id, task.name)}
               <span>{task.name}</span>
@@ -262,7 +290,10 @@ function TaskColumnsMatrix({
         const characterId = row.id === "roster" ? null : row.id;
         return (
           <div className="matrix-row" key={row.id} style={rowStyle}>
-            <div className="matrix-task-cell">
+            <div
+              className="matrix-task-cell"
+              {...("server_name" in row ? getReorderTargetProps("character", row.id) : {})}
+            >
               {"server_name" in row ? (
                 <>
                   <span className="matrix-label-line">

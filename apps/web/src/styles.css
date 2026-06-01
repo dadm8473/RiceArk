@@ -190,10 +190,14 @@ body {
   gap: 4px;
 }
 
+[data-reorder-target="true"] {
+  cursor: grab;
+}
+
 .drag-handle {
-  min-height: 22px;
-  width: 22px;
-  flex: 0 0 22px;
+  min-height: 28px;
+  width: 28px;
+  flex: 0 0 28px;
   touch-action: none;
   padding: 0;
   border-color: transparent;
