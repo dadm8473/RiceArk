@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { ChecklistMatrix } from "./ChecklistMatrix";
+import { CharacterEditModal, ChecklistMatrix, TaskEditModal } from "./ChecklistMatrix";
 import type { DashboardPayload } from "./types";
 
 function createDashboard(checklistOrientation: "tasks_rows" | "tasks_columns"): DashboardPayload {
@@ -31,7 +31,12 @@ function createDashboard(checklistOrientation: "tasks_rows" | "tasks_columns"): 
       density: "default",
       row_height: 40,
       column_width: 132,
-      checklist_orientation: checklistOrientation
+      checklist_orientation: checklistOrientation,
+      show_display_name: 1,
+      show_server_name: 0,
+      show_class_name: 0,
+      show_item_level: 1,
+      show_combat_power: 0
     }
   };
 }
@@ -64,5 +69,58 @@ describe("ChecklistMatrix", () => {
     expect(html).not.toContain("drag-handle");
     expect(html).not.toContain('data-reorder-target="true"');
     expect(html).not.toContain('data-reorder-id="roster"');
+  });
+
+  it("uses character display visibility settings in matrix cells", () => {
+    const dashboard = createDashboard("tasks_rows");
+    dashboard.settings.show_display_name = 0;
+    dashboard.settings.show_server_name = 1;
+    dashboard.settings.show_class_name = 1;
+    dashboard.settings.show_item_level = 0;
+    dashboard.settings.show_combat_power = 1;
+    const html = renderToStaticMarkup(createElement(ChecklistMatrix, { dashboard }));
+
+    expect(html).toContain(">냠수나이스1<");
+    expect(html).toContain("루페온");
+    expect(html).toContain("소서리스");
+    expect(html).toContain("2,549.41");
+    expect(html).not.toContain(">냠1<");
+    expect(html).not.toContain(">1,640.00</small>");
+  });
+
+  it("renders character edit actions and visibility toggles clearly", () => {
+    const dashboard = createDashboard("tasks_rows");
+    const html = renderToStaticMarkup(
+      createElement(CharacterEditModal, {
+        character: dashboard.characters[0]!,
+        settings: dashboard.settings,
+        onClose: () => undefined
+      })
+    );
+
+    expect(html).toContain('aria-label="닫기"');
+    expect(html).toContain('class="primary-button"');
+    expect(html).toContain("저장");
+    expect(html).toContain('class="danger-button"');
+    expect(html).toContain("캐릭터 삭제");
+    for (const label of ["축약 이름 표시", "서버 표시", "직업 표시", "레벨 표시", "전투력 표시"]) {
+      expect(html).toContain(label);
+    }
+  });
+
+  it("renders task edit actions clearly", () => {
+    const dashboard = createDashboard("tasks_rows");
+    const html = renderToStaticMarkup(
+      createElement(TaskEditModal, {
+        task: dashboard.tasks[0]!,
+        onClose: () => undefined
+      })
+    );
+
+    expect(html).toContain('aria-label="닫기"');
+    expect(html).toContain('class="primary-button"');
+    expect(html).toContain("저장");
+    expect(html).toContain('class="danger-button"');
+    expect(html).toContain("숙제 삭제");
   });
 });

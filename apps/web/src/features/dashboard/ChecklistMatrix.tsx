@@ -20,6 +20,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import type { CSSProperties, Dispatch, ReactNode, SetStateAction } from "react";
 import { useRef, useState } from "react";
+import { Save, Trash2, X } from "lucide-react";
 import { apiDelete, apiPatch } from "../../api/client";
 import { getSortableItemId, moveItem, parseSortableItemId, type ReorderKind } from "./reorder";
 import { useCompletionQueue } from "./useCompletionQueue";
@@ -33,8 +34,28 @@ function getTaskPeriodKey(task: DashboardTask): string {
   return getPeriodKey(JSON.parse(task.reset_rule_json) as ResetRule);
 }
 
-function getCharacterLabel(character: DashboardCharacter): string {
-  return character.display_name?.trim() || character.name;
+type DashboardSettings = DashboardPayload["settings"];
+
+interface CharacterDisplaySettings {
+  displayName: boolean;
+  serverName: boolean;
+  className: boolean;
+  itemLevel: boolean;
+  combatPower: boolean;
+}
+
+function getCharacterDisplaySettings(settings: DashboardSettings): CharacterDisplaySettings {
+  return {
+    displayName: settings.show_display_name !== 0,
+    serverName: settings.show_server_name === 1,
+    className: settings.show_class_name === 1,
+    itemLevel: settings.show_item_level !== 0,
+    combatPower: settings.show_combat_power === 1
+  };
+}
+
+function getCharacterLabel(character: DashboardCharacter, settings: DashboardSettings): string {
+  return getCharacterDisplaySettings(settings).displayName ? character.display_name?.trim() || character.name : character.name;
 }
 
 function getCharacterDetail(character: DashboardCharacter): string {
@@ -47,6 +68,16 @@ function getCharacterDetail(character: DashboardCharacter): string {
   ]
     .filter(Boolean)
     .join(" / ");
+}
+
+function getCharacterMeta(character: DashboardCharacter, settings: DashboardSettings): string[] {
+  const display = getCharacterDisplaySettings(settings);
+  return [
+    display.serverName ? character.server_name : null,
+    display.className ? character.class_name : null,
+    display.itemLevel ? character.item_level : null,
+    display.combatPower ? character.combat_power : null
+  ].filter((value): value is string => Boolean(value));
 }
 
 function getCompletionKey(task: DashboardTask, characterId: string): string {
@@ -186,13 +217,13 @@ export function ChecklistMatrix({ dashboard }: Props) {
           onDragStart={handleDragStart}
         >
           {matrix}
-          <DragOverlay>{renderDragOverlay(activeSortableId, orderedTasks, orderedCharacters)}</DragOverlay>
+          <DragOverlay>{renderDragOverlay(activeSortableId, orderedTasks, orderedCharacters, dashboard.settings)}</DragOverlay>
         </DndContext>
       ) : (
         matrix
       )}
       {editingCharacter ? (
-        <CharacterEditModal character={editingCharacter} onClose={() => setEditingCharacter(null)} />
+        <CharacterEditModal character={editingCharacter} settings={dashboard.settings} onClose={() => setEditingCharacter(null)} />
       ) : null}
       {editingTask ? <TaskEditModal task={editingTask} onClose={() => setEditingTask(null)} /> : null}
     </div>
@@ -278,19 +309,22 @@ function TaskLabelContent({ task }: { task: DashboardTask }) {
 
 function CharacterLabelContent({
   character,
-  isReorderMode
+  isReorderMode,
+  settings
 }: {
   character: DashboardCharacter;
   isReorderMode: boolean;
+  settings: DashboardSettings;
 }) {
+  const meta = getCharacterMeta(character, settings);
   return (
     <>
       <span className="matrix-label-line">
         <span className="character-label" title={isReorderMode ? undefined : getCharacterDetail(character)}>
-          {getCharacterLabel(character)}
+          {getCharacterLabel(character, settings)}
         </span>
       </span>
-      <small>{character.item_level}</small>
+      {meta.length > 0 ? <small className="character-meta">{meta.join(" · ")}</small> : null}
     </>
   );
 }
@@ -299,14 +333,27 @@ function getResetTypeLabel(resetType: DashboardTask["reset_type"]): string {
   return resetType === "daily" ? "일간" : resetType === "weekly" ? "주간" : resetType === "biweekly" ? "격주간" : "커스텀";
 }
 
-function CharacterEditModal({ character, onClose }: { character: DashboardCharacter; onClose: () => void }) {
+export function CharacterEditModal({
+  character,
+  settings,
+  onClose
+}: {
+  character: DashboardCharacter;
+  settings: DashboardSettings;
+  onClose: () => void;
+}) {
   const [displayName, setDisplayName] = useState(character.display_name ?? "");
   const [serverName, setServerName] = useState(character.server_name);
   const [className, setClassName] = useState(character.class_name);
   const [itemLevel, setItemLevel] = useState(character.item_level);
   const [combatPower, setCombatPower] = useState(character.combat_power ?? "");
   const [memo, setMemo] = useState(character.memo ?? "");
+  const [displaySettings, setDisplaySettings] = useState<CharacterDisplaySettings>(() => getCharacterDisplaySettings(settings));
   const [message, setMessage] = useState<string | null>(null);
+
+  function updateDisplaySetting(key: keyof CharacterDisplaySettings, value: boolean) {
+    setDisplaySettings((current) => ({ ...current, [key]: value }));
+  }
 
   async function save() {
     try {
@@ -318,6 +365,7 @@ function CharacterEditModal({ character, onClose }: { character: DashboardCharac
         combatPower: combatPower.trim() ? combatPower : null,
         memo: memo.trim() ? memo : null
       });
+      await apiPatch("/api/settings", { characterDisplay: displaySettings });
       window.location.reload();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "캐릭터 저장에 실패했습니다.");
@@ -338,8 +386,8 @@ function CharacterEditModal({ character, onClose }: { character: DashboardCharac
       <section className="tool-modal edit-modal">
         <div className="tool-modal-header">
           <h2>캐릭터 수정</h2>
-          <button type="button" onClick={onClose}>
-            닫기
+          <button className="modal-close-button" type="button" aria-label="닫기" title="닫기" onClick={onClose}>
+            <X size={16} />
           </button>
         </div>
         <div className="tool-modal-body edit-form">
@@ -371,13 +419,58 @@ function CharacterEditModal({ character, onClose }: { character: DashboardCharac
             메모
             <textarea maxLength={200} value={memo} onChange={(event) => setMemo(event.target.value)} />
           </label>
+          <fieldset className="visibility-fieldset">
+            <legend>표시 정보</legend>
+            <label className="toggle-row">
+              <input
+                checked={displaySettings.displayName}
+                type="checkbox"
+                onChange={(event) => updateDisplaySetting("displayName", event.target.checked)}
+              />
+              축약 이름 표시
+            </label>
+            <label className="toggle-row">
+              <input
+                checked={displaySettings.serverName}
+                type="checkbox"
+                onChange={(event) => updateDisplaySetting("serverName", event.target.checked)}
+              />
+              서버 표시
+            </label>
+            <label className="toggle-row">
+              <input
+                checked={displaySettings.className}
+                type="checkbox"
+                onChange={(event) => updateDisplaySetting("className", event.target.checked)}
+              />
+              직업 표시
+            </label>
+            <label className="toggle-row">
+              <input
+                checked={displaySettings.itemLevel}
+                type="checkbox"
+                onChange={(event) => updateDisplaySetting("itemLevel", event.target.checked)}
+              />
+              레벨 표시
+            </label>
+            <label className="toggle-row">
+              <input
+                checked={displaySettings.combatPower}
+                type="checkbox"
+                onChange={(event) => updateDisplaySetting("combatPower", event.target.checked)}
+              />
+              전투력 표시
+            </label>
+          </fieldset>
           {message ? <p className="error-text">{message}</p> : null}
           <div className="edit-actions">
-            <button type="button" onClick={() => void save()}>
+            <button className="primary-button" type="button" onClick={() => void save()}>
+              <Save size={16} />
               저장
             </button>
             <button className="danger-button" type="button" onClick={() => void remove()}>
-              삭제
+              <Trash2 size={16} />
+              캐릭터 삭제
             </button>
           </div>
         </div>
@@ -386,7 +479,7 @@ function CharacterEditModal({ character, onClose }: { character: DashboardCharac
   );
 }
 
-function TaskEditModal({ task, onClose }: { task: DashboardTask; onClose: () => void }) {
+export function TaskEditModal({ task, onClose }: { task: DashboardTask; onClose: () => void }) {
   const [name, setName] = useState(task.name);
   const [resetType, setResetType] = useState<DashboardTask["reset_type"]>(task.reset_type);
   const [message, setMessage] = useState<string | null>(null);
@@ -414,8 +507,8 @@ function TaskEditModal({ task, onClose }: { task: DashboardTask; onClose: () => 
       <section className="tool-modal edit-modal">
         <div className="tool-modal-header">
           <h2>숙제 수정</h2>
-          <button type="button" onClick={onClose}>
-            닫기
+          <button className="modal-close-button" type="button" aria-label="닫기" title="닫기" onClick={onClose}>
+            <X size={16} />
           </button>
         </div>
         <div className="tool-modal-body edit-form">
@@ -435,11 +528,13 @@ function TaskEditModal({ task, onClose }: { task: DashboardTask; onClose: () => 
           <p className="notice-text">현재 설정: {getResetTypeLabel(task.reset_type)}</p>
           {message ? <p className="error-text">{message}</p> : null}
           <div className="edit-actions">
-            <button type="button" onClick={() => void save()}>
+            <button className="primary-button" type="button" onClick={() => void save()}>
+              <Save size={16} />
               저장
             </button>
             <button className="danger-button" type="button" onClick={() => void remove()}>
-              삭제
+              <Trash2 size={16} />
+              숙제 삭제
             </button>
           </div>
         </div>
@@ -451,7 +546,8 @@ function TaskEditModal({ task, onClose }: { task: DashboardTask; onClose: () => 
 function renderDragOverlay(
   activeSortableId: string | null,
   tasks: DashboardTask[],
-  characters: DashboardCharacter[]
+  characters: DashboardCharacter[],
+  settings: DashboardSettings
 ): ReactNode {
   const active = activeSortableId ? parseSortableItemId(activeSortableId) : null;
   if (!active) return null;
@@ -468,7 +564,7 @@ function renderDragOverlay(
   const character = characters.find((item) => item.id === active.id);
   return character ? (
     <div className="matrix-drag-overlay">
-      <CharacterLabelContent character={character} isReorderMode />
+      <CharacterLabelContent character={character} isReorderMode settings={settings} />
     </div>
   ) : null;
 }
@@ -501,10 +597,10 @@ function TaskRowsMatrix({
         isReorderMode={isReorderMode}
         key={column.id}
         kind="character"
-        label={getCharacterLabel(column)}
+        label={getCharacterLabel(column, dashboard.settings)}
         onEdit={() => onEditCharacter?.(column)}
       >
-        <CharacterLabelContent character={column} isReorderMode={isReorderMode} />
+        <CharacterLabelContent character={column} isReorderMode={isReorderMode} settings={dashboard.settings} />
       </LabelCell>
     );
   });
@@ -612,10 +708,10 @@ function TaskColumnsMatrix({
           id={row.id}
           isReorderMode={isReorderMode}
           kind="character"
-          label={getCharacterLabel(row)}
+          label={getCharacterLabel(row, dashboard.settings)}
           onEdit={() => onEditCharacter?.(row)}
         >
-          <CharacterLabelContent character={row} isReorderMode={isReorderMode} />
+          <CharacterLabelContent character={row} isReorderMode={isReorderMode} settings={dashboard.settings} />
         </LabelCell>
         {tasks.map((task) => {
           const periodKey = getTaskPeriodKey(task);

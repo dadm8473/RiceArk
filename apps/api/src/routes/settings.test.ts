@@ -20,4 +20,18 @@ describe("settingsPatchSchema", () => {
       }).success
     ).toBe(true);
   });
+
+  it("accepts character display visibility updates", () => {
+    expect(
+      settingsPatchSchema.safeParse({
+        characterDisplay: {
+          displayName: true,
+          serverName: false,
+          className: true,
+          itemLevel: true,
+          combatPower: false
+        }
+      }).success
+    ).toBe(true);
+  });
 });

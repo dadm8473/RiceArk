@@ -42,6 +42,18 @@ describe("D1 schema", () => {
     expect(migration).toContain("checklist_orientation TEXT");
   });
 
+  it("stores character display visibility settings", () => {
+    for (const column of [
+      "show_display_name INTEGER",
+      "show_server_name INTEGER",
+      "show_class_name INTEGER",
+      "show_item_level INTEGER",
+      "show_combat_power INTEGER"
+    ]) {
+      expect(migration).toContain(column);
+    }
+  });
+
   it("stores per-user task ordering without mutating shared templates", () => {
     expect(migration).toContain("CREATE TABLE IF NOT EXISTS task_orders");
     expect(migration).toContain("PRIMARY KEY (user_id, task_id)");

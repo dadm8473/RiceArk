@@ -38,6 +38,16 @@ export async function loadDashboard(env: Env, userId: string) {
     characters: characters.results,
     tasks: tasks.results,
     completions: completions.results,
-    settings: settings ?? { density: "default", row_height: 40, column_width: 132, checklist_orientation: "tasks_rows" }
+    settings: settings ?? {
+      density: "default",
+      row_height: 40,
+      column_width: 132,
+      checklist_orientation: "tasks_rows",
+      show_display_name: 1,
+      show_server_name: 0,
+      show_class_name: 0,
+      show_item_level: 1,
+      show_combat_power: 0
+    }
   };
 }

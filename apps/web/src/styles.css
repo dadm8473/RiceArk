@@ -289,6 +289,13 @@ body {
   white-space: nowrap;
 }
 
+.character-meta {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .matrix-check:disabled {
   cursor: default;
   background: #ffffff;
@@ -370,6 +377,11 @@ body {
   font-size: 16px;
 }
 
+.modal-close-button {
+  width: 34px;
+  padding: 0;
+}
+
 .tool-modal-body {
   padding: 12px;
 }
@@ -409,6 +421,36 @@ body {
   resize: vertical;
 }
 
+.visibility-fieldset {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  border: 1px solid #d8dee8;
+  padding: 10px;
+}
+
+.visibility-fieldset legend {
+  padding: 0 4px;
+  color: #2f3a4b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.edit-form .toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #111827;
+  font-weight: 600;
+}
+
+.toggle-row input {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  padding: 0;
+}
+
 .edit-actions {
   display: flex;
   justify-content: flex-end;
@@ -416,9 +458,24 @@ body {
   gap: 8px;
 }
 
+.primary-button {
+  border-color: #1f4fd1;
+  color: #ffffff;
+  background: #2563eb;
+}
+
+.primary-button:hover {
+  background: #1f4fd1;
+}
+
 .danger-button {
   border-color: #b42318;
-  color: #b42318;
+  color: #ffffff;
+  background: #b42318;
+}
+
+.danger-button:hover {
+  background: #971b12;
 }
 
 .tool-panel {

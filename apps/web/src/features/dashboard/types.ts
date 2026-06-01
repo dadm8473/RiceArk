@@ -31,5 +31,10 @@ export interface DashboardPayload {
     row_height: number;
     column_width: number;
     checklist_orientation: "tasks_rows" | "tasks_columns";
+    show_display_name: number;
+    show_server_name: number;
+    show_class_name: number;
+    show_item_level: number;
+    show_combat_power: number;
   };
 }
