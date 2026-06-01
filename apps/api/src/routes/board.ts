@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireUser } from "../auth/requireUser";
 import { loadBoard, saveBoardCompletionPatches, type BoardCompletionPatch } from "../db/board";
 import type { Env } from "../env";
+import { ApiError } from "../http/errors";
 import { periodKeySchema, resourceIdSchema } from "../http/input";
 
 export const boardCompletionPatchSchema = z.object({
@@ -35,6 +36,9 @@ boardRoutes.get("/board", async (c) => {
 boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchSchema), async (c) => {
   const user = await requireUser(c);
   const { patches } = c.req.valid("json");
-  await saveBoardCompletionPatches(c.env, user.id, patches as BoardCompletionPatch[]);
+  const saved = await saveBoardCompletionPatches(c.env, user.id, patches as BoardCompletionPatch[]);
+  if (!saved) {
+    throw new ApiError(400, "invalid_board_completion_target", "Board completion target is not available");
+  }
   return c.json({ ok: true });
 });

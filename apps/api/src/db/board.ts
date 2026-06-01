@@ -28,6 +28,12 @@ export interface BoardCompletionPatch {
   completed: boolean;
 }
 
+export interface AuthorizedBoardCompletionTarget {
+  tableId: string;
+  rowItemId: string;
+  columnItemId: string;
+}
+
 export interface BoardAxisItemForCompletionMapping {
   id: string;
   axis: BoardAxis;
@@ -104,6 +110,18 @@ export function mergeBoardCompletionPatches(patches: BoardCompletionPatch[]): Bo
     latest.set(boardCompletionKey(patch), patch);
   }
   return [...latest.values()];
+}
+
+function completionTargetKey(target: AuthorizedBoardCompletionTarget): string {
+  return JSON.stringify([target.tableId, target.rowItemId, target.columnItemId]);
+}
+
+export function findUnauthorizedBoardCompletionPatches(
+  patches: BoardCompletionPatch[],
+  authorizedTargets: AuthorizedBoardCompletionTarget[]
+): BoardCompletionPatch[] {
+  const authorized = new Set(authorizedTargets.map(completionTargetKey));
+  return patches.filter((patch) => !authorized.has(completionTargetKey(patch)));
 }
 
 export function buildBoardCompletionPatchesFromLegacy(input: {
@@ -453,8 +471,13 @@ export async function saveBoardCompletionPatches(
   env: Env,
   userId: string,
   patches: BoardCompletionPatch[]
-): Promise<void> {
+): Promise<boolean> {
   const merged = mergeBoardCompletionPatches(patches);
+  const authorizedTargets = await loadAuthorizedBoardCompletionTargets(env, userId, merged);
+  if (findUnauthorizedBoardCompletionPatches(merged, authorizedTargets).length > 0) {
+    return false;
+  }
+
   const statements = merged.map((patch) =>
     env.DB.prepare(
       `INSERT INTO board_cell_completions
@@ -476,4 +499,48 @@ export async function saveBoardCompletionPatches(
   if (statements.length > 0) {
     await env.DB.batch(statements);
   }
+  return true;
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function placeholders(values: string[]): string {
+  return values.map(() => "?").join(", ");
+}
+
+async function loadAuthorizedBoardCompletionTargets(
+  env: Env,
+  userId: string,
+  patches: BoardCompletionPatch[]
+): Promise<AuthorizedBoardCompletionTarget[]> {
+  if (patches.length === 0) return [];
+
+  const tableIds = unique(patches.map((patch) => patch.tableId));
+  const rowItemIds = unique(patches.map((patch) => patch.rowItemId));
+  const columnItemIds = unique(patches.map((patch) => patch.columnItemId));
+
+  const authorized = await env.DB.prepare(
+    `SELECT board_tables.id AS tableId,
+            row_items.id AS rowItemId,
+            column_items.id AS columnItemId
+     FROM board_tables
+     JOIN board_axis_items row_items
+       ON row_items.table_id = board_tables.id
+      AND row_items.axis = 'row'
+      AND row_items.user_id = ?
+      AND row_items.id IN (${placeholders(rowItemIds)})
+     JOIN board_axis_items column_items
+       ON column_items.table_id = board_tables.id
+      AND column_items.axis = 'column'
+      AND column_items.user_id = ?
+      AND column_items.id IN (${placeholders(columnItemIds)})
+     WHERE board_tables.user_id = ?
+       AND board_tables.id IN (${placeholders(tableIds)})`
+  )
+    .bind(userId, ...rowItemIds, userId, ...columnItemIds, userId, ...tableIds)
+    .all<AuthorizedBoardCompletionTarget>();
+
+  return authorized.results;
 }
