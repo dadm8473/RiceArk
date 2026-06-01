@@ -24,6 +24,10 @@ import { ApiError } from "../http/errors";
 import { periodKeySchema, resourceIdSchema, safeText } from "../http/input";
 
 const safeBoardNameSchema = safeText({ maxChars: 30, maxBytes: 120 });
+const boardTaskColorSchema = z
+  .string()
+  .regex(/^#[0-9A-Fa-f]{6}$/)
+  .transform((value) => value.toLowerCase());
 
 export const boardTableOrientationSchema = z.enum(["tasks_rows", "tasks_columns", "custom"]);
 
@@ -59,7 +63,8 @@ export const boardAxisOrderSchema = z
   });
 
 export const updateBoardAxisItemSchema = z.object({
-  label: safeBoardNameSchema
+  label: safeBoardNameSchema,
+  taskColor: boardTaskColorSchema.nullable().optional()
 });
 
 export const boardCompletionPatchSchema = z.object({

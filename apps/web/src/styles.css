@@ -306,6 +306,20 @@ body {
   white-space: nowrap;
 }
 
+.board-axis-label-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.board-task-color-swatch {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border: 1px solid #ffffff;
+  box-shadow: 0 0 0 1px #9aa8ba;
+}
+
 .board-row-label {
   justify-content: flex-start;
   border-right: 1px solid #d2d9e4;
@@ -826,6 +840,20 @@ body {
 
 .compact-edit-grid input {
   min-height: 32px;
+}
+
+.color-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #111827;
+  font-weight: 700;
+}
+
+.edit-form .color-edit-input {
+  width: 44px;
+  min-height: 32px;
+  padding: 2px;
 }
 
 .edit-form textarea {

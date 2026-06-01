@@ -143,6 +143,13 @@ describe("BoardOverview", () => {
     expect(html).toContain("--task-color:#2563eb");
   });
 
+  it("renders task color swatches on task axis labels", () => {
+    const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
+
+    expect(html).toContain('aria-label="쿠르잔 전선 색상 #2563eb"');
+    expect(html).toContain("background:#2563eb");
+  });
+
   it("renders pixel size controls for rows and columns", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {

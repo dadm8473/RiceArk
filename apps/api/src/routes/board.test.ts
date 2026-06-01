@@ -188,8 +188,21 @@ describe("board route schemas", () => {
     expect(updateBoardAxisItemSchema.parse({ label: "  카제로스  " })).toEqual({ label: "카제로스" });
   });
 
+  it("accepts normalized task colors for board axis item updates", () => {
+    expect(updateBoardAxisItemSchema.parse({ label: "카제로스", taskColor: "#BE123C" })).toEqual({
+      label: "카제로스",
+      taskColor: "#be123c"
+    });
+    expect(updateBoardAxisItemSchema.parse({ label: "카제로스", taskColor: null })).toEqual({
+      label: "카제로스",
+      taskColor: null
+    });
+  });
+
   it("rejects unsafe board axis item update labels", () => {
     expect(updateBoardAxisItemSchema.safeParse({ label: "카제로스🙂" }).success).toBe(false);
     expect(updateBoardAxisItemSchema.safeParse({ label: "" }).success).toBe(false);
+    expect(updateBoardAxisItemSchema.safeParse({ label: "카제로스", taskColor: "blue" }).success).toBe(false);
+    expect(updateBoardAxisItemSchema.safeParse({ label: "카제로스", taskColor: "#12345g" }).success).toBe(false);
   });
 });

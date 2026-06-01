@@ -86,6 +86,7 @@ export interface BoardAxisItemTransposePlanEntry {
 
 export interface UpdateBoardAxisItemInput {
   label: string;
+  taskColor?: string | null | undefined;
 }
 
 export interface ManualBoardAxisItemDraft {
@@ -888,10 +889,12 @@ export async function updateBoardAxisItem(
 ): Promise<boolean> {
   const result = await env.DB.prepare(
     `UPDATE board_axis_items
-     SET label = ?, updated_at = CURRENT_TIMESTAMP
+     SET label = ?,
+         task_color = CASE WHEN ? = 1 AND kind = 'task' THEN ? ELSE task_color END,
+         updated_at = CURRENT_TIMESTAMP
      WHERE id = ? AND user_id = ? AND visible = 1`
   )
-    .bind(input.label, axisItemId, userId)
+    .bind(input.label, input.taskColor !== undefined ? 1 : 0, input.taskColor ?? null, axisItemId, userId)
     .run();
   return (result.meta.changes ?? 0) > 0;
 }

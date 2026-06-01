@@ -204,9 +204,13 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     }
   }
 
-  async function handleAxisItemSave(axisItemId: string, label: string) {
-    await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId), { label });
-    setAxisItems((current) => current.map((item) => (item.id === axisItemId ? { ...item, label } : item)));
+  async function handleAxisItemSave(axisItemId: string, label: string, taskColor?: string | null) {
+    await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId), { label, taskColor });
+    setAxisItems((current) =>
+      current.map((item) =>
+        item.id === axisItemId ? { ...item, label, task_color: taskColor === undefined ? item.task_color : taskColor } : item
+      )
+    );
     setEditingAxisItem(null);
   }
 
@@ -895,7 +899,7 @@ function BoardTableGrid({
             onEdit={() => onAxisItemEdit(column)}
             tableId={table.id}
           >
-            <span>{column.label}</span>
+            <BoardAxisLabelText item={column} />
             {!isReorderMode ? (
               <AxisSizeInput
                 label={`${column.label} 열 너비`}
@@ -929,6 +933,21 @@ function BoardTableGrid({
         ))}
       </SortableContext>
     </div>
+  );
+}
+
+function BoardAxisLabelText({ item }: { item: BoardAxisItem }) {
+  return (
+    <span className="board-axis-label-text">
+      {item.kind === "task" && item.task_color ? (
+        <span
+          aria-label={`${item.label} 색상 ${item.task_color}`}
+          className="board-task-color-swatch"
+          style={{ background: item.task_color }}
+        />
+      ) : null}
+      <span>{item.label}</span>
+    </span>
   );
 }
 
@@ -1045,7 +1064,7 @@ function BoardGridRow({
         style={{ minHeight: `${rowHeight}px` }}
         tableId={tableId}
       >
-        <span>{row.label}</span>
+        <BoardAxisLabelText item={row} />
         {!isReorderMode ? (
           <AxisSizeInput
             label={`${row.label} 행 높이`}
@@ -1127,12 +1146,14 @@ function BoardAxisItemEditModal({
   item: BoardAxisItem;
   onClose: () => void;
   onDelete: (axisItemId: string) => Promise<void>;
-  onSave: (axisItemId: string, label: string) => Promise<void>;
+  onSave: (axisItemId: string, label: string, taskColor?: string | null) => Promise<void>;
 }) {
   const [label, setLabel] = useState(item.label);
+  const [taskColor, setTaskColor] = useState(item.task_color ?? "#2563eb");
   const [pending, setPending] = useState<"save" | "delete" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const normalizedLabel = label.trim();
+  const isTaskItem = item.kind === "task";
 
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1141,7 +1162,7 @@ function BoardAxisItemEditModal({
     setPending("save");
     setError(null);
     try {
-      await onSave(item.id, normalizedLabel);
+      await onSave(item.id, normalizedLabel, isTaskItem ? taskColor : undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : "항목을 저장하지 못했습니다.");
       setPending(null);
@@ -1173,6 +1194,21 @@ function BoardAxisItemEditModal({
             이름
             <input maxLength={30} value={label} onChange={(event) => setLabel(event.currentTarget.value)} />
           </label>
+          {isTaskItem ? (
+            <label>
+              체크 색상
+              <span className="color-edit-row">
+                <input
+                  aria-label={`${item.label} 체크 색상`}
+                  className="color-edit-input"
+                  type="color"
+                  value={taskColor}
+                  onChange={(event) => setTaskColor(event.currentTarget.value)}
+                />
+                <span>{taskColor}</span>
+              </span>
+            </label>
+          ) : null}
           {error ? <p className="error-text">{error}</p> : null}
           <div className="edit-actions">
             <button className="danger-button" disabled={pending !== null} type="button" onClick={() => void handleDelete()}>
