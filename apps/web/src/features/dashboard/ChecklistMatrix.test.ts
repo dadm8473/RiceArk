@@ -109,6 +109,7 @@ describe("ChecklistMatrix", () => {
     expect(html).toContain("저장");
     expect(html).toContain('class="danger-button"');
     expect(html).toContain("캐릭터 삭제");
+    expect(html.indexOf("캐릭터 삭제")).toBeLessThan(html.indexOf("저장"));
     for (const label of ["축약 이름 표시", "서버 표시", "직업 표시", "레벨 표시", "전투력 표시"]) {
       expect(html).toContain(label);
     }
@@ -128,5 +129,6 @@ describe("ChecklistMatrix", () => {
     expect(html).toContain("저장");
     expect(html).toContain('class="danger-button"');
     expect(html).toContain("숙제 삭제");
+    expect(html.indexOf("숙제 삭제")).toBeLessThan(html.indexOf("저장"));
   });
 });

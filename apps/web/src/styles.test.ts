@@ -15,4 +15,23 @@ describe("matrix styles", () => {
     expect(rowBlock).toContain("width: max-content;");
     expect(rowBlock).toContain("min-width: 100%;");
   });
+
+  it("keeps compact edit inputs inside their grid columns", () => {
+    const compactGridBlock = styles.match(/\.compact-edit-grid\s*{[^}]+}/)?.[0] ?? "";
+    const compactLabelBlock = styles.match(/\.compact-edit-grid label\s*{[^}]+}/)?.[0] ?? "";
+    const inputBlock = styles.match(/\.edit-form input,\n\.edit-form select,\n\.edit-form textarea\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(compactGridBlock).toContain("minmax(0, 1fr)");
+    expect(compactLabelBlock).toContain("min-width: 0;");
+    expect(inputBlock).toContain("min-width: 0;");
+    expect(inputBlock).toContain("width: 100%;");
+  });
+
+  it("separates destructive edit actions from save actions", () => {
+    const editActionsBlock = styles.match(/\.edit-actions\s*{[^}]+}/)?.[0] ?? "";
+    const editPrimaryBlock = styles.match(/\.edit-actions \.primary-button\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(editActionsBlock).not.toContain("justify-content: flex-end;");
+    expect(editPrimaryBlock).toContain("margin-left: auto;");
+  });
 });

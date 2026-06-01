@@ -469,13 +469,13 @@ export function CharacterEditModal({
           </fieldset>
           {message ? <p className="error-text">{message}</p> : null}
           <div className="edit-actions">
-            <button className="primary-button" type="button" onClick={() => void save()}>
-              <Save size={16} />
-              저장
-            </button>
             <button className="danger-button" type="button" onClick={() => void remove()}>
               <Trash2 size={16} />
               캐릭터 삭제
+            </button>
+            <button className="primary-button" type="button" onClick={() => void save()}>
+              <Save size={16} />
+              저장
             </button>
           </div>
         </div>
@@ -533,13 +533,13 @@ export function TaskEditModal({ task, onClose }: { task: DashboardTask; onClose:
           <p className="notice-text">현재 설정: {getResetTypeLabel(task.reset_type)}</p>
           {message ? <p className="error-text">{message}</p> : null}
           <div className="edit-actions">
-            <button className="primary-button" type="button" onClick={() => void save()}>
-              <Save size={16} />
-              저장
-            </button>
             <button className="danger-button" type="button" onClick={() => void remove()}>
               <Trash2 size={16} />
               숙제 삭제
+            </button>
+            <button className="primary-button" type="button" onClick={() => void save()}>
+              <Save size={16} />
+              저장
             </button>
           </div>
         </div>

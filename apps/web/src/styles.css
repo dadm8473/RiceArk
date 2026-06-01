@@ -427,17 +427,20 @@ body {
 
 .compact-edit-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
 .compact-edit-grid label {
   gap: 4px;
+  min-width: 0;
 }
 
 .edit-form input,
 .edit-form select,
 .edit-form textarea {
+  width: 100%;
+  min-width: 0;
   min-height: 36px;
   border: 1px solid #8a96a8;
   border-radius: 6px;
@@ -498,9 +501,13 @@ body {
 
 .edit-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.edit-actions .primary-button {
+  margin-left: auto;
 }
 
 .primary-button {
@@ -651,4 +658,7 @@ button {
     min-width: 620px;
   }
 
+  .compact-edit-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
