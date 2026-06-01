@@ -133,6 +133,95 @@ body {
   padding: 20px;
 }
 
+.board-overview {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.sheet-tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.sheet-tab-label {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sheet-tab {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid #9aa6b8;
+  border-radius: 0;
+  color: #111827;
+  background: #ffffff;
+  white-space: nowrap;
+}
+
+.sheet-tab.active {
+  color: #ffffff;
+  border-color: #1f4fd1;
+  background: #2563eb;
+}
+
+.board-canvas {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  overflow-x: auto;
+  min-height: 72px;
+  padding: 10px;
+  border: 1px solid #b9c3d1;
+  background: #eef2f7;
+}
+
+.board-table-summary {
+  flex: 0 0 auto;
+  min-width: 240px;
+  padding: 10px;
+  border: 1px solid #8f99aa;
+  border-radius: 0;
+  background: #ffffff;
+}
+
+.board-table-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #111827;
+}
+
+.board-table-heading span {
+  color: #475569;
+  font-size: 12px;
+}
+
+.board-table-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.board-table-metrics span {
+  padding: 3px 6px;
+  border: 1px solid #d4dae4;
+  color: #334155;
+  font-size: 12px;
+  background: #f8fafc;
+}
+
+.board-empty {
+  margin: 0;
+  color: #475569;
+}
+
 .matrix-board {
   display: grid;
   gap: 10px;

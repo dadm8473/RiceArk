@@ -2,12 +2,15 @@ import { useState } from "react";
 import { apiPatch, apiPostNoContent } from "./api/client";
 import { AuthMenu } from "./features/auth/AuthMenu";
 import { useSession } from "./features/auth/useSession";
+import { BoardOverview } from "./features/board/BoardOverview";
+import { useBoard } from "./features/board/useBoard";
 import { ChecklistMatrix } from "./features/dashboard/ChecklistMatrix";
 import { useDashboard } from "./features/dashboard/useDashboard";
 import { WorkspaceActions, type WorkspaceTool } from "./features/tools/WorkspaceActions";
 
 export function App() {
   const { data, error } = useDashboard();
+  const board = useBoard();
   const session = useSession();
   const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
@@ -47,6 +50,7 @@ export function App() {
       <section className="workspace">
         {session.status === "error" ? <p className="error-text">{session.error}</p> : null}
         {error ? <p className="error-text">{error}</p> : null}
+        {board.error && !error ? <p className="error-text">{board.error}</p> : null}
         {!data && !error ? <p>로스트아크 숙제 체크리스트를 불러오는 중입니다.</p> : null}
         {data ? (
           <>
@@ -57,6 +61,7 @@ export function App() {
               onClose={() => setActiveTool(null)}
               onOpen={setActiveTool}
             />
+            {board.data ? <BoardOverview board={board.data} /> : null}
             <ChecklistMatrix dashboard={data} />
           </>
         ) : null}
