@@ -2,7 +2,7 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 import { requireUser } from "../auth/requireUser";
-import { loadBoard } from "../db/board";
+import { loadBoard, saveBoardCompletionPatches, type BoardCompletionPatch } from "../db/board";
 import type { Env } from "../env";
 import { periodKeySchema, resourceIdSchema } from "../http/input";
 
@@ -33,6 +33,8 @@ boardRoutes.get("/board", async (c) => {
 });
 
 boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchSchema), async (c) => {
-  await requireUser(c);
+  const user = await requireUser(c);
+  const { patches } = c.req.valid("json");
+  await saveBoardCompletionPatches(c.env, user.id, patches as BoardCompletionPatch[]);
   return c.json({ ok: true });
 });

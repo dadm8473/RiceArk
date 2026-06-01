@@ -1,4 +1,4 @@
-import type { BoardAxisRole, BoardTaskAxis } from "@riceark/core";
+import { boardCompletionKey, type BoardAxisRole, type BoardTaskAxis } from "@riceark/core";
 import type { Env } from "../env";
 import type { ChecklistOrientation } from "./settings";
 
@@ -20,6 +20,14 @@ export interface BoardPayload {
   completions: unknown[];
 }
 
+export interface BoardCompletionPatch {
+  tableId: string;
+  rowItemId: string;
+  columnItemId: string;
+  periodKey: string;
+  completed: boolean;
+}
+
 export function defaultBoardRolesForOrientation(orientation: ChecklistOrientation): BoardRoles {
   if (orientation === "tasks_columns") {
     return {
@@ -34,6 +42,14 @@ export function defaultBoardRolesForOrientation(orientation: ChecklistOrientatio
     columnRole: "character",
     taskAxis: "rows"
   };
+}
+
+export function mergeBoardCompletionPatches(patches: BoardCompletionPatch[]): BoardCompletionPatch[] {
+  const latest = new Map<string, BoardCompletionPatch>();
+  for (const patch of patches) {
+    latest.set(boardCompletionKey(patch), patch);
+  }
+  return [...latest.values()];
 }
 
 export async function loadBoard(env: Env, userId: string): Promise<BoardPayload> {
@@ -61,4 +77,33 @@ export async function loadBoard(env: Env, userId: string): Promise<BoardPayload>
     cellStates: cellStates.results,
     completions: completions.results
   };
+}
+
+export async function saveBoardCompletionPatches(
+  env: Env,
+  userId: string,
+  patches: BoardCompletionPatch[]
+): Promise<void> {
+  const merged = mergeBoardCompletionPatches(patches);
+  const statements = merged.map((patch) =>
+    env.DB.prepare(
+      `INSERT INTO board_cell_completions
+         (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(user_id, table_id, row_item_id, column_item_id, period_key)
+       DO UPDATE SET completed = excluded.completed, updated_at = CURRENT_TIMESTAMP`
+    ).bind(
+      crypto.randomUUID(),
+      userId,
+      patch.tableId,
+      patch.rowItemId,
+      patch.columnItemId,
+      patch.periodKey,
+      patch.completed ? 1 : 0
+    )
+  );
+
+  if (statements.length > 0) {
+    await env.DB.batch(statements);
+  }
 }
