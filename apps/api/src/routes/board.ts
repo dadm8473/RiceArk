@@ -8,8 +8,10 @@ import {
   createBoardTable,
   loadBoard,
   reorderBoardAxisItems,
+  saveBoardCellStatePatch,
   saveBoardCompletionPatches,
   updateBoardAxisItemSize,
+  type BoardCellStatePatch,
   type BoardCompletionPatch
 } from "../db/board";
 import type { Env } from "../env";
@@ -63,6 +65,13 @@ export const boardCompletionPatchSchema = z.object({
       })
     )
     .max(200)
+});
+
+export const boardCellStatePatchSchema = z.object({
+  tableId: resourceIdSchema,
+  rowItemId: resourceIdSchema,
+  columnItemId: resourceIdSchema,
+  checkboxVisible: z.boolean()
 });
 
 export const boardAxisSizePatchSchema = z.object({
@@ -127,6 +136,16 @@ boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchS
   const saved = await saveBoardCompletionPatches(c.env, user.id, patches as BoardCompletionPatch[]);
   if (!saved) {
     throw new ApiError(400, "invalid_board_completion_target", "Board completion target is not available");
+  }
+  return c.json({ ok: true });
+});
+
+boardRoutes.patch("/board/cell-states", zValidator("json", boardCellStatePatchSchema), async (c) => {
+  const user = await requireUser(c);
+  const patch = c.req.valid("json");
+  const saved = await saveBoardCellStatePatch(c.env, user.id, patch as BoardCellStatePatch);
+  if (!saved) {
+    throw new ApiError(400, "invalid_board_cell_state_target", "셀 표시 상태를 바꿀 수 없는 항목입니다.");
   }
   return c.json({ ok: true });
 });

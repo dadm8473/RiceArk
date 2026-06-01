@@ -104,6 +104,12 @@ describe("BoardOverview", () => {
     expect(html).toContain("순서 변경");
   });
 
+  it("renders a cell visibility edit mode control", () => {
+    const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
+
+    expect(html).toContain("표시 편집");
+  });
+
   it("renders compact checkbox cells from board axis and completion state", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {

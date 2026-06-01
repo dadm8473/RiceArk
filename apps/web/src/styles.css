@@ -204,7 +204,8 @@ body {
   white-space: nowrap;
 }
 
-.board-reorder-button.active {
+.board-reorder-button.active,
+.board-visibility-button.active {
   color: #ffffff;
   border-color: #1f4fd1;
   background: #2563eb;
@@ -335,6 +336,22 @@ body {
   width: 18px;
   height: 18px;
   border: 1px dashed #c6cfdd;
+  background: #f8fafc;
+}
+
+.board-cell-visibility-toggle {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 0;
+  color: #1f4fd1;
+  background: #eef4ff;
+}
+
+.board-cell-visibility-toggle.hidden {
+  color: #64748b;
+  border-style: dashed;
   background: #f8fafc;
 }
 

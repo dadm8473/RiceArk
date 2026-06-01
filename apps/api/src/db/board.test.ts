@@ -8,6 +8,7 @@ import {
   boardRolesForTableOrientation,
   defaultBoardRolesForOrientation,
   defaultOrientationForTableRoles,
+  findUnauthorizedBoardCellStatePatches,
   findUnauthorizedBoardCompletionPatches,
   mergeBoardCompletionPatches
 } from "./board";
@@ -261,6 +262,41 @@ describe("board db defaults", () => {
         columnItemId: "column-1",
         periodKey: "daily:2026-06-01",
         completed: true
+      }
+    ]);
+  });
+
+  it("detects board cell state patches outside authorized table and axis targets", () => {
+    expect(
+      findUnauthorizedBoardCellStatePatches(
+        [
+          {
+            tableId: "table-1",
+            rowItemId: "row-1",
+            columnItemId: "column-1",
+            checkboxVisible: false
+          },
+          {
+            tableId: "table-1",
+            rowItemId: "row-from-other-table",
+            columnItemId: "column-1",
+            checkboxVisible: true
+          }
+        ],
+        [
+          {
+            tableId: "table-1",
+            rowItemId: "row-1",
+            columnItemId: "column-1"
+          }
+        ]
+      )
+    ).toEqual([
+      {
+        tableId: "table-1",
+        rowItemId: "row-from-other-table",
+        columnItemId: "column-1",
+        checkboxVisible: true
       }
     ]);
   });

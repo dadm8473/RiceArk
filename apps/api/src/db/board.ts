@@ -34,6 +34,13 @@ export interface BoardCompletionPatch {
   completed: boolean;
 }
 
+export interface BoardCellStatePatch {
+  tableId: string;
+  rowItemId: string;
+  columnItemId: string;
+  checkboxVisible: boolean;
+}
+
 export interface CreateBoardSheetInput {
   name: string;
 }
@@ -207,6 +214,14 @@ export function findUnauthorizedBoardCompletionPatches(
   patches: BoardCompletionPatch[],
   authorizedTargets: AuthorizedBoardCompletionTarget[]
 ): BoardCompletionPatch[] {
+  const authorized = new Set(authorizedTargets.map(completionTargetKey));
+  return patches.filter((patch) => !authorized.has(completionTargetKey(patch)));
+}
+
+export function findUnauthorizedBoardCellStatePatches(
+  patches: BoardCellStatePatch[],
+  authorizedTargets: AuthorizedBoardCompletionTarget[]
+): BoardCellStatePatch[] {
   const authorized = new Set(authorizedTargets.map(completionTargetKey));
   return patches.filter((patch) => !authorized.has(completionTargetKey(patch)));
 }
@@ -761,6 +776,44 @@ export async function saveBoardCompletionPatches(
   if (statements.length > 0) {
     await env.DB.batch(statements);
   }
+  return true;
+}
+
+export async function saveBoardCellStatePatch(
+  env: Env,
+  userId: string,
+  patch: BoardCellStatePatch
+): Promise<boolean> {
+  const authorizedTargets = await loadAuthorizedBoardCompletionTargets(env, userId, [
+    {
+      ...patch,
+      periodKey: "daily:2000-01-01",
+      completed: false
+    }
+  ]);
+  if (findUnauthorizedBoardCellStatePatches([patch], authorizedTargets).length > 0) {
+    return false;
+  }
+
+  if (patch.checkboxVisible) {
+    await env.DB.prepare(
+      `DELETE FROM board_cell_states
+       WHERE user_id = ? AND table_id = ? AND row_item_id = ? AND column_item_id = ?`
+    )
+      .bind(userId, patch.tableId, patch.rowItemId, patch.columnItemId)
+      .run();
+    return true;
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO board_cell_states
+       (id, user_id, table_id, row_item_id, column_item_id, checkbox_visible, updated_at)
+     VALUES (?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
+     ON CONFLICT(table_id, row_item_id, column_item_id)
+     DO UPDATE SET checkbox_visible = 0, updated_at = CURRENT_TIMESTAMP`
+  )
+    .bind(crypto.randomUUID(), userId, patch.tableId, patch.rowItemId, patch.columnItemId)
+    .run();
   return true;
 }
 

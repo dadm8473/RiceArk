@@ -17,8 +17,10 @@ import {
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { apiPatch, apiPost } from "../../api/client";
+import { applyBoardCellStatePatch, type BoardCellStatePatch } from "./cellStates";
 import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
 import {
   applyBoardAxisOrder,
@@ -79,6 +81,7 @@ function axisDraftKey(tableId: string, axis: BoardAxis): string {
 export function BoardOverview({ board, onBoardChanged }: Props) {
   const { enqueue } = useBoardCompletionQueue();
   const [completions, setCompletions] = useState(board.completions);
+  const [cellStates, setCellStates] = useState(board.cellStates);
   const [axisItems, setAxisItems] = useState(board.axisItems);
   const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
   const [sheetName, setSheetName] = useState("");
@@ -89,6 +92,7 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   const [axisDrafts, setAxisDrafts] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [isReorderMode, setIsReorderMode] = useState(false);
+  const [isCellVisibilityMode, setIsCellVisibilityMode] = useState(false);
   const [activeSortableId, setActiveSortableId] = useState<string | null>(null);
   const sortedSheets = useMemo(
     () => board.sheets.slice().sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name)),
@@ -114,12 +118,25 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   }, [board.completions]);
 
   useEffect(() => {
+    setCellStates(board.cellStates);
+  }, [board.cellStates]);
+
+  useEffect(() => {
     setAxisItems(board.axisItems);
   }, [board.axisItems]);
 
   function handleCompletionToggle(patch: BoardCompletionPatch) {
     setCompletions((current) => applyBoardCompletionPatch(current, patch));
     enqueue(patch);
+  }
+
+  async function handleCellVisibilityToggle(patch: BoardCellStatePatch) {
+    setCellStates((current) => applyBoardCellStatePatch(current, patch));
+    try {
+      await apiPatch("/api/board/cell-states", patch);
+    } catch {
+      window.location.reload();
+    }
   }
 
   async function refreshBoard() {
@@ -304,11 +321,13 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
           </div>
           <BoardTableGrid
             axisItems={axisItems}
-            board={board}
+            cellStates={cellStates}
             completions={completions}
+            isCellVisibilityMode={isCellVisibilityMode}
             isReorderMode={isReorderMode}
             table={table}
             onAxisSizeChange={handleAxisSizeChange}
+            onCellVisibilityToggle={handleCellVisibilityToggle}
             onToggle={handleCompletionToggle}
           />
         </article>
@@ -350,10 +369,22 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
           type="button"
           onClick={() => {
             setActiveSortableId(null);
+            setIsCellVisibilityMode(false);
             setIsReorderMode((current) => !current);
           }}
         >
           {isReorderMode ? "순서 변경 완료" : "순서 변경"}
+        </button>
+        <button
+          className={`button board-visibility-button${isCellVisibilityMode ? " active" : ""}`}
+          type="button"
+          onClick={() => {
+            setActiveSortableId(null);
+            setIsReorderMode(false);
+            setIsCellVisibilityMode((current) => !current);
+          }}
+        >
+          {isCellVisibilityMode ? "표시 편집 완료" : "표시 편집"}
         </button>
         <form className="board-create-form" aria-label="표 추가" onSubmit={handleCreateTable}>
           <input
@@ -398,19 +429,23 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
 
 function BoardTableGrid({
   axisItems,
-  board,
+  cellStates,
   completions,
+  isCellVisibilityMode,
   isReorderMode,
   table,
   onAxisSizeChange,
+  onCellVisibilityToggle,
   onToggle
 }: {
   axisItems: BoardAxisItem[];
-  board: BoardPayload;
+  cellStates: BoardPayload["cellStates"];
   completions: BoardPayload["completions"];
+  isCellVisibilityMode: boolean;
   isReorderMode: boolean;
   table: BoardTable;
   onAxisSizeChange: (axisItemId: string, sizePx: number) => void;
+  onCellVisibilityToggle: (patch: BoardCellStatePatch) => void;
   onToggle: (patch: BoardCompletionPatch) => void;
 }) {
   const rows = axisItems
@@ -420,7 +455,7 @@ function BoardTableGrid({
     .filter((item) => item.table_id === table.id && item.axis === "column" && item.visible === 1)
     .sort((left, right) => left.sort_order - right.sort_order || left.label.localeCompare(right.label));
   const hiddenCells = new Set(
-    board.cellStates
+    cellStates
       .filter((cell) => cell.table_id === table.id && cell.checkbox_visible === 0)
       .map((cell) => cellKey(cell.row_item_id, cell.column_item_id))
   );
@@ -470,7 +505,9 @@ function BoardTableGrid({
             columns={columns}
             completedCells={completedCells}
             hiddenCells={hiddenCells}
+            isCellVisibilityMode={isCellVisibilityMode}
             isReorderMode={isReorderMode}
+            onCellVisibilityToggle={onCellVisibilityToggle}
             onToggle={onToggle}
             onAxisSizeChange={onAxisSizeChange}
             row={row}
@@ -554,7 +591,9 @@ function BoardGridRow({
   columns,
   completedCells,
   hiddenCells,
+  isCellVisibilityMode,
   isReorderMode,
+  onCellVisibilityToggle,
   onAxisSizeChange,
   onToggle,
   row,
@@ -564,7 +603,9 @@ function BoardGridRow({
   columns: BoardAxisItem[];
   completedCells: Set<string>;
   hiddenCells: Set<string>;
+  isCellVisibilityMode: boolean;
   isReorderMode: boolean;
+  onCellVisibilityToggle: (patch: BoardCellStatePatch) => void;
   onAxisSizeChange: (axisItemId: string, sizePx: number) => void;
   onToggle: (patch: BoardCompletionPatch) => void;
   row: BoardAxisItem;
@@ -594,10 +635,28 @@ function BoardGridRow({
         const taskColor = getTaskColor(row, column);
         const colorStyle = taskColor ? ({ "--task-color": taskColor } as CSSProperties) : undefined;
         const periodKey = getBoardCellPeriodKey(row, column);
+        const isHidden = hiddenCells.has(key);
+        const nextVisible = isHidden;
 
         return (
           <div key={column.id} className="board-check-cell" style={{ minHeight: `${rowHeight}px` }}>
-            {hiddenCells.has(key) ? (
+            {isCellVisibilityMode ? (
+              <button
+                aria-label={`${row.label} / ${column.label} 표시 전환`}
+                className={`board-cell-visibility-toggle${isHidden ? " hidden" : ""}`}
+                type="button"
+                onClick={() =>
+                  onCellVisibilityToggle({
+                    tableId,
+                    rowItemId: row.id,
+                    columnItemId: column.id,
+                    checkboxVisible: nextVisible
+                  })
+                }
+              >
+                {isHidden ? <EyeOff aria-hidden="true" size={16} /> : <Eye aria-hidden="true" size={16} />}
+              </button>
+            ) : isHidden ? (
               <span className="board-check-placeholder" aria-label={`${row.label} / ${column.label} 숨김`} />
             ) : (
               <input

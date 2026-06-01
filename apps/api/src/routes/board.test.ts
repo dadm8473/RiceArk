@@ -3,6 +3,7 @@ import {
   boardAxisItemIdParamSchema,
   boardAxisOrderSchema,
   boardAxisSizePatchSchema,
+  boardCellStatePatchSchema,
   boardCompletionPatchSchema,
   createBoardAxisItemSchema,
   createBoardSheetSchema,
@@ -95,6 +96,36 @@ describe("board route schemas", () => {
         tableId: "table-1",
         axis: "diagonal",
         axisItemIds: ["row-1"]
+      }).success
+    ).toBe(false);
+  });
+
+  it("accepts board cell visibility patches", () => {
+    expect(
+      boardCellStatePatchSchema.safeParse({
+        tableId: "table-1",
+        rowItemId: "row-1",
+        columnItemId: "column-1",
+        checkboxVisible: false
+      }).success
+    ).toBe(true);
+  });
+
+  it("rejects unsafe board cell visibility patches", () => {
+    expect(
+      boardCellStatePatchSchema.safeParse({
+        tableId: "table🙂",
+        rowItemId: "row-1",
+        columnItemId: "column-1",
+        checkboxVisible: false
+      }).success
+    ).toBe(false);
+    expect(
+      boardCellStatePatchSchema.safeParse({
+        tableId: "table-1",
+        rowItemId: "row-1",
+        columnItemId: "column-1",
+        checkboxVisible: "no"
       }).success
     ).toBe(false);
   });
