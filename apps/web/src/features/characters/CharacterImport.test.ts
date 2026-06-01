@@ -70,6 +70,28 @@ describe("CharacterImportPanel", () => {
     );
 
     expect(html).toContain("검색 결과가 없습니다.");
+    expect(html).toContain('class="status-text notice-text"');
+    expect(html).toContain('role="status"');
+  });
+
+  it("renders failure messages with alert styling", () => {
+    const html = renderToStaticMarkup(
+      createElement(CharacterImportPanel, {
+        name: "냠수나이스1",
+        candidates: [],
+        selected: {},
+        message: "캐릭터 정보를 불러오지 못했습니다. 대표 캐릭터명을 확인하거나 잠시 후 다시 시도해주세요.",
+        messageTone: "error",
+        onNameChange: vi.fn(),
+        onSearch: vi.fn(),
+        onSave: vi.fn(),
+        onToggle: vi.fn()
+      })
+    );
+
+    expect(html).toContain("캐릭터 정보를 불러오지 못했습니다.");
+    expect(html).toContain('class="status-text error-text"');
+    expect(html).toContain('role="alert"');
   });
 
   it("does not repeat the modal title inside the panel", () => {

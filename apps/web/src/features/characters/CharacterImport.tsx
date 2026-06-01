@@ -10,6 +10,13 @@ interface Candidate {
   combatPower: string | null;
 }
 
+type CharacterImportMessageTone = "notice" | "error";
+
+interface CharacterImportMessage {
+  text: string;
+  tone: CharacterImportMessageTone;
+}
+
 interface CharacterCandidateListProps {
   candidates: Candidate[];
   selected: Record<string, boolean>;
@@ -51,6 +58,7 @@ interface CharacterImportPanelProps {
   candidates: Candidate[];
   selected: Record<string, boolean>;
   message?: string | null;
+  messageTone?: CharacterImportMessageTone;
   searching?: boolean;
   saving?: boolean;
   onNameChange: (name: string) => void;
@@ -64,6 +72,7 @@ export function CharacterImportPanel({
   candidates,
   selected,
   message,
+  messageTone = "notice",
   searching = false,
   saving = false,
   onNameChange,
@@ -86,7 +95,11 @@ export function CharacterImportPanel({
           </button>
         ) : null}
       </div>
-      {message ? <p className="notice-text">{message}</p> : null}
+      {message ? (
+        <p className={`status-text ${messageTone === "error" ? "error-text" : "notice-text"}`} role={messageTone === "error" ? "alert" : "status"}>
+          {message}
+        </p>
+      ) : null}
       <CharacterCandidateList candidates={candidates} selected={selected} onToggle={onToggle} />
     </section>
   );
@@ -96,7 +109,7 @@ export function CharacterImport() {
   const [name, setName] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<CharacterImportMessage | null>(null);
   const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -107,11 +120,16 @@ export function CharacterImport() {
       const result = await apiGet<{ characters: Candidate[] }>(`/api/characters/search?name=${encodeURIComponent(name)}`);
       setCandidates(result.characters);
       setSelected(Object.fromEntries(result.characters.map((character) => [`${character.serverName}:${character.name}`, true])));
-      if (result.characters.length === 0) setMessage("검색 결과가 없습니다.");
-    } catch (err) {
+      if (result.characters.length === 0) {
+        setMessage({ text: "검색 결과가 없습니다. 대표 캐릭터명을 다시 확인해주세요.", tone: "notice" });
+      }
+    } catch {
       setCandidates([]);
       setSelected({});
-      setMessage(err instanceof Error ? err.message : "캐릭터 검색에 실패했습니다.");
+      setMessage({
+        text: "캐릭터 정보를 불러오지 못했습니다. 대표 캐릭터명을 확인하거나 잠시 후 다시 시도해주세요.",
+        tone: "error"
+      });
     } finally {
       setSearching(false);
     }
@@ -120,15 +138,18 @@ export function CharacterImport() {
   async function save() {
     const characters = candidates.filter((character) => selected[`${character.serverName}:${character.name}`]);
     if (characters.length === 0) {
-      setMessage("등록할 캐릭터를 선택해주세요.");
+      setMessage({ text: "등록할 캐릭터를 하나 이상 선택해주세요.", tone: "error" });
       return;
     }
     setSaving(true);
     try {
       await apiPost("/api/characters/import", { characters });
       window.location.reload();
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "선택 캐릭터 등록에 실패했습니다.");
+    } catch {
+      setMessage({
+        text: "선택한 캐릭터를 등록하지 못했습니다. 잠시 후 다시 시도해주세요.",
+        tone: "error"
+      });
       setSaving(false);
     }
   }
@@ -136,7 +157,8 @@ export function CharacterImport() {
   return (
     <CharacterImportPanel
       candidates={candidates}
-      message={message}
+      message={message ? message.text : null}
+      messageTone={message?.tone ?? "notice"}
       name={name}
       saving={saving}
       searching={searching}
