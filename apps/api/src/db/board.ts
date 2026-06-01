@@ -1,9 +1,11 @@
 import {
   boardCompletionKey,
+  getPeriodKey,
   type BoardAxis,
   type BoardAxisRole,
   type BoardOrientation,
-  type BoardTaskAxis
+  type BoardTaskAxis,
+  type ResetRule
 } from "@riceark/core";
 import type { Env } from "../env";
 import type { ChecklistOrientation } from "./settings";
@@ -112,6 +114,10 @@ export interface AuthorizedBoardCompletionTarget {
   tableId: string;
   rowItemId: string;
   columnItemId: string;
+  rowKind?: "character" | "task" | "custom";
+  columnKind?: "character" | "task" | "custom";
+  rowTaskResetRuleJson?: string | null;
+  columnTaskResetRuleJson?: string | null;
 }
 
 export interface BoardAxisItemForCompletionMapping {
@@ -290,6 +296,43 @@ export function findUnauthorizedBoardCompletionPatches(
 ): BoardCompletionPatch[] {
   const authorized = new Set(authorizedTargets.map(completionTargetKey));
   return patches.filter((patch) => !authorized.has(completionTargetKey(patch)));
+}
+
+function parseResetRule(value: string | null | undefined): ResetRule | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as ResetRule;
+  } catch {
+    return null;
+  }
+}
+
+function currentTargetPeriodKeys(target: AuthorizedBoardCompletionTarget, now: Date): string[] {
+  const rules = [
+    target.rowKind === "task" ? parseResetRule(target.rowTaskResetRuleJson) : null,
+    target.columnKind === "task" ? parseResetRule(target.columnTaskResetRuleJson) : null
+  ].filter((rule): rule is ResetRule => rule !== null);
+
+  return rules.flatMap((rule) => {
+    try {
+      return [getPeriodKey(rule, now)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+export function findBoardCompletionPatchesOutsideCurrentPeriod(
+  patches: BoardCompletionPatch[],
+  authorizedTargets: AuthorizedBoardCompletionTarget[],
+  now: Date = new Date()
+): BoardCompletionPatch[] {
+  const authorized = new Map(authorizedTargets.map((target) => [completionTargetKey(target), target]));
+  return patches.filter((patch) => {
+    const target = authorized.get(completionTargetKey(patch));
+    if (!target) return false;
+    return !currentTargetPeriodKeys(target, now).includes(patch.periodKey);
+  });
 }
 
 export function findUnauthorizedBoardCellStatePatches(
@@ -949,6 +992,9 @@ export async function saveBoardCompletionPatches(
   if (findUnauthorizedBoardCompletionPatches(merged, authorizedTargets).length > 0) {
     return false;
   }
+  if (findBoardCompletionPatchesOutsideCurrentPeriod(merged, authorizedTargets).length > 0) {
+    return false;
+  }
 
   const statements = merged.map((patch) =>
     env.DB.prepare(
@@ -1046,7 +1092,11 @@ async function loadAuthorizedBoardCompletionTargets(
   const authorized = await env.DB.prepare(
     `SELECT board_tables.id AS tableId,
             row_items.id AS rowItemId,
-            column_items.id AS columnItemId
+            column_items.id AS columnItemId,
+            row_items.kind AS rowKind,
+            column_items.kind AS columnKind,
+            row_items.task_reset_rule_json AS rowTaskResetRuleJson,
+            column_items.task_reset_rule_json AS columnTaskResetRuleJson
      FROM board_tables
      JOIN board_axis_items row_items
        ON row_items.table_id = board_tables.id

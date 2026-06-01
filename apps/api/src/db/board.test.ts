@@ -11,6 +11,7 @@ import {
   defaultOrientationForTableRoles,
   findUnauthorizedBoardCellStatePatches,
   findUnauthorizedBoardCompletionPatches,
+  findBoardCompletionPatchesOutsideCurrentPeriod,
   mergeBoardCellStatePatches,
   mergeBoardCompletionPatches,
   transposeBoardRoles
@@ -331,6 +332,58 @@ describe("board db defaults", () => {
         rowItemId: "row-from-other-table",
         columnItemId: "column-1",
         periodKey: "daily:2026-06-01",
+        completed: true
+      }
+    ]);
+  });
+
+  it("detects board completion patches outside the server-derived KST period", () => {
+    expect(
+      findBoardCompletionPatchesOutsideCurrentPeriod(
+        [
+          {
+            tableId: "table-1",
+            rowItemId: "row-task-1",
+            columnItemId: "column-1",
+            periodKey: "daily:2026-05-28",
+            completed: true
+          },
+          {
+            tableId: "table-1",
+            rowItemId: "row-task-1",
+            columnItemId: "column-2",
+            periodKey: "daily:2026-05-29",
+            completed: true
+          }
+        ],
+        [
+          {
+            tableId: "table-1",
+            rowItemId: "row-task-1",
+            columnItemId: "column-1",
+            rowKind: "task",
+            columnKind: "character",
+            rowTaskResetRuleJson: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}',
+            columnTaskResetRuleJson: null
+          },
+          {
+            tableId: "table-1",
+            rowItemId: "row-task-1",
+            columnItemId: "column-2",
+            rowKind: "task",
+            columnKind: "character",
+            rowTaskResetRuleJson: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}',
+            columnTaskResetRuleJson: null
+          }
+        ],
+        new Date("2026-05-28T20:59:00.000Z")
+      )
+    ).toEqual([
+      {
+        tableId: "table-1",
+        rowItemId: "row-task-1",
+        columnItemId: "column-2",
+        periodKey: "daily:2026-05-29",
         completed: true
       }
     ]);
