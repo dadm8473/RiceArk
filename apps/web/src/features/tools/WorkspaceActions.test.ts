@@ -37,4 +37,19 @@ describe("WorkspaceActions", () => {
     expect(html).toContain("dialog");
     expect(html).toContain("대표 캐릭터명");
   });
+
+  it("uses a narrower dialog for task creation", () => {
+    const html = renderToStaticMarkup(
+      createElement(WorkspaceActions, {
+        activeTool: "tasks",
+        checklistOrientation: "tasks_rows",
+        onChecklistOrientationChange: vi.fn(),
+        onOpen: vi.fn(),
+        onClose: vi.fn()
+      })
+    );
+
+    expect(html).toContain('class="tool-modal task-tool-modal"');
+    expect(html).toContain("숙제 이름");
+  });
 });

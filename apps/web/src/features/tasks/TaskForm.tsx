@@ -12,8 +12,8 @@ export function TaskForm() {
   }
 
   return (
-    <section className="tool-panel">
-      <div className="inline-form">
+    <section className="tool-panel compact-task-panel">
+      <div className="inline-form compact-task-form">
         <input maxLength={40} value={name} onChange={(event) => setName(event.target.value)} placeholder="숙제 이름" />
         <select value={resetType} onChange={(event) => setResetType(event.target.value as "daily" | "weekly" | "biweekly" | "custom")}>
           <option value="daily">일간</option>
@@ -21,7 +21,7 @@ export function TaskForm() {
           <option value="biweekly">격주간</option>
           <option value="custom">커스텀</option>
         </select>
-        <button type="button" onClick={() => void submit()} title="숙제 추가">
+        <button className="primary-button" type="button" onClick={() => void submit()} title="숙제 추가">
           <Plus size={16} />
           추가
         </button>

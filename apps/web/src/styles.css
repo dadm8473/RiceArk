@@ -359,6 +359,10 @@ body {
   box-shadow: 0 24px 60px rgb(17 24 39 / 28%);
 }
 
+.task-tool-modal {
+  width: min(520px, 100%);
+}
+
 .tool-modal-header {
   position: sticky;
   top: 0;
@@ -545,10 +549,32 @@ body {
   font-size: 15px;
 }
 
+.compact-task-panel {
+  padding: 10px;
+}
+
 .inline-form {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.compact-task-form {
+  align-items: center;
+}
+
+.compact-task-form input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.compact-task-form select {
+  flex: 0 0 112px;
+}
+
+.compact-task-form button {
+  flex: 0 0 auto;
+  padding: 0 12px;
 }
 
 .inline-form input,
@@ -660,5 +686,11 @@ button {
 
   .compact-edit-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .compact-task-form input,
+  .compact-task-form select,
+  .compact-task-form button {
+    flex: 1 1 100%;
   }
 }

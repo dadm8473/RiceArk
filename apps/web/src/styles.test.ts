@@ -34,4 +34,16 @@ describe("matrix styles", () => {
     expect(editActionsBlock).not.toContain("justify-content: flex-end;");
     expect(editPrimaryBlock).toContain("margin-left: auto;");
   });
+
+  it("keeps the task creation modal and form compact", () => {
+    const modalBlock = styles.match(/\.task-tool-modal\s*{[^}]+}/)?.[0] ?? "";
+    const formBlock = styles.match(/\.compact-task-form\s*{[^}]+}/)?.[0] ?? "";
+    const inputBlock = styles.match(/\.compact-task-form input\s*{[^}]+}/)?.[0] ?? "";
+    const selectBlock = styles.match(/\.compact-task-form select\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(modalBlock).toContain("width: min(520px, 100%);");
+    expect(formBlock).toContain("align-items: center;");
+    expect(inputBlock).toContain("flex: 1 1 220px;");
+    expect(selectBlock).toContain("flex: 0 0 112px;");
+  });
 });

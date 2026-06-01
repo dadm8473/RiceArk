@@ -62,7 +62,7 @@ export function WorkspaceActions({
       </div>
       {activeTool ? (
         <div className="modal-backdrop">
-          <section aria-modal="true" className="tool-modal" role="dialog">
+          <section aria-modal="true" className={`tool-modal${activeTool === "tasks" ? " task-tool-modal" : ""}`} role="dialog">
             <header className="tool-modal-header">
               <h2>{getToolTitle(activeTool)}</h2>
               <button type="button" onClick={onClose} title="닫기">
