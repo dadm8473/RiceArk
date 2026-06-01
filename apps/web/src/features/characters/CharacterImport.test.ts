@@ -71,6 +71,42 @@ describe("CharacterImportPanel", () => {
     expect(html).toContain('maxLength="12"');
   });
 
+  it("uses a submit form so Enter can trigger character search", () => {
+    const html = renderToStaticMarkup(
+      createElement(CharacterImportPanel, {
+        name: "",
+        candidates: [],
+        selected: {},
+        onNameChange: vi.fn(),
+        onSearch: vi.fn(),
+        onSave: vi.fn(),
+        onToggle: vi.fn()
+      })
+    );
+
+    expect(html).toContain('<form class="inline-form"');
+    expect(html).toContain('type="submit"');
+  });
+
+  it("shows a compact searching indicator", () => {
+    const html = renderToStaticMarkup(
+      createElement(CharacterImportPanel, {
+        name: "냠수나이스1",
+        candidates: [],
+        selected: {},
+        searching: true,
+        onNameChange: vi.fn(),
+        onSearch: vi.fn(),
+        onSave: vi.fn(),
+        onToggle: vi.fn()
+      })
+    );
+
+    expect(html).toContain('aria-busy="true"');
+    expect(html).toContain("spin-icon");
+    expect(html).toContain("검색 중...");
+  });
+
   it("shows a message when a search returns no characters", () => {
     const html = renderToStaticMarkup(
       createElement(CharacterImportPanel, {

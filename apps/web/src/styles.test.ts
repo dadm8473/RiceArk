@@ -46,4 +46,11 @@ describe("matrix styles", () => {
     expect(inputBlock).toContain("flex: 1 1 220px;");
     expect(selectBlock).toContain("flex: 0 0 112px;");
   });
+
+  it("animates compact loading indicators", () => {
+    const spinBlock = styles.match(/\.spin-icon\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(styles).toContain("@keyframes spin");
+    expect(spinBlock).toContain("animation: spin 1s linear infinite;");
+  });
 });

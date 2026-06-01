@@ -598,6 +598,16 @@ button {
   cursor: pointer;
 }
 
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin-icon {
+  animation: spin 1s linear infinite;
+}
+
 .candidate-list {
   display: grid;
   gap: 6px;

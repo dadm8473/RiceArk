@@ -3,7 +3,7 @@ import {
   LOSTARK_CHARACTER_NAME_MAX_LENGTH,
   normalizeLostArkCharacterNameInput
 } from "@riceark/core";
-import { Search, UserPlus } from "lucide-react";
+import { LoaderCircle, Search, UserPlus } from "lucide-react";
 import { useState } from "react";
 import { apiGet, apiPost } from "../../api/client";
 
@@ -94,15 +94,22 @@ export function CharacterImportPanel({
 }: CharacterImportPanelProps) {
   return (
     <section className="tool-panel">
-      <div className="inline-form">
+      <form
+        className="inline-form"
+        aria-busy={searching}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!searching) onSearch();
+        }}
+      >
         <input
           maxLength={LOSTARK_CHARACTER_NAME_MAX_LENGTH}
           value={name}
           onChange={(event) => onNameChange(event.target.value)}
           placeholder="대표 캐릭터명"
         />
-        <button disabled={searching} type="button" onClick={onSearch} title="원정대 검색">
-          <Search size={16} />
+        <button disabled={searching} type="submit" title="원정대 검색">
+          {searching ? <LoaderCircle className="spin-icon" size={16} /> : <Search size={16} />}
           {searching ? "검색 중..." : "검색"}
         </button>
         {candidates.length > 0 ? (
@@ -111,7 +118,7 @@ export function CharacterImportPanel({
             {saving ? "등록 중..." : "선택 캐릭터 등록"}
           </button>
         ) : null}
-      </div>
+      </form>
       {message ? (
         <p className={`status-text ${messageTone === "error" ? "error-text" : "notice-text"}`} role={messageTone === "error" ? "alert" : "status"}>
           {message}
