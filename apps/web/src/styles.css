@@ -403,11 +403,11 @@ body {
 }
 
 .board-table-drag-button,
-.board-table-resize-handle {
+.board-table-resize-handle,
+.board-table-transpose-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
   height: 26px;
   min-height: 26px;
   padding: 0;
@@ -416,6 +416,11 @@ body {
   background: #f8fafc;
   touch-action: none;
   user-select: none;
+}
+
+.board-table-drag-button,
+.board-table-resize-handle {
+  width: 26px;
 }
 
 .board-table-drag-button {
@@ -434,8 +439,18 @@ body {
   cursor: nwse-resize;
 }
 
+.board-table-transpose-button {
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .board-table-drag-button:hover,
-.board-table-resize-handle:hover {
+.board-table-resize-handle:hover,
+.board-table-transpose-button:hover {
   color: #1f4fd1;
   border-color: #7fa4f8;
   background: #eef4ff;
@@ -826,6 +841,32 @@ body {
 .compact-notice {
   margin-top: -4px;
   font-size: 12px;
+}
+
+.transpose-preview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #d8dee8;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.transpose-preview div {
+  display: grid;
+  gap: 4px;
+}
+
+.transpose-preview span {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.transpose-preview strong {
+  color: #111827;
+  font-size: 13px;
 }
 
 .visibility-fieldset {

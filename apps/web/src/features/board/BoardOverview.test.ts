@@ -186,6 +186,13 @@ describe("BoardOverview", () => {
     expect(html).toContain('aria-label="숙제 표 크기 조절"');
   });
 
+  it("renders a table axis transpose preview control", () => {
+    const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
+
+    expect(html).toContain('aria-label="숙제 행/열 전환 미리보기"');
+    expect(html).toContain("행/열 전환");
+  });
+
   it("keeps hidden cells present for layout without rendering a checkbox", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {

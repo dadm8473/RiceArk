@@ -76,6 +76,11 @@ describe("board route schemas", () => {
     expect(boardTableLayoutPatchSchema.safeParse({ x: 0, y: 0, width: null, height: null }).success).toBe(true);
   });
 
+  it("validates board table ids for table-level actions", () => {
+    expect(boardTableIdParamSchema.safeParse({ id: "table-1" }).success).toBe(true);
+    expect(boardTableIdParamSchema.safeParse({ id: "table🙂" }).success).toBe(false);
+  });
+
   it("rejects unsafe board table layout patches", () => {
     expect(boardTableLayoutPatchSchema.safeParse({ x: -1, y: 0, width: 360, height: 240 }).success).toBe(false);
     expect(boardTableLayoutPatchSchema.safeParse({ x: 0, y: -1, width: 360, height: 240 }).success).toBe(false);

@@ -70,6 +70,20 @@ export interface BoardTableLayoutPatch {
   height: number | null;
 }
 
+export interface BoardAxisItemTransposeSource {
+  id: string;
+  axis: BoardAxis;
+  sort_order: number;
+}
+
+export interface BoardAxisItemTransposePlanEntry {
+  id: string;
+  fromAxis: BoardAxis;
+  toAxis: BoardAxis;
+  temporarySortOrder: number;
+  finalSortOrder: number;
+}
+
 export interface UpdateBoardAxisItemInput {
   label: string;
 }
@@ -162,6 +176,14 @@ export function boardRolesForTableOrientation(orientation: BoardOrientation): Bo
   };
 }
 
+export function transposeBoardRoles(input: BoardRoles): BoardRoles {
+  return {
+    rowRole: input.columnRole,
+    columnRole: input.rowRole,
+    taskAxis: input.taskAxis === "rows" ? "columns" : input.taskAxis === "columns" ? "rows" : "none"
+  };
+}
+
 export function defaultBoardRolesForOrientation(orientation: ChecklistOrientation): BoardRoles {
   return boardRolesForTableOrientation(orientation);
 }
@@ -207,6 +229,27 @@ export function defaultOrientationForTableRoles(
   if (input.rowRole === "task" && input.columnRole === "character") return "tasks_rows";
   if (input.rowRole === "character" && input.columnRole === "task") return "tasks_columns";
   return fallback;
+}
+
+export function buildBoardAxisItemTransposePlan(
+  axisItems: BoardAxisItemTransposeSource[]
+): BoardAxisItemTransposePlanEntry[] {
+  const nextTemporaryIndex: Record<BoardAxis, number> = {
+    row: 0,
+    column: 0
+  };
+
+  return axisItems.map((item) => {
+    const isRow = item.axis === "row";
+    nextTemporaryIndex[item.axis] += 1;
+    return {
+      id: item.id,
+      fromAxis: item.axis,
+      toAxis: isRow ? "column" : "row",
+      temporarySortOrder: (isRow ? -1000000 : -2000000) - nextTemporaryIndex[item.axis] * 10,
+      finalSortOrder: item.sort_order
+    };
+  });
 }
 
 export function mergeBoardCompletionPatches(patches: BoardCompletionPatch[]): BoardCompletionPatch[] {
@@ -769,6 +812,72 @@ export async function updateBoardTableLayout(
     .bind(patch.x, patch.y, patch.width, patch.height, tableId, userId)
     .run();
   return (result.meta.changes ?? 0) > 0;
+}
+
+export async function transposeBoardTable(env: Env, userId: string, tableId: string): Promise<boolean> {
+  const table = await env.DB.prepare(
+    "SELECT id, row_role, column_role, task_axis FROM board_tables WHERE id = ? AND user_id = ?"
+  )
+    .bind(tableId, userId)
+    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole; task_axis: BoardTaskAxis }>();
+  if (!table) return false;
+
+  const axisItems = await env.DB.prepare(
+    "SELECT id, axis, sort_order FROM board_axis_items WHERE user_id = ? AND table_id = ? ORDER BY axis, sort_order, label"
+  )
+    .bind(userId, tableId)
+    .all<BoardAxisItemTransposeSource>();
+  const roles = transposeBoardRoles({
+    rowRole: table.row_role,
+    columnRole: table.column_role,
+    taskAxis: table.task_axis
+  });
+  const plan = buildBoardAxisItemTransposePlan(axisItems.results);
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE board_tables
+       SET row_role = ?, column_role = ?, task_axis = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`
+    ).bind(roles.rowRole, roles.columnRole, roles.taskAxis, tableId, userId),
+    ...plan.map((item) =>
+      env.DB.prepare(
+        `UPDATE board_axis_items
+         SET sort_order = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND user_id = ? AND table_id = ?`
+      ).bind(item.temporarySortOrder, item.id, userId, tableId)
+    ),
+    ...plan.map((item) =>
+      env.DB.prepare(
+        `UPDATE board_axis_items
+         SET axis = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND user_id = ? AND table_id = ?`
+      ).bind(item.toAxis, item.id, userId, tableId)
+    ),
+    ...plan.map((item) =>
+      env.DB.prepare(
+        `UPDATE board_axis_items
+         SET sort_order = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND user_id = ? AND table_id = ?`
+      ).bind(item.finalSortOrder, item.id, userId, tableId)
+    ),
+    env.DB.prepare(
+      `UPDATE board_cell_states
+       SET row_item_id = column_item_id,
+           column_item_id = row_item_id,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = ? AND table_id = ?`
+    ).bind(userId, tableId),
+    env.DB.prepare(
+      `UPDATE board_cell_completions
+       SET row_item_id = column_item_id,
+           column_item_id = row_item_id,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = ? AND table_id = ?`
+    ).bind(userId, tableId)
+  ]);
+
+  return true;
 }
 
 export async function updateBoardAxisItem(

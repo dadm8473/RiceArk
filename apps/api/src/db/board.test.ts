@@ -5,12 +5,14 @@ import {
   buildBoardCompletionPatchesFromLegacy,
   buildDefaultAxisItemSeeds,
   buildManualBoardAxisItemDraft,
+  buildBoardAxisItemTransposePlan,
   boardRolesForTableOrientation,
   defaultBoardRolesForOrientation,
   defaultOrientationForTableRoles,
   findUnauthorizedBoardCellStatePatches,
   findUnauthorizedBoardCompletionPatches,
-  mergeBoardCompletionPatches
+  mergeBoardCompletionPatches,
+  transposeBoardRoles
 } from "./board";
 
 describe("board db defaults", () => {
@@ -48,6 +50,47 @@ describe("board db defaults", () => {
       columnRole: "custom",
       taskAxis: "none"
     });
+  });
+
+  it("transposes board table roles without changing custom semantics", () => {
+    expect(transposeBoardRoles({ rowRole: "task", columnRole: "character", taskAxis: "rows" })).toEqual({
+      rowRole: "character",
+      columnRole: "task",
+      taskAxis: "columns"
+    });
+    expect(transposeBoardRoles({ rowRole: "custom", columnRole: "custom", taskAxis: "none" })).toEqual({
+      rowRole: "custom",
+      columnRole: "custom",
+      taskAxis: "none"
+    });
+  });
+
+  it("plans axis transposition with temporary sort orders to avoid unique collisions", () => {
+    expect(
+      buildBoardAxisItemTransposePlan([
+        { id: "row-task-1", axis: "row", sort_order: 0 },
+        { id: "row-task-2", axis: "row", sort_order: 10 },
+        { id: "column-character-1", axis: "column", sort_order: 0 },
+        { id: "column-character-2", axis: "column", sort_order: 10 }
+      ])
+    ).toEqual([
+      { id: "row-task-1", fromAxis: "row", toAxis: "column", temporarySortOrder: -1000010, finalSortOrder: 0 },
+      { id: "row-task-2", fromAxis: "row", toAxis: "column", temporarySortOrder: -1000020, finalSortOrder: 10 },
+      {
+        id: "column-character-1",
+        fromAxis: "column",
+        toAxis: "row",
+        temporarySortOrder: -2000010,
+        finalSortOrder: 0
+      },
+      {
+        id: "column-character-2",
+        fromAxis: "column",
+        toAxis: "row",
+        temporarySortOrder: -2000020,
+        finalSortOrder: 10
+      }
+    ]);
   });
 
   it("builds task-like manual axis items when the axis role is task", () => {

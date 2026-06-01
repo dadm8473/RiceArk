@@ -11,6 +11,7 @@ import {
   reorderBoardAxisItems,
   saveBoardCellStatePatch,
   saveBoardCompletionPatches,
+  transposeBoardTable,
   updateBoardAxisItem,
   updateBoardAxisItemSize,
   updateBoardTableLayout,
@@ -164,6 +165,16 @@ boardRoutes.patch(
     return c.json({ ok: true });
   }
 );
+
+boardRoutes.post("/board/tables/:id/transpose", zValidator("param", boardTableIdParamSchema), async (c) => {
+  const user = await requireUser(c);
+  const { id } = c.req.valid("param");
+  const updated = await transposeBoardTable(c.env, user.id, id);
+  if (!updated) {
+    throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
+  }
+  return c.json({ ok: true });
+});
 
 boardRoutes.patch(
   "/board/axis-items/:id",

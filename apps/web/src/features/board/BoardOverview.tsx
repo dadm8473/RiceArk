@@ -17,7 +17,7 @@ import {
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Eye, EyeOff, Maximize2, Move, Save, Trash2, X } from "lucide-react";
+import { ArrowLeftRight, Eye, EyeOff, Maximize2, Move, Save, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type PointerEvent, type ReactNode } from "react";
 import { apiDelete, apiPatch, apiPost } from "../../api/client";
 import { applyBoardCellStatePatch, type BoardCellStatePatch } from "./cellStates";
@@ -70,6 +70,15 @@ const BOARD_TABLE_FALLBACK_HEIGHT = 240;
 
 function tableOrientationLabel(table: BoardTable): string {
   return `${roleLabels[table.row_role]} 행 / ${roleLabels[table.column_role]} 열`;
+}
+
+function getTransposedTable(table: BoardTable): BoardTable {
+  return {
+    ...table,
+    row_role: table.column_role,
+    column_role: table.row_role,
+    task_axis: table.task_axis === "rows" ? "columns" : table.task_axis === "columns" ? "rows" : "none"
+  };
 }
 
 function axisCount(axisItems: BoardAxisItem[], tableId: string, axis: "row" | "column"): number {
@@ -143,6 +152,9 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   const [activeSortableId, setActiveSortableId] = useState<string | null>(null);
   const [activeTableLayoutDrag, setActiveTableLayoutDrag] = useState<ActiveBoardTableLayoutDrag | null>(null);
   const [editingAxisItem, setEditingAxisItem] = useState<BoardAxisItem | null>(null);
+  const [transposingTable, setTransposingTable] = useState<BoardTable | null>(null);
+  const [pendingTransposeTableId, setPendingTransposeTableId] = useState<string | null>(null);
+  const [transposeError, setTransposeError] = useState<string | null>(null);
   const sortedSheets = useMemo(
     () => board.sheets.slice().sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name)),
     [board.sheets]
@@ -306,6 +318,21 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     }
   }
 
+  async function handleTableTranspose(tableId: string) {
+    setPendingTransposeTableId(tableId);
+    setTransposeError(null);
+
+    try {
+      await apiPost<{ ok: true }>("/api/board/tables/" + encodeURIComponent(tableId) + "/transpose", {});
+      setTransposingTable(null);
+      await refreshBoard();
+    } catch (err) {
+      setTransposeError(err instanceof Error ? err.message : "행/열을 전환하지 못했습니다.");
+    } finally {
+      setPendingTransposeTableId(null);
+    }
+  }
+
   function getTableLayoutPointerStart(
     table: BoardTable,
     mode: BoardTableLayoutDragMode,
@@ -449,6 +476,19 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
                   <strong>{table.name}</strong>
                   <span>{tableOrientationLabel(table)}</span>
                 </div>
+                <button
+                  className="board-table-transpose-button"
+                  type="button"
+                  aria-label={`${table.name} 행/열 전환 미리보기`}
+                  disabled={isReorderMode}
+                  onClick={() => {
+                    setTransposeError(null);
+                    setTransposingTable(table);
+                  }}
+                >
+                  <ArrowLeftRight aria-hidden="true" size={14} />
+                  행/열 전환
+                </button>
               </div>
               <div className="board-table-metrics">
                 <span>행 {axisCount(axisItems, table.id, "row")}</span>
@@ -609,7 +649,71 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
           onSave={handleAxisItemSave}
         />
       ) : null}
+      {transposingTable ? (
+        <BoardTableTransposeModal
+          error={transposeError}
+          isPending={pendingTransposeTableId === transposingTable.id}
+          table={transposingTable}
+          onClose={() => setTransposingTable(null)}
+          onConfirm={handleTableTranspose}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function BoardTableTransposeModal({
+  error,
+  isPending,
+  onClose,
+  onConfirm,
+  table
+}: {
+  error: string | null;
+  isPending: boolean;
+  onClose: () => void;
+  onConfirm: (tableId: string) => Promise<void>;
+  table: BoardTable;
+}) {
+  const transposedTable = getTransposedTable(table);
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="tool-modal edit-modal" aria-modal="true" role="dialog" aria-label="행/열 전환 미리보기">
+        <header className="tool-modal-header">
+          <h2>행/열 전환</h2>
+          <button className="modal-close-button" type="button" aria-label="닫기" onClick={onClose}>
+            <X aria-hidden="true" size={18} />
+          </button>
+        </header>
+        <div className="tool-modal-body edit-form">
+          <div className="transpose-preview">
+            <div>
+              <span>현재</span>
+              <strong>{tableOrientationLabel(table)}</strong>
+            </div>
+            <ArrowLeftRight aria-hidden="true" size={18} />
+            <div>
+              <span>전환 후</span>
+              <strong>{tableOrientationLabel(transposedTable)}</strong>
+            </div>
+          </div>
+          <p className="compact-notice">
+            행/열 항목과 체크 상태, 숨김 상태를 함께 전환합니다. 같은 숙제/캐릭터 조합의 데이터는 유지됩니다.
+          </p>
+          {error ? <p className="error-text">{error}</p> : null}
+          <div className="edit-actions">
+            <button disabled={isPending} type="button" onClick={onClose}>
+              취소
+            </button>
+            <button className="primary-button" disabled={isPending} type="button" onClick={() => void onConfirm(table.id)}>
+              <ArrowLeftRight aria-hidden="true" size={16} />
+              전환 적용
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 
