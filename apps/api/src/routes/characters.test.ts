@@ -11,6 +11,11 @@ describe("characterDisplayNameSchema", () => {
   it("rejects display names longer than 20 characters", () => {
     expect(characterDisplayNameSchema.safeParse({ displayName: "123456789012345678901" }).success).toBe(false);
   });
+
+  it("rejects emoji and invisible control characters", () => {
+    expect(characterDisplayNameSchema.safeParse({ displayName: "냠🙂" }).success).toBe(false);
+    expect(characterDisplayNameSchema.safeParse({ displayName: "냠\u200B1" }).success).toBe(false);
+  });
 });
 
 describe("characterDetailsSchema", () => {
@@ -57,6 +62,48 @@ describe("characterDetailsSchema", () => {
         memo: null
       }).success
     ).toBe(false);
+  });
+
+  it("rejects unsafe editable character text", () => {
+    expect(
+      characterDetailsSchema.safeParse({
+        displayName: "냠1",
+        serverName: "루\u0000페온",
+        className: "소서리스",
+        itemLevel: "1,640.00",
+        combatPower: "2,549.41",
+        memo: "상아탑 고정"
+      }).success
+    ).toBe(false);
+    expect(
+      characterDetailsSchema.safeParse({
+        displayName: "냠1",
+        serverName: "루페온",
+        className: "소서리스",
+        itemLevel: "1,640.00",
+        combatPower: "2,549.41",
+        memo: "메모🙂"
+      }).success
+    ).toBe(false);
+  });
+
+  it("normalizes safe editable character text", () => {
+    expect(
+      characterDetailsSchema.parse({
+        displayName: "  ＮＡＭ１  ",
+        serverName: " 루페온 ",
+        className: "소서리스",
+        itemLevel: "１,６４０.００",
+        combatPower: "２,５４９.４１",
+        memo: "  상아탑\r\n고정  "
+      })
+    ).toMatchObject({
+      displayName: "NAM1",
+      serverName: "루페온",
+      itemLevel: "1,640.00",
+      combatPower: "2,549.41",
+      memo: "상아탑\n고정"
+    });
   });
 });
 

@@ -6,6 +6,7 @@ import { requireUser } from "../auth/requireUser";
 import { createUserTask, deleteTaskOverride, reorderTasks, updateTaskOverride } from "../db/tasks";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
+import { resourceIdSchema, safeText } from "../http/input";
 
 export const taskRoutes = new Hono<{ Bindings: Env }>();
 
@@ -15,17 +16,17 @@ function hasDuplicates(values: string[]): boolean {
 
 export const taskOrderSchema = z
   .object({
-    taskIds: z.array(z.string().min(1)).max(200)
+    taskIds: z.array(resourceIdSchema).max(200)
   })
   .refine((input) => !hasDuplicates(input.taskIds), {
     message: "Duplicate task ids are not allowed",
     path: ["taskIds"]
   });
 
-const taskNameSchema = z.string().trim().min(1).max(40);
+const safeTaskNameSchema = safeText({ maxChars: 40, maxBytes: 160 });
 
 export const createTaskSchema = z.object({
-  name: taskNameSchema,
+  name: safeTaskNameSchema,
   scope: z.literal("character").optional().default("character"),
   resetType: z.enum(["daily", "weekly", "biweekly", "custom"]),
   anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -33,14 +34,14 @@ export const createTaskSchema = z.object({
 });
 
 export const updateTaskSchema = z.object({
-  name: taskNameSchema,
+  name: safeTaskNameSchema,
   resetType: z.enum(["daily", "weekly", "biweekly", "custom"]),
   anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   intervalDays: z.number().int().min(1).max(365).optional()
 });
 
 export const taskIdParamSchema = z.object({
-  id: z.string().min(1)
+  id: resourceIdSchema
 });
 
 taskRoutes.patch(

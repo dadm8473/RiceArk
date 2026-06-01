@@ -83,7 +83,7 @@ export function CharacterImportPanel({
   return (
     <section className="tool-panel">
       <div className="inline-form">
-        <input value={name} onChange={(event) => onNameChange(event.target.value)} placeholder="대표 캐릭터명" />
+        <input maxLength={20} value={name} onChange={(event) => onNameChange(event.target.value)} placeholder="대표 캐릭터명" />
         <button disabled={searching} type="button" onClick={onSearch} title="원정대 검색">
           <Search size={16} />
           {searching ? "검색 중..." : "검색"}

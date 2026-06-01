@@ -14,7 +14,7 @@ export function TaskForm() {
   return (
     <section className="tool-panel">
       <div className="inline-form">
-        <input value={name} onChange={(event) => setName(event.target.value)} placeholder="숙제 이름" />
+        <input maxLength={40} value={name} onChange={(event) => setName(event.target.value)} placeholder="숙제 이름" />
         <select value={resetType} onChange={(event) => setResetType(event.target.value as "daily" | "weekly" | "biweekly" | "custom")}>
           <option value="daily">일간</option>
           <option value="weekly">주간</option>

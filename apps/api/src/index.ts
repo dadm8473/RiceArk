@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./env";
+import { bodyLimit } from "./http/bodyLimit";
 import { ApiError, jsonError, notFound } from "./http/errors";
 import { authRoutes } from "./routes/auth";
 import { characterRoutes } from "./routes/characters";
@@ -20,6 +21,8 @@ app.use("*", async (c, next) => {
     credentials: true
   })(c, next);
 });
+
+app.use("*", bodyLimit());
 
 app.route("/", authRoutes);
 app.route("/", characterRoutes);

@@ -21,4 +21,22 @@ describe("api shell", () => {
       error: { code: "not_found", message: "Route not found" }
     });
   });
+
+  it("rejects oversized request bodies before route handling", async () => {
+    const body = JSON.stringify({ name: "a".repeat(17_000), resetType: "daily" });
+    const res = await app.request(
+      "/api/tasks",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": String(body.length) },
+        body
+      },
+      env
+    );
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({
+      error: { code: "payload_too_large", message: "Request body is too large" }
+    });
+  });
 });

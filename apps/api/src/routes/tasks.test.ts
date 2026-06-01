@@ -23,6 +23,11 @@ describe("createTaskSchema", () => {
   it("rejects roster as a special task scope", () => {
     expect(createTaskSchema.safeParse({ name: "세르카", scope: "roster", resetType: "daily" }).success).toBe(false);
   });
+
+  it("rejects unsafe task names", () => {
+    expect(createTaskSchema.safeParse({ name: "쿠르잔🙂", resetType: "daily" }).success).toBe(false);
+    expect(createTaskSchema.safeParse({ name: "쿠르잔\u200B전선", resetType: "daily" }).success).toBe(false);
+  });
 });
 
 describe("updateTaskSchema", () => {
@@ -39,6 +44,12 @@ describe("updateTaskSchema", () => {
 
   it("rejects whitespace-only task names", () => {
     expect(updateTaskSchema.safeParse({ name: "   ", resetType: "daily" }).success).toBe(false);
+  });
+
+  it("normalizes safe task names", () => {
+    expect(updateTaskSchema.parse({ name: "  ４막: 아르모체  ", resetType: "weekly" })).toMatchObject({
+      name: "4막: 아르모체"
+    });
   });
 });
 

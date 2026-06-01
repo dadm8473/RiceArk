@@ -6,14 +6,15 @@ import { requireUser } from "../auth/requireUser";
 import { saveCompletionPatches } from "../db/completions";
 import { loadDashboard } from "../db/dashboard";
 import type { Env } from "../env";
+import { periodKeySchema, resourceIdSchema } from "../http/input";
 
-const patchSchema = z.object({
+export const completionPatchSchema = z.object({
   patches: z
     .array(
       z.object({
-        taskId: z.string(),
-        characterId: z.string().nullable(),
-        periodKey: z.string(),
+        taskId: resourceIdSchema,
+        characterId: resourceIdSchema.nullable(),
+        periodKey: periodKeySchema,
         completed: z.boolean()
       })
     )
@@ -28,7 +29,7 @@ dashboardRoutes.get("/dashboard", async (c) => {
   return c.json(dashboard);
 });
 
-dashboardRoutes.patch("/completions", zValidator("json", patchSchema), async (c) => {
+dashboardRoutes.patch("/completions", zValidator("json", completionPatchSchema), async (c) => {
   const user = await requireUser(c);
   const { patches } = c.req.valid("json");
   await saveCompletionPatches(c.env, user.id, patches as CompletionPatch[]);

@@ -11,29 +11,31 @@ import {
 } from "../db/characters";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
+import { resourceIdSchema, safeText } from "../http/input";
 import { searchRosterCharacters } from "../lostark/client";
 
 export const characterRoutes = new Hono<{ Bindings: Env }>();
 
 export const characterDisplayNameSchema = z.object({
-  displayName: z.string().max(20).nullable()
+  displayName: safeText({ allowEmpty: true, maxChars: 20 }).nullable()
 });
 
-const editableCharacterText = (max: number) => z.string().trim().min(1).max(max);
+const editableCharacterText = (max: number) => safeText({ maxChars: max });
+const optionalEditableCharacterText = (max: number) => safeText({ allowEmpty: true, maxChars: max }).nullable();
 
 export const characterDetailsSchema = z
   .object({
-    displayName: z.string().max(20).nullable(),
+    displayName: optionalEditableCharacterText(20),
     serverName: editableCharacterText(20),
-    className: editableCharacterText(30),
+    className: editableCharacterText(20),
     itemLevel: editableCharacterText(20),
-    combatPower: z.string().min(1).max(30).nullable(),
-    memo: z.string().max(200).nullable()
+    combatPower: optionalEditableCharacterText(20),
+    memo: safeText({ allowEmpty: true, maxBytes: 1024, maxChars: 200, multiline: true }).nullable()
   })
   .strict();
 
 export const characterIdParamSchema = z.object({
-  id: z.string().min(1)
+  id: resourceIdSchema
 });
 
 function hasDuplicates(values: string[]): boolean {
@@ -42,7 +44,7 @@ function hasDuplicates(values: string[]): boolean {
 
 export const characterOrderSchema = z
   .object({
-    characterIds: z.array(z.string().min(1)).max(100)
+    characterIds: z.array(resourceIdSchema).max(100)
   })
   .refine((input) => !hasDuplicates(input.characterIds), {
     message: "Duplicate character ids are not allowed",
@@ -51,7 +53,7 @@ export const characterOrderSchema = z
 
 characterRoutes.get(
   "/characters/search",
-  zValidator("query", z.object({ name: z.string().min(1).max(20) })),
+  zValidator("query", z.object({ name: safeText({ maxChars: 20 }) })),
   async (c) => {
     await requireUser(c);
     const { name } = c.req.valid("query");
@@ -130,11 +132,11 @@ characterRoutes.post(
       characters: z
         .array(
           z.object({
-            name: z.string().min(1).max(20),
-            serverName: z.string().min(1).max(20),
-            className: z.string().min(1).max(30),
-            itemLevel: z.string().min(1).max(20),
-            combatPower: z.string().min(1).max(30).nullable().optional()
+            name: editableCharacterText(20),
+            serverName: editableCharacterText(20),
+            className: editableCharacterText(20),
+            itemLevel: editableCharacterText(20),
+            combatPower: optionalEditableCharacterText(20).optional()
           })
         )
         .min(1)
