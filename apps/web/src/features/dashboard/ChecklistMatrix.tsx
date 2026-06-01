@@ -391,31 +391,36 @@ export function CharacterEditModal({
           </button>
         </div>
         <div className="tool-modal-body edit-form">
-          <label>
-            캐릭터 이름
-            <input readOnly value={character.name} />
-          </label>
-          <label>
-            축약 이름
-            <input maxLength={20} placeholder={character.name} value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
-          </label>
-          <label>
-            서버
-            <input maxLength={20} value={serverName} onChange={(event) => setServerName(event.target.value)} />
-          </label>
-          <label>
-            직업
-            <input maxLength={30} value={className} onChange={(event) => setClassName(event.target.value)} />
-          </label>
-          <label>
-            레벨
-            <input maxLength={20} value={itemLevel} onChange={(event) => setItemLevel(event.target.value)} />
-          </label>
-          <label>
-            전투력
-            <input maxLength={30} value={combatPower} onChange={(event) => setCombatPower(event.target.value)} />
-          </label>
-          <label>
+          <div className="readonly-value">
+            <span>캐릭터 이름</span>
+            <strong>{character.name}</strong>
+          </div>
+          <div className="compact-edit-grid">
+            <label>
+              축약 이름
+              <input maxLength={20} placeholder={character.name} value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+            </label>
+            <label>
+              서버
+              <input maxLength={20} value={serverName} onChange={(event) => setServerName(event.target.value)} />
+            </label>
+            <label>
+              직업
+              <input maxLength={20} value={className} onChange={(event) => setClassName(event.target.value)} />
+            </label>
+            <label>
+              레벨
+              <input maxLength={20} value={itemLevel} onChange={(event) => setItemLevel(event.target.value)} />
+            </label>
+            <label>
+              전투력
+              <input maxLength={20} placeholder="정보 없음" value={combatPower} onChange={(event) => setCombatPower(event.target.value)} />
+            </label>
+          </div>
+          {!character.combat_power ? (
+            <p className="notice-text compact-notice">전투력이 비어 있으면 캐릭터 가져오기를 다시 실행하면 업데이트됩니다.</p>
+          ) : null}
+          <label className="memo-field">
             메모
             <textarea maxLength={200} value={memo} onChange={(event) => setMemo(event.target.value)} />
           </label>

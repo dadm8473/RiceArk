@@ -403,6 +403,38 @@ body {
   font-weight: 700;
 }
 
+.readonly-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  border: 1px solid #d8dee8;
+  padding: 6px 8px;
+  color: #2f3a4b;
+  background: #f8fafc;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.readonly-value strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #111827;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.compact-edit-grid label {
+  gap: 4px;
+}
+
 .edit-form input,
 .edit-form select,
 .edit-form textarea {
@@ -415,10 +447,23 @@ body {
   font: inherit;
 }
 
+.compact-edit-grid input {
+  min-height: 32px;
+}
+
 .edit-form textarea {
   min-height: 76px;
   padding: 8px;
   resize: vertical;
+}
+
+.memo-field {
+  margin-top: 2px;
+}
+
+.compact-notice {
+  margin-top: -4px;
+  font-size: 12px;
 }
 
 .visibility-fieldset {
