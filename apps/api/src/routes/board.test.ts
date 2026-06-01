@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { boardAxisItemIdParamSchema, boardAxisSizePatchSchema, boardCompletionPatchSchema } from "./board";
+import {
+  boardAxisItemIdParamSchema,
+  boardAxisSizePatchSchema,
+  boardCompletionPatchSchema,
+  createBoardSheetSchema,
+  createBoardTableSchema
+} from "./board";
 
 describe("board route schemas", () => {
   it("accepts small board completion batches", () => {
@@ -55,5 +61,21 @@ describe("board route schemas", () => {
   it("validates board axis item ids for size updates", () => {
     expect(boardAxisItemIdParamSchema.safeParse({ id: "axis-item-1" }).success).toBe(true);
     expect(boardAxisItemIdParamSchema.safeParse({ id: "axis🙂" }).success).toBe(false);
+  });
+
+  it("accepts normalized sheet and table names for board creation", () => {
+    expect(createBoardSheetSchema.parse({ name: "  원정대  " })).toEqual({ name: "원정대" });
+    expect(createBoardTableSchema.parse({ sheetId: "sheet-1", name: "  격주 이벤트  ", orientation: "custom" })).toEqual({
+      sheetId: "sheet-1",
+      name: "격주 이벤트",
+      orientation: "custom"
+    });
+  });
+
+  it("rejects unsafe board creation input", () => {
+    expect(createBoardSheetSchema.safeParse({ name: "원정대🙂" }).success).toBe(false);
+    expect(createBoardSheetSchema.safeParse({ name: "" }).success).toBe(false);
+    expect(createBoardTableSchema.safeParse({ sheetId: "sheet🙂", name: "숙제", orientation: "tasks_rows" }).success).toBe(false);
+    expect(createBoardTableSchema.safeParse({ sheetId: "sheet-1", name: "숙제", orientation: "unknown" }).success).toBe(false);
   });
 });

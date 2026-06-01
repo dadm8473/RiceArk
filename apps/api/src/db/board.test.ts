@@ -4,6 +4,7 @@ import {
   DEFAULT_TABLE_NAME,
   buildBoardCompletionPatchesFromLegacy,
   buildDefaultAxisItemSeeds,
+  boardRolesForTableOrientation,
   defaultBoardRolesForOrientation,
   defaultOrientationForTableRoles,
   findUnauthorizedBoardCompletionPatches,
@@ -26,6 +27,24 @@ describe("board db defaults", () => {
       rowRole: "character",
       columnRole: "task",
       taskAxis: "columns"
+    });
+  });
+
+  it("maps creatable table orientations to board roles", () => {
+    expect(boardRolesForTableOrientation("tasks_rows")).toMatchObject({
+      rowRole: "task",
+      columnRole: "character",
+      taskAxis: "rows"
+    });
+    expect(boardRolesForTableOrientation("tasks_columns")).toMatchObject({
+      rowRole: "character",
+      columnRole: "task",
+      taskAxis: "columns"
+    });
+    expect(boardRolesForTableOrientation("custom")).toMatchObject({
+      rowRole: "custom",
+      columnRole: "custom",
+      taskAxis: "none"
     });
   });
 

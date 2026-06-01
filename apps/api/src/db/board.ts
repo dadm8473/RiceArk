@@ -1,4 +1,10 @@
-import { boardCompletionKey, type BoardAxis, type BoardAxisRole, type BoardTaskAxis } from "@riceark/core";
+import {
+  boardCompletionKey,
+  type BoardAxis,
+  type BoardAxisRole,
+  type BoardOrientation,
+  type BoardTaskAxis
+} from "@riceark/core";
 import type { Env } from "../env";
 import type { ChecklistOrientation } from "./settings";
 
@@ -26,6 +32,16 @@ export interface BoardCompletionPatch {
   columnItemId: string;
   periodKey: string;
   completed: boolean;
+}
+
+export interface CreateBoardSheetInput {
+  name: string;
+}
+
+export interface CreateBoardTableInput {
+  sheetId: string;
+  name: string;
+  orientation: BoardOrientation;
 }
 
 export interface AuthorizedBoardCompletionTarget {
@@ -79,7 +95,15 @@ export interface DefaultAxisItemSeed {
 
 const DEFAULT_TASK_COLORS = ["#2563eb", "#13795b", "#b45309", "#7c3aed", "#be123c", "#0f766e"];
 
-export function defaultBoardRolesForOrientation(orientation: ChecklistOrientation): BoardRoles {
+export function boardRolesForTableOrientation(orientation: BoardOrientation): BoardRoles {
+  if (orientation === "custom") {
+    return {
+      rowRole: "custom",
+      columnRole: "custom",
+      taskAxis: "none"
+    };
+  }
+
   if (orientation === "tasks_columns") {
     return {
       rowRole: "character",
@@ -93,6 +117,10 @@ export function defaultBoardRolesForOrientation(orientation: ChecklistOrientatio
     columnRole: "character",
     taskAxis: "rows"
   };
+}
+
+export function defaultBoardRolesForOrientation(orientation: ChecklistOrientation): BoardRoles {
+  return boardRolesForTableOrientation(orientation);
 }
 
 export function defaultOrientationForTableRoles(
@@ -465,6 +493,68 @@ export async function loadBoard(env: Env, userId: string): Promise<BoardPayload>
     cellStates: cellStates.results,
     completions: completions.results
   };
+}
+
+export async function createBoardSheet(
+  env: Env,
+  userId: string,
+  input: CreateBoardSheetInput
+): Promise<{ id: string } | null> {
+  await ensureDefaultBoard(env, userId);
+
+  const existing = await env.DB.prepare("SELECT id FROM sheets WHERE user_id = ? AND name = ?")
+    .bind(userId, input.name)
+    .first<{ id: string }>();
+  if (existing) return null;
+
+  const maxSort = await env.DB.prepare("SELECT COALESCE(MAX(sort_order), -10) AS maxSortOrder FROM sheets WHERE user_id = ?")
+    .bind(userId)
+    .first<{ maxSortOrder: number | null }>();
+  const id = crypto.randomUUID();
+  const sortOrder = (maxSort?.maxSortOrder ?? -10) + 10;
+
+  await env.DB.prepare(
+    `INSERT INTO sheets (id, user_id, name, sort_order, is_default)
+     VALUES (?, ?, ?, ?, 0)`
+  )
+    .bind(id, userId, input.name, sortOrder)
+    .run();
+
+  return { id };
+}
+
+export async function createBoardTable(
+  env: Env,
+  userId: string,
+  input: CreateBoardTableInput
+): Promise<{ id: string } | null> {
+  await ensureDefaultBoard(env, userId);
+
+  const sheet = await env.DB.prepare("SELECT id FROM sheets WHERE id = ? AND user_id = ?")
+    .bind(input.sheetId, userId)
+    .first<{ id: string }>();
+  if (!sheet) return null;
+
+  const placement = await env.DB.prepare(
+    "SELECT COALESCE(MAX(sort_order), -10) AS maxSortOrder, COUNT(*) AS tableCount FROM board_tables WHERE user_id = ? AND sheet_id = ?"
+  )
+    .bind(userId, input.sheetId)
+    .first<{ maxSortOrder: number | null; tableCount: number }>();
+  const id = crypto.randomUUID();
+  const sortOrder = (placement?.maxSortOrder ?? -10) + 10;
+  const y = (placement?.tableCount ?? 0) * 220;
+  const roles = boardRolesForTableOrientation(input.orientation);
+
+  await env.DB.prepare(
+    `INSERT INTO board_tables (
+       id, user_id, sheet_id, name, sort_order, x, y, row_role, column_role, task_axis
+     )
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
+  )
+    .bind(id, userId, input.sheetId, input.name, sortOrder, y, roles.rowRole, roles.columnRole, roles.taskAxis)
+    .run();
+
+  return { id };
 }
 
 export async function saveBoardCompletionPatches(

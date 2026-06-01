@@ -169,6 +169,48 @@ body {
   background: #2563eb;
 }
 
+.board-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.board-create-form {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.board-create-form input,
+.board-create-form select {
+  width: 120px;
+  min-height: 30px;
+  border: 1px solid #8a96a8;
+  border-radius: 0;
+  padding: 0 8px;
+  color: #111827;
+  background: #ffffff;
+}
+
+.board-create-form select {
+  width: 104px;
+}
+
+.board-create-form button {
+  min-height: 30px;
+  border-radius: 0;
+  white-space: nowrap;
+}
+
+.board-form-error {
+  margin: 0;
+  color: #b42318;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .board-canvas {
   display: flex;
   align-items: flex-start;

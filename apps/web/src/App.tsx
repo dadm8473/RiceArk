@@ -61,7 +61,7 @@ export function App() {
               onClose={() => setActiveTool(null)}
               onOpen={setActiveTool}
             />
-            {board.data ? <BoardOverview board={board.data} /> : null}
+            {board.data ? <BoardOverview board={board.data} onBoardChanged={board.reload} /> : null}
             <ChecklistMatrix dashboard={data} />
           </>
         ) : null}

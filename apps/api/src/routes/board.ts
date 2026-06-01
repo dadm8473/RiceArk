@@ -3,6 +3,8 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { requireUser } from "../auth/requireUser";
 import {
+  createBoardSheet,
+  createBoardTable,
   loadBoard,
   saveBoardCompletionPatches,
   updateBoardAxisItemSize,
@@ -10,7 +12,21 @@ import {
 } from "../db/board";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
-import { periodKeySchema, resourceIdSchema } from "../http/input";
+import { periodKeySchema, resourceIdSchema, safeText } from "../http/input";
+
+const safeBoardNameSchema = safeText({ maxChars: 30, maxBytes: 120 });
+
+export const boardTableOrientationSchema = z.enum(["tasks_rows", "tasks_columns", "custom"]);
+
+export const createBoardSheetSchema = z.object({
+  name: safeBoardNameSchema
+});
+
+export const createBoardTableSchema = z.object({
+  sheetId: resourceIdSchema,
+  name: safeBoardNameSchema,
+  orientation: boardTableOrientationSchema
+});
 
 export const boardCompletionPatchSchema = z.object({
   patches: z
@@ -40,6 +56,26 @@ boardRoutes.get("/board", async (c) => {
   const user = await requireUser(c);
   const board = await loadBoard(c.env, user.id);
   return c.json(board);
+});
+
+boardRoutes.post("/board/sheets", zValidator("json", createBoardSheetSchema), async (c) => {
+  const user = await requireUser(c);
+  const input = c.req.valid("json");
+  const sheet = await createBoardSheet(c.env, user.id, input);
+  if (!sheet) {
+    throw new ApiError(409, "board_sheet_name_conflict", "같은 이름의 시트가 이미 있습니다.");
+  }
+  return c.json(sheet, 201);
+});
+
+boardRoutes.post("/board/tables", zValidator("json", createBoardTableSchema), async (c) => {
+  const user = await requireUser(c);
+  const input = c.req.valid("json");
+  const table = await createBoardTable(c.env, user.id, input);
+  if (!table) {
+    throw new ApiError(404, "board_sheet_not_found", "시트를 찾을 수 없습니다.");
+  }
+  return c.json(table, 201);
 });
 
 boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchSchema), async (c) => {

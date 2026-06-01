@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ApiClientError, apiGet } from "../../api/client";
 import type { BoardPayload } from "./types";
 
@@ -13,8 +13,21 @@ export function useBoard() {
   const [data, setData] = useState<BoardPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const reload = useCallback(async () => {
+    setError(null);
+    try {
+      const payload = await apiGet<BoardPayload>("/api/board");
+      setData(payload);
+      return payload;
+    } catch (err) {
+      setError(formatBoardError(err));
+      throw err;
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
+    setError(null);
     apiGet<BoardPayload>("/api/board")
       .then((payload) => {
         if (active) setData(payload);
@@ -27,5 +40,5 @@ export function useBoard() {
     };
   }, []);
 
-  return { data, error };
+  return { data, error, reload };
 }

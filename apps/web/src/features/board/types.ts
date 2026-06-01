@@ -2,6 +2,7 @@ export type BoardAxis = "row" | "column";
 export type BoardAxisRole = "character" | "task" | "custom";
 export type BoardTaskAxis = "rows" | "columns" | "none";
 export type BoardAxisKind = "character" | "task" | "custom";
+export type BoardOrientation = "tasks_rows" | "tasks_columns" | "custom";
 
 export interface BoardSheet {
   id: string;

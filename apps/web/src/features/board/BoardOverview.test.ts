@@ -78,6 +78,17 @@ describe("BoardOverview", () => {
     expect(html).toContain("132px");
   });
 
+  it("renders compact controls for adding sheets and tables", () => {
+    const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
+
+    expect(html).toContain('aria-label="새 시트 이름"');
+    expect(html).toContain("시트 추가");
+    expect(html).toContain('aria-label="새 표 이름"');
+    expect(html).toContain('aria-label="새 표 구조"');
+    expect(html).toContain("표 추가");
+    expect(html).toContain("사용자 표");
+  });
+
   it("renders compact checkbox cells from board axis and completion state", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {

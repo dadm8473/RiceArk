@@ -1,11 +1,12 @@
-import { useEffect, useState, type CSSProperties } from "react";
-import { apiPatch } from "../../api/client";
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import { apiPatch, apiPost } from "../../api/client";
 import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
-import type { BoardAxisItem, BoardAxisRole, BoardPayload, BoardTable } from "./types";
+import type { BoardAxisItem, BoardAxisRole, BoardOrientation, BoardPayload, BoardTable } from "./types";
 import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
 
 interface Props {
   board: BoardPayload;
+  onBoardChanged?: () => Promise<BoardPayload> | void;
 }
 
 const roleLabels: Record<BoardAxisRole, string> = {
@@ -41,11 +42,24 @@ function normalizeAxisSize(value: number): number | null {
   return Math.min(1024, Math.max(16, Math.round(value)));
 }
 
-export function BoardOverview({ board }: Props) {
+export function BoardOverview({ board, onBoardChanged }: Props) {
   const { enqueue } = useBoardCompletionQueue();
   const [completions, setCompletions] = useState(board.completions);
   const [axisItems, setAxisItems] = useState(board.axisItems);
-  const activeSheet = board.sheets.find((sheet) => sheet.is_default === 1) ?? board.sheets[0];
+  const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
+  const [sheetName, setSheetName] = useState("");
+  const [tableName, setTableName] = useState("");
+  const [tableOrientation, setTableOrientation] = useState<BoardOrientation>("custom");
+  const [pendingAction, setPendingAction] = useState<"sheet" | "table" | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const sortedSheets = useMemo(
+    () => board.sheets.slice().sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name)),
+    [board.sheets]
+  );
+  const activeSheet =
+    sortedSheets.find((sheet) => sheet.id === activeSheetId) ??
+    sortedSheets.find((sheet) => sheet.is_default === 1) ??
+    sortedSheets[0];
 
   useEffect(() => {
     setCompletions(board.completions);
@@ -58,6 +72,56 @@ export function BoardOverview({ board }: Props) {
   function handleCompletionToggle(patch: BoardCompletionPatch) {
     setCompletions((current) => applyBoardCompletionPatch(current, patch));
     enqueue(patch);
+  }
+
+  async function refreshBoard() {
+    if (onBoardChanged) {
+      await onBoardChanged();
+      return;
+    }
+    window.location.reload();
+  }
+
+  async function handleCreateSheet(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = sheetName.trim();
+    if (!name) return;
+
+    setPendingAction("sheet");
+    setFormError(null);
+    try {
+      const sheet = await apiPost<{ id: string }>("/api/board/sheets", { name });
+      setSheetName("");
+      setActiveSheetId(sheet.id);
+      await refreshBoard();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "시트를 추가하지 못했습니다.");
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function handleCreateTable(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeSheet) return;
+    const name = tableName.trim();
+    if (!name) return;
+
+    setPendingAction("table");
+    setFormError(null);
+    try {
+      await apiPost<{ id: string }>("/api/board/tables", {
+        sheetId: activeSheet.id,
+        name,
+        orientation: tableOrientation
+      });
+      setTableName("");
+      await refreshBoard();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "표를 추가하지 못했습니다.");
+    } finally {
+      setPendingAction(null);
+    }
   }
 
   async function handleAxisSizeChange(axisItemId: string, nextSize: number) {
@@ -91,19 +155,53 @@ export function BoardOverview({ board }: Props) {
     <section className="board-overview" aria-label="보드">
       <div className="sheet-tab-bar" aria-label="시트">
         <span className="sheet-tab-label">시트</span>
-        {board.sheets
-          .slice()
-          .sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name))
-          .map((sheet) => (
-            <button
-              key={sheet.id}
-              type="button"
-              className={`sheet-tab${sheet.id === activeSheet.id ? " active" : ""}`}
-              aria-current={sheet.id === activeSheet.id ? "page" : undefined}
-            >
-              {sheet.name}
-            </button>
-          ))}
+        {sortedSheets.map((sheet) => (
+          <button
+            key={sheet.id}
+            type="button"
+            className={`sheet-tab${sheet.id === activeSheet.id ? " active" : ""}`}
+            aria-current={sheet.id === activeSheet.id ? "page" : undefined}
+            onClick={() => setActiveSheetId(sheet.id)}
+          >
+            {sheet.name}
+          </button>
+        ))}
+        <form className="board-create-form" aria-label="시트 추가" onSubmit={handleCreateSheet}>
+          <input
+            aria-label="새 시트 이름"
+            maxLength={30}
+            placeholder="새 시트"
+            value={sheetName}
+            onChange={(event) => setSheetName(event.currentTarget.value)}
+          />
+          <button disabled={pendingAction === "sheet"} type="submit">
+            시트 추가
+          </button>
+        </form>
+      </div>
+      <div className="board-toolbar">
+        <form className="board-create-form" aria-label="표 추가" onSubmit={handleCreateTable}>
+          <input
+            aria-label="새 표 이름"
+            maxLength={30}
+            placeholder="새 표"
+            value={tableName}
+            onChange={(event) => setTableName(event.currentTarget.value)}
+          />
+          <select
+            aria-label="새 표 구조"
+            value={tableOrientation}
+            onChange={(event) => setTableOrientation(event.currentTarget.value as BoardOrientation)}
+          >
+            <option value="custom">사용자 표</option>
+            <option value="tasks_rows">숙제 행</option>
+            <option value="tasks_columns">숙제 열</option>
+          </select>
+          <button disabled={pendingAction === "table" || !activeSheet} type="submit">
+            표 추가
+          </button>
+        </form>
+        {formError ? <p className="board-form-error">{formError}</p> : null}
       </div>
       <div className="board-canvas">
         {tables.length === 0 ? <p className="board-empty">이 시트에는 아직 표가 없습니다.</p> : null}
