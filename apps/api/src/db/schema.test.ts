@@ -64,4 +64,21 @@ describe("D1 schema", () => {
     expect(migration).toContain("PRIMARY KEY (user_id, task_id)");
     expect(migration).toContain("reset_rule_json TEXT");
   });
+
+  it("defines board builder storage tables", () => {
+    for (const table of [
+      "sheets",
+      "board_tables",
+      "board_axis_items",
+      "board_cell_states",
+      "board_cell_completions"
+    ]) {
+      expect(migration).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
+    }
+
+    expect(migration).toContain("UNIQUE (user_id, name)");
+    expect(migration).toContain("UNIQUE (table_id, axis, sort_order)");
+    expect(migration).toContain("UNIQUE (table_id, row_item_id, column_item_id)");
+    expect(migration).toContain("UNIQUE (user_id, table_id, row_item_id, column_item_id, period_key)");
+  });
 });
