@@ -28,6 +28,11 @@ const boardTaskColorSchema = z
   .string()
   .regex(/^#[0-9A-Fa-f]{6}$/)
   .transform((value) => value.toLowerCase());
+const boardAxisSeparatorSchema = z.object({
+  widthPx: z.number().int().min(1).max(8),
+  style: z.enum(["solid", "dashed", "dotted"]),
+  color: boardTaskColorSchema
+});
 
 export const boardTableOrientationSchema = z.enum(["tasks_rows", "tasks_columns", "custom"]);
 
@@ -64,7 +69,8 @@ export const boardAxisOrderSchema = z
 
 export const updateBoardAxisItemSchema = z.object({
   label: safeBoardNameSchema,
-  taskColor: boardTaskColorSchema.nullable().optional()
+  taskColor: boardTaskColorSchema.nullable().optional(),
+  separator: boardAxisSeparatorSchema.nullable().optional()
 });
 
 export const boardCompletionPatchSchema = z.object({

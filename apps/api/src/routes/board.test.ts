@@ -199,10 +199,38 @@ describe("board route schemas", () => {
     });
   });
 
+  it("accepts normalized separator settings for board axis item updates", () => {
+    expect(
+      updateBoardAxisItemSchema.parse({
+        label: "카제로스",
+        separator: { widthPx: 3, style: "dashed", color: "#3344AA" }
+      })
+    ).toEqual({
+      label: "카제로스",
+      separator: { widthPx: 3, style: "dashed", color: "#3344aa" }
+    });
+    expect(updateBoardAxisItemSchema.parse({ label: "카제로스", separator: null })).toEqual({
+      label: "카제로스",
+      separator: null
+    });
+  });
+
   it("rejects unsafe board axis item update labels", () => {
     expect(updateBoardAxisItemSchema.safeParse({ label: "카제로스🙂" }).success).toBe(false);
     expect(updateBoardAxisItemSchema.safeParse({ label: "" }).success).toBe(false);
     expect(updateBoardAxisItemSchema.safeParse({ label: "카제로스", taskColor: "blue" }).success).toBe(false);
     expect(updateBoardAxisItemSchema.safeParse({ label: "카제로스", taskColor: "#12345g" }).success).toBe(false);
+    expect(
+      updateBoardAxisItemSchema.safeParse({
+        label: "카제로스",
+        separator: { widthPx: 0, style: "solid", color: "#334455" }
+      }).success
+    ).toBe(false);
+    expect(
+      updateBoardAxisItemSchema.safeParse({
+        label: "카제로스",
+        separator: { widthPx: 2, style: "double", color: "#334455" }
+      }).success
+    ).toBe(false);
   });
 });

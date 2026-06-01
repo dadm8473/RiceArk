@@ -42,6 +42,7 @@ export interface BoardAxisItem {
   size_px: number | null;
   sort_order: number;
   visible: number;
+  separator_json?: string | null | undefined;
 }
 
 export interface BoardCellState {

@@ -150,6 +150,24 @@ describe("BoardOverview", () => {
     expect(html).toContain("background:#2563eb");
   });
 
+  it("renders custom row and column separators from axis settings", () => {
+    const html = renderToStaticMarkup(
+      createElement(BoardOverview, {
+        board: {
+          ...board,
+          axisItems: board.axisItems.map((item) =>
+            item.axis === "row"
+              ? { ...item, separator_json: '{"widthPx":3,"style":"dashed","color":"#334455"}' }
+              : { ...item, separator_json: '{"widthPx":2,"style":"dotted","color":"#be123c"}' }
+          )
+        }
+      })
+    );
+
+    expect(html).toContain("border-bottom:3px dashed #334455");
+    expect(html).toContain("border-right:2px dotted #be123c");
+  });
+
   it("renders pixel size controls for rows and columns", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {

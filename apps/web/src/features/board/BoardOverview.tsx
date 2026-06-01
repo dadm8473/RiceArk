@@ -52,6 +52,12 @@ interface ActiveBoardTableLayoutDrag {
   start: BoardTableLayoutPointerStart;
 }
 
+interface BoardAxisSeparator {
+  widthPx: number;
+  style: "solid" | "dashed" | "dotted";
+  color: string;
+}
+
 const roleLabels: Record<BoardAxisRole, string> = {
   character: "캐릭터",
   task: "숙제",
@@ -97,6 +103,32 @@ function getTaskColor(row: BoardAxisItem, column: BoardAxisItem): string | null 
 
 function buildGridColumns(table: BoardTable, columns: BoardAxisItem[]): string {
   return `160px ${columns.map((column) => `${column.size_px ?? table.default_column_width}px`).join(" ")}`;
+}
+
+function parseBoardAxisSeparator(separatorJson: string | null | undefined): BoardAxisSeparator | null {
+  if (!separatorJson) return null;
+
+  try {
+    const value = JSON.parse(separatorJson) as Partial<BoardAxisSeparator>;
+    if (typeof value.widthPx !== "number" || !Number.isInteger(value.widthPx) || value.widthPx < 1 || value.widthPx > 8) {
+      return null;
+    }
+    if (value.style !== "solid" && value.style !== "dashed" && value.style !== "dotted") return null;
+    if (typeof value.color !== "string" || !/^#[0-9a-f]{6}$/i.test(value.color)) return null;
+
+    return {
+      widthPx: value.widthPx,
+      style: value.style,
+      color: value.color.toLowerCase()
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getSeparatorBorder(item: BoardAxisItem): string | undefined {
+  const separator = parseBoardAxisSeparator(item.separator_json);
+  return separator ? `${separator.widthPx}px ${separator.style} ${separator.color}` : undefined;
 }
 
 function normalizeAxisSize(value: number): number | null {
@@ -204,11 +236,23 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     }
   }
 
-  async function handleAxisItemSave(axisItemId: string, label: string, taskColor?: string | null) {
-    await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId), { label, taskColor });
+  async function handleAxisItemSave(
+    axisItemId: string,
+    label: string,
+    taskColor?: string | null,
+    separator?: BoardAxisSeparator | null
+  ) {
+    await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId), { label, taskColor, separator });
     setAxisItems((current) =>
       current.map((item) =>
-        item.id === axisItemId ? { ...item, label, task_color: taskColor === undefined ? item.task_color : taskColor } : item
+        item.id === axisItemId
+          ? {
+              ...item,
+              label,
+              task_color: taskColor === undefined ? item.task_color : taskColor,
+              separator_json: separator === undefined ? item.separator_json : separator === null ? null : JSON.stringify(separator)
+            }
+          : item
       )
     );
     setEditingAxisItem(null);
@@ -891,23 +935,14 @@ function BoardTableGrid({
         strategy={horizontalListSortingStrategy}
       >
         {columns.map((column) => (
-          <BoardAxisLabel
+          <BoardColumnHeader
             key={column.id}
-            className="board-axis-label board-column-label"
+            column={column}
             isReorderMode={isReorderMode}
-            item={column}
-            onEdit={() => onAxisItemEdit(column)}
-            tableId={table.id}
-          >
-            <BoardAxisLabelText item={column} />
-            {!isReorderMode ? (
-              <AxisSizeInput
-                label={`${column.label} 열 너비`}
-                value={column.size_px ?? table.default_column_width}
-                onChange={(sizePx) => onAxisSizeChange(column.id, sizePx)}
-              />
-            ) : null}
-          </BoardAxisLabel>
+            onAxisItemEdit={onAxisItemEdit}
+            onAxisSizeChange={onAxisSizeChange}
+            table={table}
+          />
         ))}
       </SortableContext>
       <SortableContext
@@ -933,6 +968,42 @@ function BoardTableGrid({
         ))}
       </SortableContext>
     </div>
+  );
+}
+
+function BoardColumnHeader({
+  column,
+  isReorderMode,
+  onAxisItemEdit,
+  onAxisSizeChange,
+  table
+}: {
+  column: BoardAxisItem;
+  isReorderMode: boolean;
+  onAxisItemEdit: (item: BoardAxisItem) => void;
+  onAxisSizeChange: (axisItemId: string, sizePx: number) => void;
+  table: BoardTable;
+}) {
+  const columnSeparator = getSeparatorBorder(column);
+
+  return (
+    <BoardAxisLabel
+      className="board-axis-label board-column-label"
+      isReorderMode={isReorderMode}
+      item={column}
+      onEdit={() => onAxisItemEdit(column)}
+      style={columnSeparator ? { borderRight: columnSeparator } : undefined}
+      tableId={table.id}
+    >
+      <BoardAxisLabelText item={column} />
+      {!isReorderMode ? (
+        <AxisSizeInput
+          label={`${column.label} 열 너비`}
+          value={column.size_px ?? table.default_column_width}
+          onChange={(sizePx) => onAxisSizeChange(column.id, sizePx)}
+        />
+      ) : null}
+    </BoardAxisLabel>
   );
 }
 
@@ -965,7 +1036,7 @@ function BoardAxisLabel({
   isReorderMode: boolean;
   item: BoardAxisItem;
   onEdit?: () => void;
-  style?: CSSProperties;
+  style?: CSSProperties | undefined;
   tableId: string;
 }) {
   if (!isReorderMode) {
@@ -1000,7 +1071,7 @@ function SortableBoardAxisLabel({
   children: ReactNode;
   className: string;
   item: BoardAxisItem;
-  style: CSSProperties | undefined;
+  style?: CSSProperties | undefined;
   tableId: string;
 }) {
   const sortableId = getBoardAxisSortableId(tableId, item.axis, item.id);
@@ -1054,6 +1125,8 @@ function BoardGridRow({
   rowHeight: number;
   tableId: string;
 }) {
+  const rowSeparator = getSeparatorBorder(row);
+
   return (
     <>
       <BoardAxisLabel
@@ -1061,7 +1134,7 @@ function BoardGridRow({
         isReorderMode={isReorderMode}
         item={row}
         onEdit={() => onAxisItemEdit(row)}
-        style={{ minHeight: `${rowHeight}px` }}
+        style={{ minHeight: `${rowHeight}px`, ...(rowSeparator ? { borderBottom: rowSeparator } : {}) }}
         tableId={tableId}
       >
         <BoardAxisLabelText item={row} />
@@ -1077,12 +1150,18 @@ function BoardGridRow({
         const key = cellKey(row.id, column.id);
         const taskColor = getTaskColor(row, column);
         const colorStyle = taskColor ? ({ "--task-color": taskColor } as CSSProperties) : undefined;
+        const columnSeparator = getSeparatorBorder(column);
         const periodKey = getBoardCellPeriodKey(row, column);
         const isHidden = hiddenCells.has(key);
         const nextVisible = isHidden;
+        const cellStyle: CSSProperties = {
+          minHeight: `${rowHeight}px`,
+          ...(rowSeparator ? { borderBottom: rowSeparator } : {}),
+          ...(columnSeparator ? { borderRight: columnSeparator } : {})
+        };
 
         return (
-          <div key={column.id} className="board-check-cell" style={{ minHeight: `${rowHeight}px` }}>
+          <div key={column.id} className="board-check-cell" style={cellStyle}>
             {isCellVisibilityMode ? (
               <button
                 aria-label={`${row.label} / ${column.label} 표시 전환`}
@@ -1146,14 +1225,26 @@ function BoardAxisItemEditModal({
   item: BoardAxisItem;
   onClose: () => void;
   onDelete: (axisItemId: string) => Promise<void>;
-  onSave: (axisItemId: string, label: string, taskColor?: string | null) => Promise<void>;
+  onSave: (axisItemId: string, label: string, taskColor?: string | null, separator?: BoardAxisSeparator | null) => Promise<void>;
 }) {
+  const initialSeparator = parseBoardAxisSeparator(item.separator_json);
   const [label, setLabel] = useState(item.label);
   const [taskColor, setTaskColor] = useState(item.task_color ?? "#2563eb");
+  const [separatorEnabled, setSeparatorEnabled] = useState(initialSeparator !== null);
+  const [separatorWidthPx, setSeparatorWidthPx] = useState(initialSeparator?.widthPx ?? 2);
+  const [separatorStyle, setSeparatorStyle] = useState<BoardAxisSeparator["style"]>(initialSeparator?.style ?? "solid");
+  const [separatorColor, setSeparatorColor] = useState(initialSeparator?.color ?? "#64748b");
   const [pending, setPending] = useState<"save" | "delete" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const normalizedLabel = label.trim();
   const isTaskItem = item.kind === "task";
+  const separator = separatorEnabled
+    ? {
+        widthPx: Math.min(8, Math.max(1, Math.round(separatorWidthPx))),
+        style: separatorStyle,
+        color: separatorColor
+      }
+    : null;
 
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1162,7 +1253,7 @@ function BoardAxisItemEditModal({
     setPending("save");
     setError(null);
     try {
-      await onSave(item.id, normalizedLabel, isTaskItem ? taskColor : undefined);
+      await onSave(item.id, normalizedLabel, isTaskItem ? taskColor : undefined, separator);
     } catch (err) {
       setError(err instanceof Error ? err.message : "항목을 저장하지 못했습니다.");
       setPending(null);
@@ -1209,6 +1300,52 @@ function BoardAxisItemEditModal({
               </span>
             </label>
           ) : null}
+          <fieldset className="visibility-fieldset">
+            <legend>구분선</legend>
+            <label className="toggle-row">
+              <input
+                checked={separatorEnabled}
+                type="checkbox"
+                onChange={(event) => setSeparatorEnabled(event.currentTarget.checked)}
+              />
+              이 항목 뒤에 구분선 표시
+            </label>
+            {separatorEnabled ? (
+              <div className="separator-edit-grid">
+                <label>
+                  두께
+                  <input
+                    max={8}
+                    min={1}
+                    type="number"
+                    value={separatorWidthPx}
+                    onChange={(event) => setSeparatorWidthPx(Number(event.currentTarget.value))}
+                  />
+                </label>
+                <label>
+                  종류
+                  <select
+                    value={separatorStyle}
+                    onChange={(event) => setSeparatorStyle(event.currentTarget.value as BoardAxisSeparator["style"])}
+                  >
+                    <option value="solid">실선</option>
+                    <option value="dashed">파선</option>
+                    <option value="dotted">점선</option>
+                  </select>
+                </label>
+                <label>
+                  색상
+                  <input
+                    aria-label={`${item.label} 구분선 색상`}
+                    className="color-edit-input"
+                    type="color"
+                    value={separatorColor}
+                    onChange={(event) => setSeparatorColor(event.currentTarget.value)}
+                  />
+                </label>
+              </div>
+            ) : null}
+          </fieldset>
           {error ? <p className="error-text">{error}</p> : null}
           <div className="edit-actions">
             <button className="danger-button" disabled={pending !== null} type="button" onClick={() => void handleDelete()}>

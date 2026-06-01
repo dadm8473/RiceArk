@@ -856,6 +856,21 @@ body {
   padding: 2px;
 }
 
+.separator-edit-grid {
+  display: grid;
+  grid-template-columns: 72px minmax(90px, 1fr) 72px;
+  gap: 8px;
+}
+
+.separator-edit-grid label {
+  gap: 4px;
+}
+
+.separator-edit-grid input,
+.separator-edit-grid select {
+  min-height: 32px;
+}
+
 .edit-form textarea {
   min-height: 76px;
   padding: 8px;

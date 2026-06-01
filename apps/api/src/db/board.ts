@@ -87,6 +87,13 @@ export interface BoardAxisItemTransposePlanEntry {
 export interface UpdateBoardAxisItemInput {
   label: string;
   taskColor?: string | null | undefined;
+  separator?: BoardAxisSeparatorInput | null | undefined;
+}
+
+export interface BoardAxisSeparatorInput {
+  widthPx: number;
+  style: "solid" | "dashed" | "dotted";
+  color: string;
 }
 
 export interface ManualBoardAxisItemDraft {
@@ -887,14 +894,24 @@ export async function updateBoardAxisItem(
   axisItemId: string,
   input: UpdateBoardAxisItemInput
 ): Promise<boolean> {
+  const separatorJson = input.separator === undefined || input.separator === null ? null : JSON.stringify(input.separator);
   const result = await env.DB.prepare(
     `UPDATE board_axis_items
      SET label = ?,
          task_color = CASE WHEN ? = 1 AND kind = 'task' THEN ? ELSE task_color END,
+         separator_json = CASE WHEN ? = 1 THEN ? ELSE separator_json END,
          updated_at = CURRENT_TIMESTAMP
      WHERE id = ? AND user_id = ? AND visible = 1`
   )
-    .bind(input.label, input.taskColor !== undefined ? 1 : 0, input.taskColor ?? null, axisItemId, userId)
+    .bind(
+      input.label,
+      input.taskColor !== undefined ? 1 : 0,
+      input.taskColor ?? null,
+      input.separator !== undefined ? 1 : 0,
+      separatorJson,
+      axisItemId,
+      userId
+    )
     .run();
   return (result.meta.changes ?? 0) > 0;
 }
