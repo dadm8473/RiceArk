@@ -1,18 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getReorderTargetId, moveItem } from "./reorder";
-
-function createClosestTarget(kind: string, id: string): Element {
-  const target = {
-    closest: () => target,
-    getAttribute: (name: string) => {
-      if (name === "data-reorder-kind") return kind;
-      if (name === "data-reorder-id") return id;
-      return null;
-    }
-  };
-
-  return { closest: () => target } as unknown as Element;
-}
+import { getSortableItemId, moveItem, parseSortableItemId } from "./reorder";
 
 describe("moveItem", () => {
   it("moves an item from one index to another", () => {
@@ -27,16 +14,20 @@ describe("moveItem", () => {
   });
 });
 
-describe("getReorderTargetId", () => {
-  it("finds a matching reorder target from a nested pointer element", () => {
-    const element = createClosestTarget("task", "task-1");
-
-    expect(getReorderTargetId(element, "task")).toBe("task-1");
+describe("sortable item ids", () => {
+  it("keeps task and character drag identifiers separate", () => {
+    expect(getSortableItemId("task", "item-1")).toBe("task:item-1");
+    expect(getSortableItemId("character", "item-1")).toBe("character:item-1");
   });
 
-  it("ignores reorder targets from the other axis", () => {
-    const element = createClosestTarget("character", "character-1");
+  it("parses valid sortable ids", () => {
+    expect(parseSortableItemId("task:task-1")).toEqual({ kind: "task", id: "task-1" });
+    expect(parseSortableItemId("character:character-1")).toEqual({ kind: "character", id: "character-1" });
+  });
 
-    expect(getReorderTargetId(element, "task")).toBeNull();
+  it("ignores invalid sortable ids", () => {
+    expect(parseSortableItemId("roster")).toBeNull();
+    expect(parseSortableItemId("roster:character-1")).toBeNull();
+    expect(parseSortableItemId("task:")).toBeNull();
   });
 });

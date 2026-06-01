@@ -133,6 +133,22 @@ body {
   padding: 20px;
 }
 
+.matrix-board {
+  display: grid;
+  gap: 10px;
+}
+
+.matrix-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.matrix-reorder-button.active {
+  color: #ffffff;
+  border-color: #1f4fd1;
+  background: #2563eb;
+}
+
 .matrix {
   overflow: auto;
   border: 1px solid #8f99aa;
@@ -194,27 +210,42 @@ body {
   cursor: grab;
 }
 
-.drag-handle {
-  min-height: 28px;
-  width: 28px;
-  flex: 0 0 28px;
+.matrix-sortable-cell {
   touch-action: none;
-  padding: 0;
-  border-color: transparent;
-  border-radius: 0;
-  color: #4b5563;
-  background: transparent;
-  cursor: grab;
+  user-select: none;
+  outline: 0;
 }
 
-.drag-handle.active {
-  color: #111827;
-  background: #e9eef5;
+.matrix-sortable-cell:focus-visible {
+  box-shadow: inset 0 0 0 2px #2563eb;
+}
+
+.matrix-sortable-cell.dragging {
+  color: transparent;
+  background: #f6f8fb;
+  box-shadow: inset 0 0 0 1px #9aa8ba;
   cursor: grabbing;
 }
 
-.drag-handle:hover {
-  background: #f3f5f8;
+.matrix-sortable-cell.dragging * {
+  visibility: hidden;
+}
+
+.matrix-drag-overlay {
+  display: flex;
+  min-width: 150px;
+  min-height: var(--row-height, 40px);
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid #8a96a8;
+  color: #111827;
+  background: #ffffff;
+  box-shadow: 0 16px 36px rgb(17 24 39 / 22%);
+  font-weight: 700;
+  cursor: grabbing;
 }
 
 .matrix-check {

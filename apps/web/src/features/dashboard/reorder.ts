@@ -18,8 +18,13 @@ export function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[]
   return next;
 }
 
-export function getReorderTargetId(element: Element | null, kind: ReorderKind): string | null {
-  const target = element?.closest("[data-reorder-kind][data-reorder-id]");
-  if (!target || target.getAttribute("data-reorder-kind") !== kind) return null;
-  return target.getAttribute("data-reorder-id");
+export function getSortableItemId(kind: ReorderKind, id: string): string {
+  return `${kind}:${id}`;
+}
+
+export function parseSortableItemId(sortableId: string): { kind: ReorderKind; id: string } | null {
+  const [kind, ...idParts] = sortableId.split(":");
+  const id = idParts.join(":");
+  if ((kind !== "task" && kind !== "character") || !id) return null;
+  return { kind, id };
 }

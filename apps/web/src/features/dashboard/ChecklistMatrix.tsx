@@ -1,19 +1,32 @@
 import { getPeriodKey, type ResetRule } from "@riceark/core";
-import { GripVertical } from "lucide-react";
-import type { CSSProperties, Dispatch, PointerEvent, ReactNode, SetStateAction } from "react";
+import {
+  closestCenter,
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent
+} from "@dnd-kit/core";
+import {
+  horizontalListSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import type { CSSProperties, Dispatch, ReactNode, SetStateAction } from "react";
 import { useRef, useState } from "react";
 import { apiPatch } from "../../api/client";
-import { getReorderTargetId, moveItem, type ReorderKind } from "./reorder";
+import { getSortableItemId, moveItem, parseSortableItemId, type ReorderKind } from "./reorder";
 import { useCompletionQueue } from "./useCompletionQueue";
 import type { DashboardCharacter, DashboardPayload, DashboardTask } from "./types";
 
 interface Props {
   dashboard: DashboardPayload;
-}
-
-interface DragState {
-  kind: ReorderKind;
-  id: string;
 }
 
 function getTaskPeriodKey(task: DashboardTask): string {
@@ -50,14 +63,6 @@ function orderItems<T extends { id: string }>(items: T[], orderedIds: string[]):
   return [...ordered, ...missing];
 }
 
-function getReorderTargetProps(kind: ReorderKind, id: string) {
-  return {
-    "data-reorder-id": id,
-    "data-reorder-kind": kind,
-    "data-reorder-target": "true"
-  };
-}
-
 export function ChecklistMatrix({ dashboard }: Props) {
   const { enqueue } = useCompletionQueue();
   const [checked, setChecked] = useState<Record<string, boolean>>(() =>
@@ -72,42 +77,23 @@ export function ChecklistMatrix({ dashboard }: Props) {
   const [characterOrder, setCharacterOrder] = useState<string[]>(() =>
     dashboard.characters.map((character) => character.id)
   );
-  const [dragging, setDragging] = useState<DragState | null>(null);
-  const draggingRef = useRef<DragState | null>(null);
+  const [isReorderMode, setIsReorderMode] = useState(false);
+  const [activeSortableId, setActiveSortableId] = useState<string | null>(null);
   const taskOrderRef = useRef(taskOrder);
   const characterOrderRef = useRef(characterOrder);
   const orientation = dashboard.settings.checklist_orientation ?? "tasks_rows";
   const orderedTasks = orderItems(dashboard.tasks, taskOrder);
   const orderedCharacters = orderItems(dashboard.characters, characterOrder);
-
-  function beginDrag(kind: ReorderKind, id: string, event: PointerEvent<HTMLButtonElement>) {
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const nextDrag = { kind, id };
-    draggingRef.current = nextDrag;
-    setDragging(nextDrag);
-  }
-
-  function moveDrag(kind: ReorderKind, targetId: string) {
-    const currentDrag = draggingRef.current;
-    if (!currentDrag || currentDrag.kind !== kind || currentDrag.id === targetId) return;
-    const setter = kind === "task" ? setTaskOrder : setCharacterOrder;
-    setter((current) => {
-      const fromIndex = current.indexOf(currentDrag.id);
-      const toIndex = current.indexOf(targetId);
-      const next = moveItem(current, fromIndex, toIndex);
-      if (kind === "task") taskOrderRef.current = next;
-      if (kind === "character") characterOrderRef.current = next;
-      return next;
-    });
-  }
-
-  function moveDragOverPointer(event: PointerEvent<HTMLButtonElement>) {
-    const currentDrag = draggingRef.current;
-    if (!currentDrag) return;
-    const targetId = getReorderTargetId(document.elementFromPoint(event.clientX, event.clientY), currentDrag.kind);
-    if (targetId) moveDrag(currentDrag.kind, targetId);
-  }
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 6
+      }
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates
+    })
+  );
 
   async function saveOrder(kind: ReorderKind, ids: string[]) {
     try {
@@ -121,59 +107,85 @@ export function ChecklistMatrix({ dashboard }: Props) {
     }
   }
 
-  function endDrag() {
-    const currentDrag = draggingRef.current;
-    if (!currentDrag) return;
-    const kind = currentDrag.kind;
-    draggingRef.current = null;
-    setDragging(null);
-    void saveOrder(kind, kind === "task" ? taskOrderRef.current : characterOrderRef.current);
+  function moveOrder(kind: ReorderKind, activeId: string, overId: string) {
+    const setter = kind === "task" ? setTaskOrder : setCharacterOrder;
+    const orderRef = kind === "task" ? taskOrderRef : characterOrderRef;
+    const fromIndex = orderRef.current.indexOf(activeId);
+    const toIndex = orderRef.current.indexOf(overId);
+    const next = moveItem(orderRef.current, fromIndex, toIndex);
+
+    orderRef.current = next;
+    setter(next);
+    void saveOrder(kind, next);
   }
 
-  function renderDragHandle(kind: ReorderKind, id: string, label: string) {
-    const active = dragging?.kind === kind && dragging.id === id;
-    return (
-      <button
-        className={`drag-handle${active ? " active" : ""}`}
-        data-reorder-id={id}
-        data-reorder-kind={kind}
-        type="button"
-        aria-label={`${label} 순서 이동`}
-        title="드래그해서 순서 변경"
-        onPointerCancel={endDrag}
-        onPointerDown={(event) => beginDrag(kind, id, event)}
-        onPointerMove={moveDragOverPointer}
-        onPointerUp={endDrag}
-      >
-        <GripVertical size={14} />
-      </button>
-    );
+  function handleDragStart(event: DragStartEvent) {
+    setActiveSortableId(String(event.active.id));
   }
 
-  if (orientation === "tasks_columns") {
-    return (
-      <TaskColumnsMatrix
-        characters={orderedCharacters}
-        checked={checked}
-        dashboard={dashboard}
-        renderDragHandle={renderDragHandle}
-        setChecked={setChecked}
-        tasks={orderedTasks}
-        onToggle={enqueue}
-      />
-    );
+  function handleDragEnd(event: DragEndEvent) {
+    setActiveSortableId(null);
+    const active = parseSortableItemId(String(event.active.id));
+    const over = event.over ? parseSortableItemId(String(event.over.id)) : null;
+    if (!active || !over || active.kind !== over.kind || active.id === over.id) return;
+    moveOrder(active.kind, active.id, over.id);
   }
 
-  return (
-    <TaskRowsMatrix
+  function handleDragCancel() {
+    setActiveSortableId(null);
+  }
+
+  const matrix = orientation === "tasks_columns" ? (
+    <TaskColumnsMatrix
       characters={orderedCharacters}
       checked={checked}
       dashboard={dashboard}
-      renderDragHandle={renderDragHandle}
+      isReorderMode={isReorderMode}
       setChecked={setChecked}
       tasks={orderedTasks}
       onToggle={enqueue}
     />
+  ) : (
+    <TaskRowsMatrix
+      characters={orderedCharacters}
+      checked={checked}
+      dashboard={dashboard}
+      isReorderMode={isReorderMode}
+      setChecked={setChecked}
+      tasks={orderedTasks}
+      onToggle={enqueue}
+    />
+  );
+
+  return (
+    <div className="matrix-board">
+      <div className="matrix-toolbar">
+        <button
+          className={`button matrix-reorder-button${isReorderMode ? " active" : ""}`}
+          type="button"
+          onClick={() => {
+            setActiveSortableId(null);
+            setIsReorderMode((current) => !current);
+          }}
+        >
+          {isReorderMode ? "순서 변경 완료" : "순서 변경"}
+        </button>
+      </div>
+      {isReorderMode ? (
+        <DndContext
+          collisionDetection={closestCenter}
+          sensors={sensors}
+          onDragCancel={handleDragCancel}
+          onDragEnd={handleDragEnd}
+          onDragStart={handleDragStart}
+        >
+          {matrix}
+          <DragOverlay>{renderDragOverlay(activeSortableId, orderedTasks, orderedCharacters)}</DragOverlay>
+        </DndContext>
+      ) : (
+        matrix
+      )}
+    </div>
   );
 }
 
@@ -182,76 +194,205 @@ interface MatrixRendererProps {
   characters: DashboardCharacter[];
   tasks: DashboardTask[];
   checked: Record<string, boolean>;
-  renderDragHandle: (kind: ReorderKind, id: string, label: string) => ReactNode;
+  isReorderMode: boolean;
   setChecked: Dispatch<SetStateAction<Record<string, boolean>>>;
   onToggle: (patch: { taskId: string; characterId: string | null; periodKey: string; completed: boolean }) => void;
 }
 
-function TaskRowsMatrix({ dashboard, characters, tasks, checked, renderDragHandle, setChecked, onToggle }: MatrixRendererProps) {
+interface LabelCellProps {
+  children: ReactNode;
+  className: string;
+  id: string;
+  isReorderMode: boolean;
+  kind: ReorderKind;
+  label: string;
+}
+
+function LabelCell({ children, className, id, isReorderMode, kind, label }: LabelCellProps) {
+  if (!isReorderMode) {
+    return <div className={className}>{children}</div>;
+  }
+
+  return (
+    <SortableLabelCell className={className} id={id} kind={kind} label={label}>
+      {children}
+    </SortableLabelCell>
+  );
+}
+
+function SortableLabelCell({ children, className, id, kind, label }: Omit<LabelCellProps, "isReorderMode">) {
+  const sortableId = getSortableItemId(kind, id);
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: sortableId });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition
+  };
+
+  return (
+    <div
+      className={`${className} matrix-sortable-cell${isDragging ? " dragging" : ""}`}
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      aria-label={`${label} 순서 이동`}
+      data-reorder-id={id}
+      data-reorder-kind={kind}
+      data-reorder-target="true"
+    >
+      {children}
+    </div>
+  );
+}
+
+function TaskLabelContent({ task }: { task: DashboardTask }) {
+  return (
+    <>
+      <span className="matrix-label-line">
+        <span>{task.name}</span>
+      </span>
+      <small>{task.reset_type}</small>
+    </>
+  );
+}
+
+function CharacterLabelContent({
+  character,
+  isReorderMode
+}: {
+  character: DashboardCharacter;
+  isReorderMode: boolean;
+}) {
+  return (
+    <>
+      <span className="matrix-label-line">
+        <span className="character-label" title={isReorderMode ? undefined : getCharacterDetail(character)}>
+          {getCharacterLabel(character)}
+        </span>
+      </span>
+      <small>{character.item_level}</small>
+    </>
+  );
+}
+
+function renderDragOverlay(
+  activeSortableId: string | null,
+  tasks: DashboardTask[],
+  characters: DashboardCharacter[]
+): ReactNode {
+  const active = activeSortableId ? parseSortableItemId(activeSortableId) : null;
+  if (!active) return null;
+
+  if (active.kind === "task") {
+    const task = tasks.find((item) => item.id === active.id);
+    return task ? (
+      <div className="matrix-drag-overlay">
+        <TaskLabelContent task={task} />
+      </div>
+    ) : null;
+  }
+
+  const character = characters.find((item) => item.id === active.id);
+  return character ? (
+    <div className="matrix-drag-overlay">
+      <CharacterLabelContent character={character} isReorderMode />
+    </div>
+  ) : null;
+}
+
+function TaskRowsMatrix({
+  dashboard,
+  characters,
+  tasks,
+  checked,
+  isReorderMode,
+  setChecked,
+  onToggle
+}: MatrixRendererProps) {
   const columns = [{ id: "roster", name: "원정대" }, ...characters];
   const rowStyle = {
     "--column-count": columns.length,
     "--row-height": `${dashboard.settings.row_height}px`,
     "--column-width": `${dashboard.settings.column_width}px`
   } as CSSProperties;
+  const taskSortableIds = tasks.map((task) => getSortableItemId("task", task.id));
+  const characterSortableIds = characters.map((character) => getSortableItemId("character", character.id));
+
+  const headerCells = columns.map((column) => {
+    if (!("server_name" in column)) {
+      return (
+        <div className="matrix-cell" key={column.id}>
+          <span>{column.name}</span>
+        </div>
+      );
+    }
+
+    return (
+      <LabelCell
+        className="matrix-cell"
+        id={column.id}
+        isReorderMode={isReorderMode}
+        key={column.id}
+        kind="character"
+        label={getCharacterLabel(column)}
+      >
+        <CharacterLabelContent character={column} isReorderMode={isReorderMode} />
+      </LabelCell>
+    );
+  });
+
+  const taskRows = tasks.map((task) => {
+    const periodKey = getTaskPeriodKey(task);
+    return (
+      <div className="matrix-row" key={task.id} style={rowStyle}>
+        <LabelCell className="matrix-task-cell" id={task.id} isReorderMode={isReorderMode} kind="task" label={task.name}>
+          <TaskLabelContent task={task} />
+        </LabelCell>
+        {columns.map((column) => {
+          const unavailable =
+            (task.scope === "character" && column.id === "roster") ||
+            (task.scope === "roster" && column.id !== "roster");
+          const characterId = column.id === "roster" ? null : column.id;
+          const key = getCompletionKey(task, characterId);
+          return (
+            <button
+              className="matrix-cell matrix-check"
+              disabled={isReorderMode || unavailable}
+              key={key}
+              type="button"
+              onClick={() => {
+                const next = !checked[key];
+                setChecked((current) => ({ ...current, [key]: next }));
+                onToggle({ taskId: task.id, characterId, periodKey, completed: next });
+              }}
+            >
+              {unavailable ? "" : checked[key] ? "V" : ""}
+            </button>
+          );
+        })}
+      </div>
+    );
+  });
 
   return (
-    <div className={`matrix density-${dashboard.settings.density}`}>
+    <div className={`matrix density-${dashboard.settings.density}${isReorderMode ? " reorder-mode" : ""}`}>
       <div className="matrix-row matrix-header" style={rowStyle}>
         <div className="matrix-task-cell">숙제</div>
-        {columns.map((column) => (
-          <div
-            className="matrix-cell"
-            key={column.id}
-            {...("server_name" in column ? getReorderTargetProps("character", column.id) : {})}
-          >
-            {"server_name" in column ? (
-              <span className="matrix-label-line">
-                {renderDragHandle("character", column.id, getCharacterLabel(column))}
-                <span className="character-label" title={getCharacterDetail(column)}>
-                  {getCharacterLabel(column)}
-                </span>
-              </span>
-            ) : null}
-            {"server_name" in column ? <small>{column.item_level}</small> : <span>{column.name}</span>}
-          </div>
-        ))}
+        {isReorderMode ? (
+          <SortableContext items={characterSortableIds} strategy={horizontalListSortingStrategy}>
+            {headerCells}
+          </SortableContext>
+        ) : (
+          headerCells
+        )}
       </div>
-      {tasks.map((task) => {
-        const periodKey = getTaskPeriodKey(task);
-        return (
-          <div className="matrix-row" key={task.id} style={rowStyle}>
-            <div className="matrix-task-cell" {...getReorderTargetProps("task", task.id)}>
-              <span className="matrix-label-line">
-                {renderDragHandle("task", task.id, task.name)}
-                <span>{task.name}</span>
-              </span>
-              <small>{task.reset_type}</small>
-            </div>
-            {columns.map((column) => {
-              const disabled = task.scope === "character" && column.id === "roster";
-              const rosterOnly = task.scope === "roster" && column.id !== "roster";
-              const characterId = column.id === "roster" ? null : column.id;
-              const key = getCompletionKey(task, characterId);
-              return (
-                <button
-                  className="matrix-cell matrix-check"
-                  disabled={disabled || rosterOnly}
-                  key={key}
-                  type="button"
-                  onClick={() => {
-                    const next = !checked[key];
-                    setChecked((current) => ({ ...current, [key]: next }));
-                    onToggle({ taskId: task.id, characterId, periodKey, completed: next });
-                  }}
-                >
-                  {disabled || rosterOnly ? "" : checked[key] ? "V" : ""}
-                </button>
-              );
-            })}
-          </div>
-        );
-      })}
+      {isReorderMode ? (
+        <SortableContext items={taskSortableIds} strategy={verticalListSortingStrategy}>
+          {taskRows}
+        </SortableContext>
+      ) : (
+        taskRows
+      )}
     </div>
   );
 }
@@ -261,7 +402,7 @@ function TaskColumnsMatrix({
   characters,
   tasks,
   checked,
-  renderDragHandle,
+  isReorderMode,
   setChecked,
   onToggle
 }: MatrixRendererProps) {
@@ -271,67 +412,86 @@ function TaskColumnsMatrix({
     "--row-height": `${dashboard.settings.row_height}px`,
     "--column-width": `${dashboard.settings.column_width}px`
   } as CSSProperties;
+  const taskSortableIds = tasks.map((task) => getSortableItemId("task", task.id));
+  const characterSortableIds = characters.map((character) => getSortableItemId("character", character.id));
+
+  const taskHeaderCells = tasks.map((task) => (
+    <LabelCell
+      className="matrix-cell"
+      id={task.id}
+      isReorderMode={isReorderMode}
+      key={task.id}
+      kind="task"
+      label={task.name}
+    >
+      <TaskLabelContent task={task} />
+    </LabelCell>
+  ));
+
+  const matrixRows = rows.map((row) => {
+    const characterId = row.id === "roster" ? null : row.id;
+    return (
+      <div className="matrix-row" key={row.id} style={rowStyle}>
+        {"server_name" in row ? (
+          <LabelCell
+            className="matrix-task-cell"
+            id={row.id}
+            isReorderMode={isReorderMode}
+            kind="character"
+            label={getCharacterLabel(row)}
+          >
+            <CharacterLabelContent character={row} isReorderMode={isReorderMode} />
+          </LabelCell>
+        ) : (
+          <div className="matrix-task-cell">
+            <span>{row.name}</span>
+          </div>
+        )}
+        {tasks.map((task) => {
+          const unavailable =
+            (task.scope === "character" && row.id === "roster") ||
+            (task.scope === "roster" && row.id !== "roster");
+          const periodKey = getTaskPeriodKey(task);
+          const key = getCompletionKey(task, characterId);
+          return (
+            <button
+              className="matrix-cell matrix-check"
+              disabled={isReorderMode || unavailable}
+              key={key}
+              type="button"
+              onClick={() => {
+                const next = !checked[key];
+                setChecked((current) => ({ ...current, [key]: next }));
+                onToggle({ taskId: task.id, characterId, periodKey, completed: next });
+              }}
+            >
+              {unavailable ? "" : checked[key] ? "V" : ""}
+            </button>
+          );
+        })}
+      </div>
+    );
+  });
 
   return (
-    <div className={`matrix density-${dashboard.settings.density}`}>
+    <div className={`matrix density-${dashboard.settings.density}${isReorderMode ? " reorder-mode" : ""}`}>
       <div className="matrix-row matrix-header" style={rowStyle}>
         <div className="matrix-task-cell">캐릭터</div>
-        {tasks.map((task) => (
-          <div className="matrix-cell" key={task.id} {...getReorderTargetProps("task", task.id)}>
-            <span className="matrix-label-line">
-              {renderDragHandle("task", task.id, task.name)}
-              <span>{task.name}</span>
-            </span>
-            <small>{task.reset_type}</small>
-          </div>
-        ))}
+        {isReorderMode ? (
+          <SortableContext items={taskSortableIds} strategy={horizontalListSortingStrategy}>
+            {taskHeaderCells}
+          </SortableContext>
+        ) : (
+          taskHeaderCells
+        )}
       </div>
-      {rows.map((row) => {
-        const characterId = row.id === "roster" ? null : row.id;
-        return (
-          <div className="matrix-row" key={row.id} style={rowStyle}>
-            <div
-              className="matrix-task-cell"
-              {...("server_name" in row ? getReorderTargetProps("character", row.id) : {})}
-            >
-              {"server_name" in row ? (
-                <>
-                  <span className="matrix-label-line">
-                    {renderDragHandle("character", row.id, getCharacterLabel(row))}
-                    <span className="character-label" title={getCharacterDetail(row)}>
-                      {getCharacterLabel(row)}
-                    </span>
-                  </span>
-                  <small>{row.item_level}</small>
-                </>
-              ) : (
-                <span>{row.name}</span>
-              )}
-            </div>
-            {tasks.map((task) => {
-              const disabled = task.scope === "character" && row.id === "roster";
-              const rosterOnly = task.scope === "roster" && row.id !== "roster";
-              const periodKey = getTaskPeriodKey(task);
-              const key = getCompletionKey(task, characterId);
-              return (
-                <button
-                  className="matrix-cell matrix-check"
-                  disabled={disabled || rosterOnly}
-                  key={key}
-                  type="button"
-                  onClick={() => {
-                    const next = !checked[key];
-                    setChecked((current) => ({ ...current, [key]: next }));
-                    onToggle({ taskId: task.id, characterId, periodKey, completed: next });
-                  }}
-                >
-                  {disabled || rosterOnly ? "" : checked[key] ? "V" : ""}
-                </button>
-              );
-            })}
-          </div>
-        );
-      })}
+      {isReorderMode ? (
+        <SortableContext items={characterSortableIds} strategy={verticalListSortingStrategy}>
+          {matrixRows}
+        </SortableContext>
+      ) : (
+        matrixRows
+      )}
     </div>
   );
 }
