@@ -109,6 +109,25 @@ Changing an existing table's orientation is a controlled transpose operation, no
 
 This is especially important because a user may later rename rows, set optional character display names, reorder items, or resize axes. None of those presentation changes may affect completion identity.
 
+Transpose invariants:
+
+- A character-task pair must remain the same semantic pair after the switch, even when its row id and column id both change.
+- The current-period completion state, historical completion state, and checkbox visibility must move by stable semantic ids, not by old grid position.
+- Task color follows task metadata, so checkbox color remains attached to the same task after rows and columns are swapped.
+- Task separators follow task axis items. Character separators are only preserved when they still have a clear target on the new character axis.
+- Table position on the board canvas must not move during orientation switching unless the user moves the table separately.
+- Pixel sizes are presentation state and must not affect data mapping. The app should not blindly copy old row heights into new column widths or old column widths into new row heights. It should apply defaults or an explicit previewed size mapping, then let the user adjust the result.
+
+Transpose flow:
+
+1. Build a preview table from the existing table without mutating the original.
+2. Match every old row and column item to its new axis item by linked character id, task id, or unambiguous custom item id.
+3. If any custom item cannot be matched safely, stop and ask the user to resolve the mapping before applying.
+4. Generate new axis item ids and cell ids for the transposed table.
+5. Copy completion, visibility, task color, reset metadata, order, and safe separator metadata into the new table.
+6. Validate the preview against the original cell count and expected semantic pairs.
+7. Apply the change as one guarded write so a partial transpose cannot leave mixed row/column data behind.
+
 ### Task Metadata
 
 Task metadata can be attached to either row or column axis items.
@@ -386,6 +405,10 @@ Backend tests:
 - Character rows and task columns produce correct period keys.
 - Orientation transpose maps completions by stable character and task ids.
 - Orientation transpose preserves hidden cells.
+- Orientation transpose preserves task colors and task reset metadata.
+- Orientation transpose keeps task separators attached to task items and does not invent unsafe character separators.
+- Orientation transpose does not let row height or column width mapping corrupt completion data.
+- Orientation transpose blocks or requires manual mapping when custom axis items cannot be matched safely.
 - Hidden cells are excluded from completion counts.
 - Optional character display name falls back to real name when empty.
 - Daily, weekly, biweekly, and custom reset rules still use `Asia/Seoul`.

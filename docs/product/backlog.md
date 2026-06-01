@@ -23,4 +23,5 @@ Items here are not yet designed, prioritized, or scheduled.
 - Task separators should exist by default, while character separators should be optional and user-configurable.
 - Task colors should drive checkbox color so dense checklists remain scannable.
 - Layout and visual customization state must stay separate from semantic completion state so resizing, moving, recoloring, or adding separators does not corrupt saved checklist data.
+- Row/column switching must be a guarded transpose with preview. Completion state, hidden cells, task colors, reset rules, and safe separators must move by stable ids, never by visible label or grid position.
 - Character aliases should not replace the real character name used for Lost Ark API matching.
