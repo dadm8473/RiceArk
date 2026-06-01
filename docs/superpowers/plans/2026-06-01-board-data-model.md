@@ -15,7 +15,7 @@
 - `apps/api/migrations/0010_board_data_model.sql`: create sheets, tables, axis items, cell state, and board completion tables.
 - `apps/api/src/db/schema.test.ts`: assert the D1 schema has the new board model and uniqueness constraints.
 - `packages/core/src/board.ts`: define shared board payload types and pure helpers for orientation, axis roles, and semantic cell keys.
-- `packages/core/src/board.test.ts`: verify semantic cell keys and orientation helpers do not depend on visual position.
+- `packages/core/test/board.test.ts`: verify semantic cell keys and orientation helpers do not depend on visual position.
 - `packages/core/src/index.ts`: export board helpers.
 - `apps/api/src/db/board.ts`: create and load default sheets/tables from existing characters and tasks.
 - `apps/api/src/routes/board.ts`: expose scoped board read and mutation schemas.
@@ -178,7 +178,7 @@ describe("board helpers", () => {
         columnItemId: "column-task-b",
         periodKey: "daily:2026-06-01"
       })
-    ).toBe("table-1:row-character-a:column-task-b:daily:2026-06-01");
+    ).toBe('["table-1","row-character-a","column-task-b","daily:2026-06-01"]');
   });
 
   it("derives table orientation from row and column roles", () => {
@@ -213,7 +213,7 @@ export interface BoardCompletionIdentity {
 }
 
 export function boardCompletionKey(identity: BoardCompletionIdentity): string {
-  return [identity.tableId, identity.rowItemId, identity.columnItemId, identity.periodKey].join(":");
+  return JSON.stringify([identity.tableId, identity.rowItemId, identity.columnItemId, identity.periodKey]);
 }
 
 export function getBoardOrientation(input: { rowRole: BoardAxisRole; columnRole: BoardAxisRole }): BoardOrientation {
