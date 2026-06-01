@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import { apiPatch, apiPost } from "../../api/client";
 import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
-import type { BoardAxisItem, BoardAxisRole, BoardOrientation, BoardPayload, BoardTable } from "./types";
+import type { BoardAxis, BoardAxisItem, BoardAxisRole, BoardOrientation, BoardPayload, BoardTable } from "./types";
 import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
 
 interface Props {
@@ -13,6 +13,11 @@ const roleLabels: Record<BoardAxisRole, string> = {
   character: "캐릭터",
   task: "숙제",
   custom: "사용자"
+};
+
+const axisLabels: Record<BoardAxis, string> = {
+  row: "행",
+  column: "열"
 };
 
 function tableOrientationLabel(table: BoardTable): string {
@@ -42,6 +47,10 @@ function normalizeAxisSize(value: number): number | null {
   return Math.min(1024, Math.max(16, Math.round(value)));
 }
 
+function axisDraftKey(tableId: string, axis: BoardAxis): string {
+  return `${tableId}:${axis}`;
+}
+
 export function BoardOverview({ board, onBoardChanged }: Props) {
   const { enqueue } = useBoardCompletionQueue();
   const [completions, setCompletions] = useState(board.completions);
@@ -51,6 +60,8 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   const [tableName, setTableName] = useState("");
   const [tableOrientation, setTableOrientation] = useState<BoardOrientation>("custom");
   const [pendingAction, setPendingAction] = useState<"sheet" | "table" | null>(null);
+  const [pendingAxisKey, setPendingAxisKey] = useState<string | null>(null);
+  const [axisDrafts, setAxisDrafts] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const sortedSheets = useMemo(
     () => board.sheets.slice().sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name)),
@@ -121,6 +132,33 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
       setFormError(err instanceof Error ? err.message : "표를 추가하지 못했습니다.");
     } finally {
       setPendingAction(null);
+    }
+  }
+
+  function handleAxisDraftChange(tableId: string, axis: BoardAxis, value: string) {
+    setAxisDrafts((current) => ({ ...current, [axisDraftKey(tableId, axis)]: value }));
+  }
+
+  async function handleCreateAxisItem(event: FormEvent<HTMLFormElement>, table: BoardTable, axis: BoardAxis) {
+    event.preventDefault();
+    const key = axisDraftKey(table.id, axis);
+    const label = (axisDrafts[key] ?? "").trim();
+    if (!label) return;
+
+    setPendingAxisKey(key);
+    setFormError(null);
+    try {
+      await apiPost<{ id: string }>("/api/board/axis-items", {
+        tableId: table.id,
+        axis,
+        label
+      });
+      setAxisDrafts((current) => ({ ...current, [key]: "" }));
+      await refreshBoard();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : `${axisLabels[axis]}을 추가하지 못했습니다.`);
+    } finally {
+      setPendingAxisKey(null);
     }
   }
 
@@ -216,6 +254,30 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
               <span>열 {axisCount(axisItems, table.id, "column")}</span>
               <span>행 높이 {table.default_row_height}px</span>
               <span>열 너비 {table.default_column_width}px</span>
+            </div>
+            <div className="board-axis-create-row">
+              {(["row", "column"] as const).map((axis) => {
+                const key = axisDraftKey(table.id, axis);
+                return (
+                  <form
+                    key={axis}
+                    className="board-create-form board-axis-create-form"
+                    aria-label={`${table.name} ${axisLabels[axis]} 추가`}
+                    onSubmit={(event) => handleCreateAxisItem(event, table, axis)}
+                  >
+                    <input
+                      aria-label={`${table.name} ${axisLabels[axis]} 이름`}
+                      maxLength={30}
+                      placeholder={`${axisLabels[axis]} 이름`}
+                      value={axisDrafts[key] ?? ""}
+                      onChange={(event) => handleAxisDraftChange(table.id, axis, event.currentTarget.value)}
+                    />
+                    <button disabled={pendingAxisKey === key} type="submit">
+                      {axisLabels[axis]} 추가
+                    </button>
+                  </form>
+                );
+              })}
             </div>
             <BoardTableGrid
               axisItems={axisItems}

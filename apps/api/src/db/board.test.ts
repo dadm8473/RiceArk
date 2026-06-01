@@ -4,6 +4,7 @@ import {
   DEFAULT_TABLE_NAME,
   buildBoardCompletionPatchesFromLegacy,
   buildDefaultAxisItemSeeds,
+  buildManualBoardAxisItemDraft,
   boardRolesForTableOrientation,
   defaultBoardRolesForOrientation,
   defaultOrientationForTableRoles,
@@ -45,6 +46,65 @@ describe("board db defaults", () => {
       rowRole: "custom",
       columnRole: "custom",
       taskAxis: "none"
+    });
+  });
+
+  it("builds task-like manual axis items when the axis role is task", () => {
+    expect(
+      buildManualBoardAxisItemDraft({
+        axis: "row",
+        axisRole: "task",
+        label: "세르카",
+        taskColorIndex: 1
+      })
+    ).toMatchObject({
+      axis: "row",
+      kind: "task",
+      label: "세르카",
+      taskId: null,
+      taskScope: "custom",
+      taskResetType: "daily",
+      taskResetRuleJson: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}',
+      taskColor: "#13795b"
+    });
+  });
+
+  it("builds free manual axis items when the axis role is not task", () => {
+    expect(
+      buildManualBoardAxisItemDraft({
+        axis: "column",
+        axisRole: "custom",
+        label: "냠1",
+        taskColorIndex: 0
+      })
+    ).toMatchObject({
+      axis: "column",
+      kind: "custom",
+      label: "냠1",
+      taskId: null,
+      characterId: null,
+      taskScope: null,
+      taskResetType: null,
+      taskResetRuleJson: null,
+      taskColor: null
+    });
+  });
+
+  it("builds task-like manual rows for custom tables so their checkboxes can reset", () => {
+    expect(
+      buildManualBoardAxisItemDraft({
+        axis: "row",
+        axisRole: "custom",
+        label: "필드 보스",
+        taskColorIndex: 2
+      })
+    ).toMatchObject({
+      axis: "row",
+      kind: "task",
+      taskScope: "custom",
+      taskResetType: "daily",
+      taskResetRuleJson: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}',
+      taskColor: "#b45309"
     });
   });
 

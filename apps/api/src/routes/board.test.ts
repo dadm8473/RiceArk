@@ -3,6 +3,7 @@ import {
   boardAxisItemIdParamSchema,
   boardAxisSizePatchSchema,
   boardCompletionPatchSchema,
+  createBoardAxisItemSchema,
   createBoardSheetSchema,
   createBoardTableSchema
 } from "./board";
@@ -77,5 +78,20 @@ describe("board route schemas", () => {
     expect(createBoardSheetSchema.safeParse({ name: "" }).success).toBe(false);
     expect(createBoardTableSchema.safeParse({ sheetId: "sheet🙂", name: "숙제", orientation: "tasks_rows" }).success).toBe(false);
     expect(createBoardTableSchema.safeParse({ sheetId: "sheet-1", name: "숙제", orientation: "unknown" }).success).toBe(false);
+  });
+
+  it("accepts normalized custom axis item labels for board tables", () => {
+    expect(createBoardAxisItemSchema.parse({ tableId: "table-1", axis: "row", label: "  카제로스  " })).toEqual({
+      tableId: "table-1",
+      axis: "row",
+      label: "카제로스"
+    });
+  });
+
+  it("rejects unsafe custom axis item input", () => {
+    expect(createBoardAxisItemSchema.safeParse({ tableId: "table🙂", axis: "row", label: "카제로스" }).success).toBe(false);
+    expect(createBoardAxisItemSchema.safeParse({ tableId: "table-1", axis: "diagonal", label: "카제로스" }).success).toBe(false);
+    expect(createBoardAxisItemSchema.safeParse({ tableId: "table-1", axis: "row", label: "카제로스🙂" }).success).toBe(false);
+    expect(createBoardAxisItemSchema.safeParse({ tableId: "table-1", axis: "row", label: "" }).success).toBe(false);
   });
 });

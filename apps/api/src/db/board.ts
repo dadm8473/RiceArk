@@ -44,6 +44,24 @@ export interface CreateBoardTableInput {
   orientation: BoardOrientation;
 }
 
+export interface CreateBoardAxisItemInput {
+  tableId: string;
+  axis: BoardAxis;
+  label: string;
+}
+
+export interface ManualBoardAxisItemDraft {
+  axis: BoardAxis;
+  kind: "task" | "custom";
+  label: string;
+  characterId: null;
+  taskId: null;
+  taskScope: "custom" | null;
+  taskResetType: "daily" | null;
+  taskResetRuleJson: string | null;
+  taskColor: string | null;
+}
+
 export interface AuthorizedBoardCompletionTarget {
   tableId: string;
   rowItemId: string;
@@ -94,6 +112,7 @@ export interface DefaultAxisItemSeed {
 }
 
 const DEFAULT_TASK_COLORS = ["#2563eb", "#13795b", "#b45309", "#7c3aed", "#be123c", "#0f766e"];
+const DEFAULT_MANUAL_TASK_RESET_RULE_JSON = '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}';
 
 export function boardRolesForTableOrientation(orientation: BoardOrientation): BoardRoles {
   if (orientation === "custom") {
@@ -121,6 +140,40 @@ export function boardRolesForTableOrientation(orientation: BoardOrientation): Bo
 
 export function defaultBoardRolesForOrientation(orientation: ChecklistOrientation): BoardRoles {
   return boardRolesForTableOrientation(orientation);
+}
+
+export function buildManualBoardAxisItemDraft(input: {
+  axis: BoardAxis;
+  axisRole: BoardAxisRole;
+  label: string;
+  taskColorIndex: number;
+}): ManualBoardAxisItemDraft {
+  const isTaskLikeAxis = input.axisRole === "task" || (input.axisRole === "custom" && input.axis === "row");
+  if (isTaskLikeAxis) {
+    return {
+      axis: input.axis,
+      kind: "task",
+      label: input.label,
+      characterId: null,
+      taskId: null,
+      taskScope: "custom",
+      taskResetType: "daily",
+      taskResetRuleJson: DEFAULT_MANUAL_TASK_RESET_RULE_JSON,
+      taskColor: DEFAULT_TASK_COLORS[input.taskColorIndex % DEFAULT_TASK_COLORS.length]!
+    };
+  }
+
+  return {
+    axis: input.axis,
+    kind: "custom",
+    label: input.label,
+    characterId: null,
+    taskId: null,
+    taskScope: null,
+    taskResetType: null,
+    taskResetRuleJson: null,
+    taskColor: null
+  };
 }
 
 export function defaultOrientationForTableRoles(
@@ -552,6 +605,74 @@ export async function createBoardTable(
      VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
   )
     .bind(id, userId, input.sheetId, input.name, sortOrder, y, roles.rowRole, roles.columnRole, roles.taskAxis)
+    .run();
+
+  return { id };
+}
+
+export async function createBoardAxisItem(
+  env: Env,
+  userId: string,
+  input: CreateBoardAxisItemInput
+): Promise<{ id: string } | null> {
+  await ensureDefaultBoard(env, userId);
+
+  const table = await env.DB.prepare("SELECT id, row_role, column_role FROM board_tables WHERE id = ? AND user_id = ?")
+    .bind(input.tableId, userId)
+    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole }>();
+  if (!table) return null;
+
+  const stats = await env.DB.prepare(
+    `SELECT COALESCE(MAX(sort_order), -10) AS maxSortOrder,
+            SUM(CASE WHEN kind = 'task' THEN 1 ELSE 0 END) AS taskCount
+     FROM board_axis_items
+     WHERE user_id = ? AND table_id = ? AND axis = ?`
+  )
+    .bind(userId, input.tableId, input.axis)
+    .first<{ maxSortOrder: number | null; taskCount: number | null }>();
+  const axisRole = input.axis === "row" ? table.row_role : table.column_role;
+  const draft = buildManualBoardAxisItemDraft({
+    axis: input.axis,
+    axisRole,
+    label: input.label,
+    taskColorIndex: stats?.taskCount ?? 0
+  });
+  const id = crypto.randomUUID();
+  const sortOrder = (stats?.maxSortOrder ?? -10) + 10;
+
+  await env.DB.prepare(
+    `INSERT INTO board_axis_items (
+       id,
+       user_id,
+       table_id,
+       axis,
+       kind,
+       label,
+       character_id,
+       task_id,
+       task_scope,
+       task_reset_type,
+       task_reset_rule_json,
+       task_color,
+       sort_order
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      id,
+      userId,
+      input.tableId,
+      draft.axis,
+      draft.kind,
+      draft.label,
+      draft.characterId,
+      draft.taskId,
+      draft.taskScope,
+      draft.taskResetType,
+      draft.taskResetRuleJson,
+      draft.taskColor,
+      sortOrder
+    )
     .run();
 
   return { id };

@@ -89,6 +89,15 @@ describe("BoardOverview", () => {
     expect(html).toContain("사용자 표");
   });
 
+  it("renders compact controls for adding rows and columns to each table", () => {
+    const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
+
+    expect(html).toContain('aria-label="숙제 행 이름"');
+    expect(html).toContain("행 추가");
+    expect(html).toContain('aria-label="숙제 열 이름"');
+    expect(html).toContain("열 추가");
+  });
+
   it("renders compact checkbox cells from board axis and completion state", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {

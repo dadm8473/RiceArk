@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { requireUser } from "../auth/requireUser";
 import {
+  createBoardAxisItem,
   createBoardSheet,
   createBoardTable,
   loadBoard,
@@ -26,6 +27,12 @@ export const createBoardTableSchema = z.object({
   sheetId: resourceIdSchema,
   name: safeBoardNameSchema,
   orientation: boardTableOrientationSchema
+});
+
+export const createBoardAxisItemSchema = z.object({
+  tableId: resourceIdSchema,
+  axis: z.enum(["row", "column"]),
+  label: safeBoardNameSchema
 });
 
 export const boardCompletionPatchSchema = z.object({
@@ -76,6 +83,16 @@ boardRoutes.post("/board/tables", zValidator("json", createBoardTableSchema), as
     throw new ApiError(404, "board_sheet_not_found", "시트를 찾을 수 없습니다.");
   }
   return c.json(table, 201);
+});
+
+boardRoutes.post("/board/axis-items", zValidator("json", createBoardAxisItemSchema), async (c) => {
+  const user = await requireUser(c);
+  const input = c.req.valid("json");
+  const axisItem = await createBoardAxisItem(c.env, user.id, input);
+  if (!axisItem) {
+    throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
+  }
+  return c.json(axisItem, 201);
 });
 
 boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchSchema), async (c) => {

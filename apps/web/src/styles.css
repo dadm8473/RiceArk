@@ -211,6 +211,17 @@ body {
   font-weight: 700;
 }
 
+.board-axis-create-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.board-axis-create-form input {
+  width: 104px;
+}
+
 .board-canvas {
   display: flex;
   align-items: flex-start;
