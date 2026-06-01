@@ -179,6 +179,13 @@ describe("BoardOverview", () => {
     expect(html).toContain('value="420"');
   });
 
+  it("renders direct table move and resize handles", () => {
+    const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
+
+    expect(html).toContain('aria-label="숙제 표 이동"');
+    expect(html).toContain('aria-label="숙제 표 크기 조절"');
+  });
+
   it("keeps hidden cells present for layout without rendering a checkbox", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {

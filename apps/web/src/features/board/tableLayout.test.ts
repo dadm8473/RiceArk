@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyBoardTableLayoutPatch, normalizeBoardTableLayoutNumber } from "./tableLayout";
+import {
+  applyBoardTableLayoutPatch,
+  getBoardTableMovePatch,
+  getBoardTableResizePatch,
+  normalizeBoardTableLayoutNumber
+} from "./tableLayout";
 import type { BoardTable } from "./types";
 
 const tables: BoardTable[] = [
@@ -77,5 +82,37 @@ describe("board table layout helpers", () => {
     expect(normalizeBoardTableLayoutNumber("-2", { min: 0, max: 10000, nullable: false })).toBe(0);
     expect(normalizeBoardTableLayoutNumber("50000", { min: 0, max: 10000, nullable: false })).toBe(10000);
     expect(normalizeBoardTableLayoutNumber("", { min: 160, max: 4000, nullable: true })).toBeNull();
+  });
+
+  it("builds bounded table move patches from pointer deltas", () => {
+    expect(
+      getBoardTableMovePatch(
+        { x: 20, y: 30, width: 360, height: 240, pointerX: 100, pointerY: 200 },
+        { pointerX: 145, pointerY: 260 }
+      )
+    ).toEqual({ x: 65, y: 90, width: 360, height: 240 });
+
+    expect(
+      getBoardTableMovePatch(
+        { x: 20, y: 30, width: null, height: null, pointerX: 100, pointerY: 200 },
+        { pointerX: 50, pointerY: 150 }
+      )
+    ).toEqual({ x: 0, y: 0, width: null, height: null });
+  });
+
+  it("builds bounded table resize patches from pointer deltas", () => {
+    expect(
+      getBoardTableResizePatch(
+        { x: 20, y: 30, width: 360, height: 240, pointerX: 100, pointerY: 200 },
+        { pointerX: 180, pointerY: 250 }
+      )
+    ).toEqual({ x: 20, y: 30, width: 440, height: 290 });
+
+    expect(
+      getBoardTableResizePatch(
+        { x: 20, y: 30, width: 360, height: 240, pointerX: 100, pointerY: 200 },
+        { pointerX: -500, pointerY: -500 }
+      )
+    ).toEqual({ x: 20, y: 30, width: 160, height: 120 });
   });
 });

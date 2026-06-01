@@ -17,8 +17,8 @@ import {
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Eye, EyeOff, Save, Trash2, X } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { Eye, EyeOff, Maximize2, Move, Save, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type PointerEvent, type ReactNode } from "react";
 import { apiDelete, apiPatch, apiPost } from "../../api/client";
 import { applyBoardCellStatePatch, type BoardCellStatePatch } from "./cellStates";
 import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
@@ -30,8 +30,11 @@ import {
 } from "./reorder";
 import {
   applyBoardTableLayoutPatch,
+  getBoardTableMovePatch,
+  getBoardTableResizePatch,
   normalizeBoardTableLayoutNumber,
-  type BoardTableLayoutPatch
+  type BoardTableLayoutPatch,
+  type BoardTableLayoutPointerStart
 } from "./tableLayout";
 import type { BoardAxis, BoardAxisItem, BoardAxisRole, BoardOrientation, BoardPayload, BoardTable } from "./types";
 import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
@@ -39,6 +42,14 @@ import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
 interface Props {
   board: BoardPayload;
   onBoardChanged?: () => Promise<BoardPayload> | void;
+}
+
+type BoardTableLayoutDragMode = "move" | "resize";
+
+interface ActiveBoardTableLayoutDrag {
+  tableId: string;
+  mode: BoardTableLayoutDragMode;
+  start: BoardTableLayoutPointerStart;
 }
 
 const roleLabels: Record<BoardAxisRole, string> = {
@@ -130,6 +141,7 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   const [isReorderMode, setIsReorderMode] = useState(false);
   const [isCellVisibilityMode, setIsCellVisibilityMode] = useState(false);
   const [activeSortableId, setActiveSortableId] = useState<string | null>(null);
+  const [activeTableLayoutDrag, setActiveTableLayoutDrag] = useState<ActiveBoardTableLayoutDrag | null>(null);
   const [editingAxisItem, setEditingAxisItem] = useState<BoardAxisItem | null>(null);
   const sortedSheets = useMemo(
     () => board.sheets.slice().sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name)),
@@ -294,6 +306,75 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     }
   }
 
+  function getTableLayoutPointerStart(
+    table: BoardTable,
+    mode: BoardTableLayoutDragMode,
+    event: PointerEvent<HTMLElement>
+  ): BoardTableLayoutPointerStart {
+    const tableElement = event.currentTarget.closest(".board-table-summary");
+    const rect = tableElement?.getBoundingClientRect();
+    const width = mode === "resize" ? table.width ?? Math.round(rect?.width ?? BOARD_TABLE_FALLBACK_WIDTH) : table.width;
+    const height = mode === "resize" ? table.height ?? Math.round(rect?.height ?? BOARD_TABLE_FALLBACK_HEIGHT) : table.height;
+
+    return {
+      x: table.x,
+      y: table.y,
+      width,
+      height,
+      pointerX: event.clientX,
+      pointerY: event.clientY
+    };
+  }
+
+  function buildTableLayoutDragPatch(
+    drag: ActiveBoardTableLayoutDrag,
+    event: PointerEvent<HTMLElement>
+  ): BoardTableLayoutPatch {
+    const current = {
+      pointerX: event.clientX,
+      pointerY: event.clientY
+    };
+    return drag.mode === "move"
+      ? getBoardTableMovePatch(drag.start, current)
+      : getBoardTableResizePatch(drag.start, current);
+  }
+
+  function handleTableLayoutPointerDown(
+    table: BoardTable,
+    mode: BoardTableLayoutDragMode,
+    event: PointerEvent<HTMLButtonElement>
+  ) {
+    if (isReorderMode) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setActiveTableLayoutDrag({
+      tableId: table.id,
+      mode,
+      start: getTableLayoutPointerStart(table, mode, event)
+    });
+  }
+
+  function handleTableLayoutPointerMove(event: PointerEvent<HTMLButtonElement>) {
+    if (!activeTableLayoutDrag) return;
+
+    event.preventDefault();
+    const patch = buildTableLayoutDragPatch(activeTableLayoutDrag, event);
+    setTables((current) => applyBoardTableLayoutPatch(current, activeTableLayoutDrag.tableId, patch));
+  }
+
+  function handleTableLayoutPointerEnd(event: PointerEvent<HTMLButtonElement>) {
+    if (!activeTableLayoutDrag) return;
+
+    event.preventDefault();
+    const drag = activeTableLayoutDrag;
+    setActiveTableLayoutDrag(null);
+    if (event.clientX === drag.start.pointerX && event.clientY === drag.start.pointerY) return;
+
+    void handleTableLayoutChange(drag.tableId, buildTableLayoutDragPatch(drag, event));
+  }
+
   async function saveAxisOrder(tableId: string, axis: BoardAxis, axisItemIds: string[]) {
     try {
       await apiPatch("/api/board/axis-items/order", { tableId, axis, axisItemIds });
@@ -351,8 +432,23 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
           {activeTables.map((table) => (
             <article key={table.id} className="board-table-summary" style={getBoardTableStyle(table)}>
               <div className="board-table-heading">
-                <strong>{table.name}</strong>
-                <span>{tableOrientationLabel(table)}</span>
+                <button
+                  className="board-table-drag-button"
+                  type="button"
+                  aria-label={`${table.name} 표 이동`}
+                  disabled={isReorderMode}
+                  title="표 이동"
+                  onPointerCancel={handleTableLayoutPointerEnd}
+                  onPointerDown={(event) => handleTableLayoutPointerDown(table, "move", event)}
+                  onPointerMove={handleTableLayoutPointerMove}
+                  onPointerUp={handleTableLayoutPointerEnd}
+                >
+                  <Move aria-hidden="true" size={16} />
+                </button>
+                <div className="board-table-title">
+                  <strong>{table.name}</strong>
+                  <span>{tableOrientationLabel(table)}</span>
+                </div>
               </div>
               <div className="board-table-metrics">
                 <span>행 {axisCount(axisItems, table.id, "row")}</span>
@@ -397,6 +493,19 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
                 onCellVisibilityToggle={handleCellVisibilityToggle}
                 onToggle={handleCompletionToggle}
               />
+              <button
+                className="board-table-resize-handle"
+                type="button"
+                aria-label={`${table.name} 표 크기 조절`}
+                disabled={isReorderMode}
+                title="표 크기 조절"
+                onPointerCancel={handleTableLayoutPointerEnd}
+                onPointerDown={(event) => handleTableLayoutPointerDown(table, "resize", event)}
+                onPointerMove={handleTableLayoutPointerMove}
+                onPointerUp={handleTableLayoutPointerEnd}
+              >
+                <Maximize2 aria-hidden="true" size={14} />
+              </button>
             </article>
           ))}
         </div>
