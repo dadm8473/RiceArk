@@ -475,8 +475,64 @@ git add apps/api/src/db/board.ts apps/api/src/routes/board.ts apps/api/src/route
 git commit -m "feat: save board completion batches"
 ```
 
+## Task 6: Bootstrap Default Board From Existing Checklist
+
+**Files:**
+- Modify: `apps/api/src/db/board.ts`
+- Modify: `apps/api/src/db/board.test.ts`
+- Modify: `apps/api/src/routes/board.ts`
+
+- [ ] **Step 1: Add failing tests for axis seed creation**
+
+Extend `apps/api/src/db/board.test.ts`:
+
+```ts
+expect(buildDefaultAxisItemSeeds({
+  orientation: "tasks_rows",
+  tasks: [{ id: "task-a", name: "쿠르잔 전선", scope: "character", resetType: "daily", resetRuleJson: "{}", sortOrder: 20 }],
+  characters: [{ id: "character-a", name: "냠수나이스1", sortOrder: 10 }]
+})).toMatchObject([
+  { axis: "row", kind: "task", taskId: "task-a", label: "쿠르잔 전선" },
+  { axis: "column", kind: "character", characterId: "character-a", label: "냠수나이스1" }
+]);
+```
+
+- [ ] **Step 2: Run DB test to verify it fails**
+
+Run: `pnpm test apps/api/src/db/board.test.ts`
+
+Expected: FAIL because `buildDefaultAxisItemSeeds` does not exist yet.
+
+- [ ] **Step 3: Implement default board bootstrap helpers**
+
+Add pure seed helpers plus `ensureDefaultBoard(env, userId)`. The bootstrap should:
+
+- Create the default sheet if missing.
+- Create the default table if missing.
+- Respect `user_settings.checklist_orientation`.
+- Convert existing tasks and imported characters into axis items.
+- Append newly imported characters/tasks without changing existing axis item order, size, separator, or visibility.
+- Avoid pre-creating every visible cell; missing `board_cell_states` rows mean the checkbox is visible by default.
+
+- [ ] **Step 4: Wire `loadBoard` through the bootstrap**
+
+Call `await ensureDefaultBoard(env, userId)` before loading board payload rows.
+
+- [ ] **Step 5: Run DB and route tests**
+
+Run: `pnpm test apps/api/src/db/board.test.ts apps/api/src/routes/board.test.ts`
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/api/src/db/board.ts apps/api/src/db/board.test.ts apps/api/src/routes/board.ts docs/superpowers/plans/2026-06-01-board-data-model.md
+git commit -m "feat: bootstrap default board from checklist"
+```
+
 ## Self-Review
 
-- Spec coverage: this plan covers the first storage/API phase: board tables, semantic completion identity, route validation, and the initial board payload shell. It intentionally does not yet implement full sheet/table UI, axis editing, resizing, or guarded transpose; those remain later phases from the spec rollout.
+- Spec coverage: this plan covers the first storage/API phase: board tables, semantic completion identity, route validation, initial board payload shell, default sheet/table creation, and axis item creation from existing checklist data. It intentionally does not yet implement full sheet/table UI, axis editing, resizing, or guarded transpose; those remain later phases from the spec rollout.
 - Placeholder scan: no unresolved placeholder markers or undefined follow-up placeholders remain in the planned steps.
 - Type consistency: `tableId`, `rowItemId`, `columnItemId`, `periodKey`, `rowRole`, `columnRole`, and `taskAxis` are used consistently across tasks.
