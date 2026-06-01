@@ -63,6 +63,10 @@ export interface BoardAxisOrderInput {
   axisItemIds: string[];
 }
 
+export interface UpdateBoardAxisItemInput {
+  label: string;
+}
+
 export interface ManualBoardAxisItemDraft {
   axis: BoardAxis;
   kind: "task" | "custom";
@@ -742,6 +746,33 @@ export async function reorderBoardAxisItems(
     await env.DB.batch([...temporaryUpdates, ...finalUpdates]);
   }
   return true;
+}
+
+export async function updateBoardAxisItem(
+  env: Env,
+  userId: string,
+  axisItemId: string,
+  input: UpdateBoardAxisItemInput
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE board_axis_items
+     SET label = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ? AND visible = 1`
+  )
+    .bind(input.label, axisItemId, userId)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+export async function hideBoardAxisItem(env: Env, userId: string, axisItemId: string): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE board_axis_items
+     SET visible = 0, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ? AND visible = 1`
+  )
+    .bind(axisItemId, userId)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
 }
 
 export async function saveBoardCompletionPatches(

@@ -6,10 +6,12 @@ import {
   createBoardAxisItem,
   createBoardSheet,
   createBoardTable,
+  hideBoardAxisItem,
   loadBoard,
   reorderBoardAxisItems,
   saveBoardCellStatePatch,
   saveBoardCompletionPatches,
+  updateBoardAxisItem,
   updateBoardAxisItemSize,
   type BoardCellStatePatch,
   type BoardCompletionPatch
@@ -52,6 +54,10 @@ export const boardAxisOrderSchema = z
     message: "Duplicate board axis item ids are not allowed",
     path: ["axisItemIds"]
   });
+
+export const updateBoardAxisItemSchema = z.object({
+  label: safeBoardNameSchema
+});
 
 export const boardCompletionPatchSchema = z.object({
   patches: z
@@ -128,6 +134,32 @@ boardRoutes.patch("/board/axis-items/order", zValidator("json", boardAxisOrderSc
     throw new ApiError(400, "invalid_board_axis_order", "행 또는 열 순서에 사용할 수 없는 항목이 있습니다.");
   }
   return c.json({ ok: true });
+});
+
+boardRoutes.patch(
+  "/board/axis-items/:id",
+  zValidator("param", boardAxisItemIdParamSchema),
+  zValidator("json", updateBoardAxisItemSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    const { id } = c.req.valid("param");
+    const input = c.req.valid("json");
+    const updated = await updateBoardAxisItem(c.env, user.id, id, input);
+    if (!updated) {
+      throw new ApiError(404, "board_axis_item_not_found", "행 또는 열 항목을 찾을 수 없습니다.");
+    }
+    return c.json({ ok: true });
+  }
+);
+
+boardRoutes.delete("/board/axis-items/:id", zValidator("param", boardAxisItemIdParamSchema), async (c) => {
+  const user = await requireUser(c);
+  const { id } = c.req.valid("param");
+  const deleted = await hideBoardAxisItem(c.env, user.id, id);
+  if (!deleted) {
+    throw new ApiError(404, "board_axis_item_not_found", "행 또는 열 항목을 찾을 수 없습니다.");
+  }
+  return c.body(null, 204);
 });
 
 boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchSchema), async (c) => {

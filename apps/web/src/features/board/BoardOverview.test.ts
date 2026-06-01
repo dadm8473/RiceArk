@@ -110,6 +110,13 @@ describe("BoardOverview", () => {
     expect(html).toContain("표시 편집");
   });
 
+  it("renders editable axis labels outside reorder mode", () => {
+    const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
+
+    expect(html).toContain('aria-label="쿠르잔 전선 편집"');
+    expect(html).toContain('aria-label="냠수나이스1 편집"');
+  });
+
   it("renders compact checkbox cells from board axis and completion state", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {

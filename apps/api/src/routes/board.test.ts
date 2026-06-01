@@ -7,7 +7,8 @@ import {
   boardCompletionPatchSchema,
   createBoardAxisItemSchema,
   createBoardSheetSchema,
-  createBoardTableSchema
+  createBoardTableSchema,
+  updateBoardAxisItemSchema
 } from "./board";
 
 describe("board route schemas", () => {
@@ -159,5 +160,14 @@ describe("board route schemas", () => {
     expect(createBoardAxisItemSchema.safeParse({ tableId: "table-1", axis: "diagonal", label: "카제로스" }).success).toBe(false);
     expect(createBoardAxisItemSchema.safeParse({ tableId: "table-1", axis: "row", label: "카제로스🙂" }).success).toBe(false);
     expect(createBoardAxisItemSchema.safeParse({ tableId: "table-1", axis: "row", label: "" }).success).toBe(false);
+  });
+
+  it("accepts normalized board axis item labels for updates", () => {
+    expect(updateBoardAxisItemSchema.parse({ label: "  카제로스  " })).toEqual({ label: "카제로스" });
+  });
+
+  it("rejects unsafe board axis item update labels", () => {
+    expect(updateBoardAxisItemSchema.safeParse({ label: "카제로스🙂" }).success).toBe(false);
+    expect(updateBoardAxisItemSchema.safeParse({ label: "" }).success).toBe(false);
   });
 });

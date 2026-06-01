@@ -282,6 +282,17 @@ body {
   padding: 4px 6px;
 }
 
+.board-axis-edit-button {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+}
+
+.board-axis-edit-button:hover {
+  background: #e8eef7;
+}
+
 .board-column-label span,
 .board-row-label span {
   min-width: 0;

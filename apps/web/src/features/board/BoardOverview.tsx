@@ -17,9 +17,9 @@ import {
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, Save, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
-import { apiPatch, apiPost } from "../../api/client";
+import { apiDelete, apiPatch, apiPost } from "../../api/client";
 import { applyBoardCellStatePatch, type BoardCellStatePatch } from "./cellStates";
 import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
 import {
@@ -94,6 +94,7 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   const [isReorderMode, setIsReorderMode] = useState(false);
   const [isCellVisibilityMode, setIsCellVisibilityMode] = useState(false);
   const [activeSortableId, setActiveSortableId] = useState<string | null>(null);
+  const [editingAxisItem, setEditingAxisItem] = useState<BoardAxisItem | null>(null);
   const sortedSheets = useMemo(
     () => board.sheets.slice().sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name)),
     [board.sheets]
@@ -137,6 +138,18 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     } catch {
       window.location.reload();
     }
+  }
+
+  async function handleAxisItemSave(axisItemId: string, label: string) {
+    await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId), { label });
+    setAxisItems((current) => current.map((item) => (item.id === axisItemId ? { ...item, label } : item)));
+    setEditingAxisItem(null);
+  }
+
+  async function handleAxisItemDelete(axisItemId: string) {
+    await apiDelete("/api/board/axis-items/" + encodeURIComponent(axisItemId));
+    setAxisItems((current) => current.map((item) => (item.id === axisItemId ? { ...item, visible: 0 } : item)));
+    setEditingAxisItem(null);
   }
 
   async function refreshBoard() {
@@ -327,6 +340,7 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
             isReorderMode={isReorderMode}
             table={table}
             onAxisSizeChange={handleAxisSizeChange}
+            onAxisItemEdit={setEditingAxisItem}
             onCellVisibilityToggle={handleCellVisibilityToggle}
             onToggle={handleCompletionToggle}
           />
@@ -423,6 +437,14 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
       ) : (
         boardCanvas
       )}
+      {editingAxisItem ? (
+        <BoardAxisItemEditModal
+          item={editingAxisItem}
+          onClose={() => setEditingAxisItem(null)}
+          onDelete={handleAxisItemDelete}
+          onSave={handleAxisItemSave}
+        />
+      ) : null}
     </section>
   );
 }
@@ -435,6 +457,7 @@ function BoardTableGrid({
   isReorderMode,
   table,
   onAxisSizeChange,
+  onAxisItemEdit,
   onCellVisibilityToggle,
   onToggle
 }: {
@@ -445,6 +468,7 @@ function BoardTableGrid({
   isReorderMode: boolean;
   table: BoardTable;
   onAxisSizeChange: (axisItemId: string, sizePx: number) => void;
+  onAxisItemEdit: (item: BoardAxisItem) => void;
   onCellVisibilityToggle: (patch: BoardCellStatePatch) => void;
   onToggle: (patch: BoardCompletionPatch) => void;
 }) {
@@ -482,6 +506,7 @@ function BoardTableGrid({
             className="board-axis-label board-column-label"
             isReorderMode={isReorderMode}
             item={column}
+            onEdit={() => onAxisItemEdit(column)}
             tableId={table.id}
           >
             <span>{column.label}</span>
@@ -507,6 +532,7 @@ function BoardTableGrid({
             hiddenCells={hiddenCells}
             isCellVisibilityMode={isCellVisibilityMode}
             isReorderMode={isReorderMode}
+            onAxisItemEdit={onAxisItemEdit}
             onCellVisibilityToggle={onCellVisibilityToggle}
             onToggle={onToggle}
             onAxisSizeChange={onAxisSizeChange}
@@ -525,6 +551,7 @@ function BoardAxisLabel({
   className,
   isReorderMode,
   item,
+  onEdit,
   style,
   tableId
 }: {
@@ -532,10 +559,18 @@ function BoardAxisLabel({
   className: string;
   isReorderMode: boolean;
   item: BoardAxisItem;
+  onEdit?: () => void;
   style?: CSSProperties;
   tableId: string;
 }) {
   if (!isReorderMode) {
+    if (onEdit) {
+      return (
+        <button className={`${className} board-axis-edit-button`} style={style} type="button" aria-label={`${item.label} 편집`} onClick={onEdit}>
+          {children}
+        </button>
+      );
+    }
     return (
       <div className={className} style={style}>
         {children}
@@ -593,6 +628,7 @@ function BoardGridRow({
   hiddenCells,
   isCellVisibilityMode,
   isReorderMode,
+  onAxisItemEdit,
   onCellVisibilityToggle,
   onAxisSizeChange,
   onToggle,
@@ -605,6 +641,7 @@ function BoardGridRow({
   hiddenCells: Set<string>;
   isCellVisibilityMode: boolean;
   isReorderMode: boolean;
+  onAxisItemEdit: (item: BoardAxisItem) => void;
   onCellVisibilityToggle: (patch: BoardCellStatePatch) => void;
   onAxisSizeChange: (axisItemId: string, sizePx: number) => void;
   onToggle: (patch: BoardCompletionPatch) => void;
@@ -618,6 +655,7 @@ function BoardGridRow({
         className="board-axis-label board-row-label"
         isReorderMode={isReorderMode}
         item={row}
+        onEdit={() => onAxisItemEdit(row)}
         style={{ minHeight: `${rowHeight}px` }}
         tableId={tableId}
       >
@@ -692,6 +730,78 @@ function renderBoardDragOverlay(activeSortableId: string | null, axisItems: Boar
   const item = axisItems.find((axisItem) => axisItem.id === active.axisItemId);
   if (!item) return null;
   return <div className="board-drag-overlay">{item.label}</div>;
+}
+
+function BoardAxisItemEditModal({
+  item,
+  onClose,
+  onDelete,
+  onSave
+}: {
+  item: BoardAxisItem;
+  onClose: () => void;
+  onDelete: (axisItemId: string) => Promise<void>;
+  onSave: (axisItemId: string, label: string) => Promise<void>;
+}) {
+  const [label, setLabel] = useState(item.label);
+  const [pending, setPending] = useState<"save" | "delete" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const normalizedLabel = label.trim();
+
+  async function handleSave(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!normalizedLabel) return;
+
+    setPending("save");
+    setError(null);
+    try {
+      await onSave(item.id, normalizedLabel);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "항목을 저장하지 못했습니다.");
+      setPending(null);
+    }
+  }
+
+  async function handleDelete() {
+    setPending("delete");
+    setError(null);
+    try {
+      await onDelete(item.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "항목을 삭제하지 못했습니다.");
+      setPending(null);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="tool-modal edit-modal" aria-modal="true" role="dialog" aria-label="행 또는 열 수정">
+        <header className="tool-modal-header">
+          <h2>항목 수정</h2>
+          <button className="modal-close-button" type="button" aria-label="닫기" onClick={onClose}>
+            <X aria-hidden="true" size={18} />
+          </button>
+        </header>
+        <form className="tool-modal-body edit-form" onSubmit={handleSave}>
+          <label>
+            이름
+            <input maxLength={30} value={label} onChange={(event) => setLabel(event.currentTarget.value)} />
+          </label>
+          {error ? <p className="error-text">{error}</p> : null}
+          <div className="edit-actions">
+            <button className="danger-button" disabled={pending !== null} type="button" onClick={() => void handleDelete()}>
+              <Trash2 aria-hidden="true" size={16} />
+              항목 삭제
+            </button>
+            <button className="primary-button" disabled={pending !== null || !normalizedLabel} type="submit">
+              <Save aria-hidden="true" size={16} />
+              저장
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
 }
 
 function AxisSizeInput({
