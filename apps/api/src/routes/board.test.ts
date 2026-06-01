@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boardAxisSizePatchSchema, boardCompletionPatchSchema } from "./board";
+import { boardAxisItemIdParamSchema, boardAxisSizePatchSchema, boardCompletionPatchSchema } from "./board";
 
 describe("board route schemas", () => {
   it("accepts small board completion batches", () => {
@@ -50,5 +50,10 @@ describe("board route schemas", () => {
     expect(boardAxisSizePatchSchema.safeParse({ sizePx: 48 }).success).toBe(true);
     expect(boardAxisSizePatchSchema.safeParse({ sizePx: 0 }).success).toBe(false);
     expect(boardAxisSizePatchSchema.safeParse({ sizePx: 2000 }).success).toBe(false);
+  });
+
+  it("validates board axis item ids for size updates", () => {
+    expect(boardAxisItemIdParamSchema.safeParse({ id: "axis-item-1" }).success).toBe(true);
+    expect(boardAxisItemIdParamSchema.safeParse({ id: "axis🙂" }).success).toBe(false);
   });
 });

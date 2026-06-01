@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
+import { apiPatch } from "../../api/client";
 import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
 import type { BoardAxisItem, BoardAxisRole, BoardPayload, BoardTable } from "./types";
 import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
@@ -35,18 +36,43 @@ function buildGridColumns(table: BoardTable, columns: BoardAxisItem[]): string {
   return `160px ${columns.map((column) => `${column.size_px ?? table.default_column_width}px`).join(" ")}`;
 }
 
+function normalizeAxisSize(value: number): number | null {
+  if (!Number.isFinite(value)) return null;
+  return Math.min(1024, Math.max(16, Math.round(value)));
+}
+
 export function BoardOverview({ board }: Props) {
   const { enqueue } = useBoardCompletionQueue();
   const [completions, setCompletions] = useState(board.completions);
+  const [axisItems, setAxisItems] = useState(board.axisItems);
   const activeSheet = board.sheets.find((sheet) => sheet.is_default === 1) ?? board.sheets[0];
 
   useEffect(() => {
     setCompletions(board.completions);
   }, [board.completions]);
 
+  useEffect(() => {
+    setAxisItems(board.axisItems);
+  }, [board.axisItems]);
+
   function handleCompletionToggle(patch: BoardCompletionPatch) {
     setCompletions((current) => applyBoardCompletionPatch(current, patch));
     enqueue(patch);
+  }
+
+  async function handleAxisSizeChange(axisItemId: string, nextSize: number) {
+    const sizePx = normalizeAxisSize(nextSize);
+    if (sizePx === null) return;
+
+    setAxisItems((current) =>
+      current.map((item) => (item.id === axisItemId ? { ...item, size_px: sizePx } : item))
+    );
+
+    try {
+      await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId) + "/size", { sizePx });
+    } catch {
+      window.location.reload();
+    }
   }
 
   if (!activeSheet) {
@@ -88,12 +114,19 @@ export function BoardOverview({ board }: Props) {
               <span>{tableOrientationLabel(table)}</span>
             </div>
             <div className="board-table-metrics">
-              <span>행 {axisCount(board.axisItems, table.id, "row")}</span>
-              <span>열 {axisCount(board.axisItems, table.id, "column")}</span>
+              <span>행 {axisCount(axisItems, table.id, "row")}</span>
+              <span>열 {axisCount(axisItems, table.id, "column")}</span>
               <span>행 높이 {table.default_row_height}px</span>
               <span>열 너비 {table.default_column_width}px</span>
             </div>
-            <BoardTableGrid board={board} completions={completions} table={table} onToggle={handleCompletionToggle} />
+            <BoardTableGrid
+              axisItems={axisItems}
+              board={board}
+              completions={completions}
+              table={table}
+              onAxisSizeChange={handleAxisSizeChange}
+              onToggle={handleCompletionToggle}
+            />
           </article>
         ))}
       </div>
@@ -102,20 +135,24 @@ export function BoardOverview({ board }: Props) {
 }
 
 function BoardTableGrid({
+  axisItems,
   board,
   completions,
   table,
+  onAxisSizeChange,
   onToggle
 }: {
+  axisItems: BoardAxisItem[];
   board: BoardPayload;
   completions: BoardPayload["completions"];
   table: BoardTable;
+  onAxisSizeChange: (axisItemId: string, sizePx: number) => void;
   onToggle: (patch: BoardCompletionPatch) => void;
 }) {
-  const rows = board.axisItems
+  const rows = axisItems
     .filter((item) => item.table_id === table.id && item.axis === "row" && item.visible === 1)
     .sort((left, right) => left.sort_order - right.sort_order || left.label.localeCompare(right.label));
-  const columns = board.axisItems
+  const columns = axisItems
     .filter((item) => item.table_id === table.id && item.axis === "column" && item.visible === 1)
     .sort((left, right) => left.sort_order - right.sort_order || left.label.localeCompare(right.label));
   const hiddenCells = new Set(
@@ -138,7 +175,12 @@ function BoardTableGrid({
       <div className="board-axis-corner" />
       {columns.map((column) => (
         <div key={column.id} className="board-axis-label board-column-label">
-          {column.label}
+          <span>{column.label}</span>
+          <AxisSizeInput
+            label={`${column.label} 열 너비`}
+            value={column.size_px ?? table.default_column_width}
+            onChange={(sizePx) => onAxisSizeChange(column.id, sizePx)}
+          />
         </div>
       ))}
       {rows.map((row) => (
@@ -148,6 +190,7 @@ function BoardTableGrid({
           completedCells={completedCells}
           hiddenCells={hiddenCells}
           onToggle={onToggle}
+          onAxisSizeChange={onAxisSizeChange}
           row={row}
           rowHeight={row.size_px ?? table.default_row_height}
           tableId={table.id}
@@ -161,6 +204,7 @@ function BoardGridRow({
   columns,
   completedCells,
   hiddenCells,
+  onAxisSizeChange,
   onToggle,
   row,
   rowHeight,
@@ -169,6 +213,7 @@ function BoardGridRow({
   columns: BoardAxisItem[];
   completedCells: Set<string>;
   hiddenCells: Set<string>;
+  onAxisSizeChange: (axisItemId: string, sizePx: number) => void;
   onToggle: (patch: BoardCompletionPatch) => void;
   row: BoardAxisItem;
   rowHeight: number;
@@ -177,7 +222,12 @@ function BoardGridRow({
   return (
     <>
       <div className="board-axis-label board-row-label" style={{ minHeight: `${rowHeight}px` }}>
-        {row.label}
+        <span>{row.label}</span>
+        <AxisSizeInput
+          label={`${row.label} 행 높이`}
+          value={row.size_px ?? rowHeight}
+          onChange={(sizePx) => onAxisSizeChange(row.id, sizePx)}
+        />
       </div>
       {columns.map((column) => {
         const key = cellKey(row.id, column.id);
@@ -213,5 +263,27 @@ function BoardGridRow({
         );
       })}
     </>
+  );
+}
+
+function AxisSizeInput({
+  label,
+  onChange,
+  value
+}: {
+  label: string;
+  onChange: (sizePx: number) => void;
+  value: number;
+}) {
+  return (
+    <input
+      aria-label={label}
+      className="board-size-input"
+      max={1024}
+      min={16}
+      type="number"
+      value={value}
+      onChange={(event) => onChange(Number(event.currentTarget.value))}
+    />
   );
 }

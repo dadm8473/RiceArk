@@ -2,7 +2,12 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 import { requireUser } from "../auth/requireUser";
-import { loadBoard, saveBoardCompletionPatches, type BoardCompletionPatch } from "../db/board";
+import {
+  loadBoard,
+  saveBoardCompletionPatches,
+  updateBoardAxisItemSize,
+  type BoardCompletionPatch
+} from "../db/board";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
 import { periodKeySchema, resourceIdSchema } from "../http/input";
@@ -25,6 +30,10 @@ export const boardAxisSizePatchSchema = z.object({
   sizePx: z.number().int().min(16).max(1024)
 });
 
+export const boardAxisItemIdParamSchema = z.object({
+  id: resourceIdSchema
+});
+
 export const boardRoutes = new Hono<{ Bindings: Env }>();
 
 boardRoutes.get("/board", async (c) => {
@@ -42,3 +51,19 @@ boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchS
   }
   return c.json({ ok: true });
 });
+
+boardRoutes.patch(
+  "/board/axis-items/:id/size",
+  zValidator("param", boardAxisItemIdParamSchema),
+  zValidator("json", boardAxisSizePatchSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    const { id } = c.req.valid("param");
+    const { sizePx } = c.req.valid("json");
+    const updated = await updateBoardAxisItemSize(c.env, user.id, id, sizePx);
+    if (!updated) {
+      throw new ApiError(404, "board_axis_item_not_found", "Board axis item not found");
+    }
+    return c.json({ ok: true });
+  }
+);

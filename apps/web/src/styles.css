@@ -217,8 +217,15 @@ body {
 
 .board-column-label,
 .board-row-label {
-  overflow: hidden;
+  gap: 6px;
+  justify-content: space-between;
   padding: 4px 6px;
+}
+
+.board-column-label span,
+.board-row-label span {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -247,6 +254,18 @@ body {
   height: 18px;
   border: 1px dashed #c6cfdd;
   background: #f8fafc;
+}
+
+.board-size-input {
+  flex: 0 0 54px;
+  width: 54px;
+  min-width: 0;
+  height: 24px;
+  border: 1px solid #aab5c4;
+  border-radius: 0;
+  color: #111827;
+  background: #ffffff;
+  font-size: 12px;
 }
 
 .board-table-heading {

@@ -104,6 +104,24 @@ describe("BoardOverview", () => {
     expect(html).toContain("--task-color:#2563eb");
   });
 
+  it("renders pixel size controls for rows and columns", () => {
+    const html = renderToStaticMarkup(
+      createElement(BoardOverview, {
+        board: {
+          ...board,
+          axisItems: board.axisItems.map((item) =>
+            item.axis === "row" ? { ...item, size_px: 44 } : { ...item, size_px: 150 }
+          )
+        }
+      })
+    );
+
+    expect(html).toContain('aria-label="쿠르잔 전선 행 높이"');
+    expect(html).toContain('aria-label="냠수나이스1 열 너비"');
+    expect(html).toContain('value="44"');
+    expect(html).toContain('value="150"');
+  });
+
   it("keeps hidden cells present for layout without rendering a checkbox", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {

@@ -544,3 +544,20 @@ async function loadAuthorizedBoardCompletionTargets(
 
   return authorized.results;
 }
+
+export async function updateBoardAxisItemSize(
+  env: Env,
+  userId: string,
+  axisItemId: string,
+  sizePx: number
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE board_axis_items
+     SET size_px = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ?`
+  )
+    .bind(sizePx, axisItemId, userId)
+    .run();
+
+  return (result.meta.changes ?? 0) > 0;
+}
