@@ -4,6 +4,7 @@ import type { Env } from "./env";
 import { bodyLimit } from "./http/bodyLimit";
 import { ApiError, jsonError, notFound } from "./http/errors";
 import { authRoutes } from "./routes/auth";
+import { boardRoutes } from "./routes/board";
 import { characterRoutes } from "./routes/characters";
 import { dashboardRoutes } from "./routes/dashboard";
 import { healthRoutes } from "./routes/health";
@@ -25,6 +26,7 @@ app.use("*", async (c, next) => {
 app.use("*", bodyLimit());
 
 app.route("/", authRoutes);
+app.route("/", boardRoutes);
 app.route("/", characterRoutes);
 app.route("/", dashboardRoutes);
 app.route("/", healthRoutes);
