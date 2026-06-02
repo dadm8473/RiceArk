@@ -7,7 +7,7 @@ import {
   extractOAuthState,
   normalizeProviderProfile
 } from "../auth/oauth";
-import { getOAuthProvider } from "../auth/providers";
+import { getOAuthProvider, isSupportedOAuthProvider } from "../auth/providers";
 import { requireUser } from "../auth/requireUser";
 import { createSession, createSessionToken, deleteSession } from "../auth/sessions";
 import type { Env } from "../env";
@@ -15,10 +15,25 @@ import { ApiError } from "../http/errors";
 
 export const authRoutes = new Hono<{ Bindings: Env }>();
 
+function buildAuthErrorRedirect(appOrigin: string, providerName: string): string {
+  const url = new URL(appOrigin);
+  url.searchParams.set("authError", "oauth_unavailable");
+  url.searchParams.set("provider", providerName);
+  return url.toString();
+}
+
 authRoutes.get("/auth/:provider/start", (c) => {
   const providerName = c.req.param("provider");
   const provider = getOAuthProvider(c.env, providerName);
-  if (!provider) throw new ApiError(404, "unknown_provider", "Unknown OAuth provider");
+  if (!provider) {
+    if (isSupportedOAuthProvider(providerName)) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: buildAuthErrorRedirect(c.env.APP_ORIGIN, providerName) }
+      });
+    }
+    throw new ApiError(404, "unknown_provider", "Unknown OAuth provider");
+  }
 
   const state = crypto.randomUUID();
   const redirectUri = buildRedirectUri(c.env.APP_ORIGIN, provider.id);
@@ -44,7 +59,15 @@ authRoutes.get("/auth/:provider/start", (c) => {
 authRoutes.get("/auth/:provider/callback", async (c) => {
   const providerName = c.req.param("provider");
   const provider = getOAuthProvider(c.env, providerName);
-  if (!provider) throw new ApiError(404, "unknown_provider", "Unknown OAuth provider");
+  if (!provider) {
+    if (isSupportedOAuthProvider(providerName)) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: buildAuthErrorRedirect(c.env.APP_ORIGIN, providerName) }
+      });
+    }
+    throw new ApiError(404, "unknown_provider", "Unknown OAuth provider");
+  }
 
   const code = c.req.query("code");
   const state = c.req.query("state");

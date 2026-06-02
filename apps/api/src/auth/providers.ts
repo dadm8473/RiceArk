@@ -12,6 +12,10 @@ export interface OAuthProviderConfig {
   scope: string;
 }
 
+export function isSupportedOAuthProvider(provider: string): provider is OAuthProvider {
+  return provider === "google" || provider === "discord";
+}
+
 export function getOAuthProvider(env: Env, provider: string): OAuthProviderConfig | null {
   if (provider === "google" && env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) {
     return {

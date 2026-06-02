@@ -8,6 +8,15 @@ import { ChecklistMatrix } from "./features/dashboard/ChecklistMatrix";
 import { useDashboard } from "./features/dashboard/useDashboard";
 import { WorkspaceActions, type WorkspaceTool } from "./features/tools/WorkspaceActions";
 
+export function getAuthErrorMessage(search: string): string | null {
+  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  if (params.get("authError") !== "oauth_unavailable") return null;
+
+  const provider = params.get("provider");
+  const providerLabel = provider === "discord" ? "Discord" : provider === "google" ? "Google" : "로그인";
+  return `${providerLabel} 로그인 설정이 아직 완료되지 않았습니다. 배포 환경에서 다시 시도해주세요.`;
+}
+
 export function App() {
   const { data, error } = useDashboard();
   const board = useBoard();
@@ -15,6 +24,7 @@ export function App() {
   const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const [activeTool, setActiveTool] = useState<WorkspaceTool | null>(null);
+  const authErrorMessage = typeof window === "undefined" ? null : getAuthErrorMessage(window.location.search);
 
   const handleLogout = async () => {
     setLogoutPending(true);
@@ -48,6 +58,7 @@ export function App() {
         />
       </header>
       <section className="workspace">
+        {authErrorMessage ? <p className="error-text">{authErrorMessage}</p> : null}
         {session.status === "error" ? <p className="error-text">{session.error}</p> : null}
         {error ? <p className="error-text">{error}</p> : null}
         {board.error && !error ? <p className="error-text">{board.error}</p> : null}
