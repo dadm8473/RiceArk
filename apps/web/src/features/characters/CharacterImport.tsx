@@ -129,7 +129,12 @@ export function CharacterImportPanel({
   );
 }
 
-export function CharacterImport() {
+interface CharacterImportProps {
+  tableId?: string | undefined;
+  onSaved?: () => void | Promise<void>;
+}
+
+export function CharacterImport({ tableId, onSaved }: CharacterImportProps = {}) {
   const [name, setName] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -177,8 +182,14 @@ export function CharacterImport() {
     }
     setSaving(true);
     try {
-      await apiPost("/api/characters/import", { characters });
-      window.location.reload();
+      await apiPost(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/characters/import` : "/api/characters/import", {
+        characters
+      });
+      if (onSaved) {
+        await onSaved();
+      } else {
+        window.location.reload();
+      }
     } catch {
       setMessage({
         text: "선택한 캐릭터를 등록하지 못했습니다. 잠시 후 다시 시도해주세요.",

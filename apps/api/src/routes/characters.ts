@@ -21,7 +21,7 @@ export const characterDisplayNameSchema = z.object({
   displayName: safeText({ allowEmpty: true, maxChars: 20 }).nullable()
 });
 
-const lostArkCharacterNameSchema = safeText({ maxChars: LOSTARK_CHARACTER_NAME_MAX_LENGTH }).refine(isValidLostArkCharacterName, {
+export const lostArkCharacterNameSchema = safeText({ maxChars: LOSTARK_CHARACTER_NAME_MAX_LENGTH }).refine(isValidLostArkCharacterName, {
   message: "Lost Ark character name must be 12 characters or fewer and contain only Hangul, Latin letters, or numbers"
 });
 

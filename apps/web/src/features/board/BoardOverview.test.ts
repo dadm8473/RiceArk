@@ -78,43 +78,34 @@ describe("BoardOverview", () => {
     expect(html).toContain("시트");
     expect(html).toContain("기본");
     expect(html).toContain("숙제");
-    expect(html).toContain("숙제 행 / 캐릭터 열");
-    expect(html).toContain("행 1");
-    expect(html).toContain("열 1");
-    expect(html).toContain("40px");
-    expect(html).toContain("132px");
+    expect(html).not.toContain("숙제 행 / 캐릭터 열");
+    expect(html).not.toContain("행 1");
+    expect(html).not.toContain("열 1");
+    expect(html).not.toContain("행 높이 40px");
+    expect(html).not.toContain("열 너비 132px");
   });
 
-  it("renders compact controls for adding sheets and tables", () => {
+  it("renders sheet controls and opens table creation from a single button", () => {
     const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
 
     expect(html).toContain('aria-label="새 시트 이름"');
     expect(html).toContain("시트 추가");
-    expect(html).toContain('aria-label="새 표 이름"');
-    expect(html).toContain('aria-label="새 표 구조"');
     expect(html).toContain("표 추가");
-    expect(html).toContain("사용자 표");
+    expect(html).not.toContain('aria-label="새 표 이름"');
+    expect(html).not.toContain('aria-label="새 표 구조"');
   });
 
-  it("renders compact controls for adding rows and columns to each table", () => {
+  it("renders table-scoped character and task action buttons beside the table title", () => {
     const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
 
-    expect(html).toContain('aria-label="숙제 행 이름"');
-    expect(html).toContain("행 추가");
-    expect(html).toContain('aria-label="숙제 열 이름"');
-    expect(html).toContain("열 추가");
-  });
-
-  it("renders a board reorder mode control", () => {
-    const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
-
-    expect(html).toContain("순서 변경");
-  });
-
-  it("renders a cell visibility edit mode control", () => {
-    const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
-
-    expect(html).toContain("표시 편집");
+    expect(html).toContain('aria-label="숙제 캐릭터 추가 또는 가져오기"');
+    expect(html).toContain('aria-label="숙제 숙제 추가"');
+    expect(html).toContain('aria-label="숙제 표 설정"');
+    expect(html).not.toContain('aria-label="숙제 행 이름"');
+    expect(html).not.toContain('aria-label="숙제 열 이름"');
+    expect(html).not.toContain("순서 변경");
+    expect(html).not.toContain("표시 편집");
+    expect(html).not.toContain("표시 옵션");
   });
 
   it("renders editable axis labels outside reorder mode", () => {
@@ -208,7 +199,7 @@ describe("BoardOverview", () => {
     expect(html).toContain("border-right:2px dotted #be123c");
   });
 
-  it("renders pixel size controls for rows and columns", () => {
+  it("keeps row and column size controls out of the table surface", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {
         board: {
@@ -220,13 +211,11 @@ describe("BoardOverview", () => {
       })
     );
 
-    expect(html).toContain('aria-label="쿠르잔 전선 행 높이"');
-    expect(html).toContain('aria-label="냠수나이스1 열 너비"');
-    expect(html).toContain('value="44"');
-    expect(html).toContain('value="150"');
+    expect(html).not.toContain('aria-label="쿠르잔 전선 행 높이"');
+    expect(html).not.toContain('aria-label="냠수나이스1 열 너비"');
   });
 
-  it("renders compact table layout controls", () => {
+  it("does not render direct table layout controls", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {
         board: {
@@ -236,26 +225,25 @@ describe("BoardOverview", () => {
       })
     );
 
-    expect(html).toContain('aria-label="숙제 X 위치"');
-    expect(html).toContain('aria-label="숙제 Y 위치"');
-    expect(html).toContain('aria-label="숙제 너비"');
-    expect(html).toContain('aria-label="숙제 높이"');
-    expect(html).toContain('value="18"');
-    expect(html).toContain('value="420"');
+    expect(html).not.toContain('aria-label="숙제 X 위치"');
+    expect(html).not.toContain('aria-label="숙제 Y 위치"');
+    expect(html).not.toContain('aria-label="숙제 너비"');
+    expect(html).not.toContain('aria-label="숙제 높이"');
   });
 
-  it("renders direct table move and resize handles", () => {
+  it("does not render direct table move and resize handles", () => {
     const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
 
-    expect(html).toContain('aria-label="숙제 표 이동"');
-    expect(html).toContain('aria-label="숙제 표 크기 조절"');
+    expect(html).not.toContain('aria-label="숙제 표 이동"');
+    expect(html).not.toContain('aria-label="숙제 표 크기 조절"');
   });
 
-  it("renders a table axis transpose preview control", () => {
+  it("uses table settings instead of a direct transpose control", () => {
     const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
 
-    expect(html).toContain('aria-label="숙제 행/열 전환 미리보기"');
-    expect(html).toContain("행/열 전환");
+    expect(html).toContain('aria-label="숙제 표 설정"');
+    expect(html).not.toContain('aria-label="숙제 행/열 전환 미리보기"');
+    expect(html).not.toContain("행/열 전환");
   });
 
   it("keeps hidden cells present for layout without rendering a checkbox", () => {

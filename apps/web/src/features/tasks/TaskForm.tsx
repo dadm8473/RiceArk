@@ -2,13 +2,22 @@ import { Plus } from "lucide-react";
 import { useState } from "react";
 import { apiPost } from "../../api/client";
 
-export function TaskForm() {
+interface TaskFormProps {
+  tableId?: string | undefined;
+  onSaved?: () => void | Promise<void>;
+}
+
+export function TaskForm({ tableId, onSaved }: TaskFormProps = {}) {
   const [name, setName] = useState("");
   const [resetType, setResetType] = useState<"daily" | "weekly" | "biweekly" | "custom">("daily");
 
   async function submit() {
-    await apiPost("/api/tasks", { name, resetType });
-    window.location.reload();
+    await apiPost(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/tasks` : "/api/tasks", { name, resetType });
+    if (onSaved) {
+      await onSaved();
+    } else {
+      window.location.reload();
+    }
   }
 
   return (

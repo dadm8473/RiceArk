@@ -25,6 +25,7 @@ export interface BoardTable {
   task_axis: BoardTaskAxis;
   default_row_height: number;
   default_column_width: number;
+  display_options_json?: string | null | undefined;
 }
 
 export interface BoardAxisItem {
@@ -43,6 +44,7 @@ export interface BoardAxisItem {
   sort_order: number;
   visible: number;
   separator_json?: string | null | undefined;
+  display_options_json?: string | null | undefined;
   character_name?: string | null | undefined;
   character_display_name?: string | null | undefined;
   character_server_name?: string | null | undefined;

@@ -1,4 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
+import { buildTaskDefinition } from "@riceark/core";
 import { Hono } from "hono";
 import { z } from "zod";
 import { requireUser } from "../auth/requireUser";
@@ -6,7 +7,10 @@ import {
   createBoardAxisItem,
   createBoardSheet,
   createBoardTable,
+  createBoardTaskForTable,
+  deleteBoardTable,
   hideBoardAxisItem,
+  importBoardCharactersForTable,
   loadBoard,
   reorderBoardAxisItems,
   saveBoardCellStatePatches,
@@ -14,6 +18,7 @@ import {
   transposeBoardTable,
   updateBoardAxisItem,
   updateBoardAxisItemSize,
+  updateBoardTableSettings,
   updateBoardTableLayout,
   type BoardTableLayoutPatch,
   type BoardCellStatePatch,
@@ -22,6 +27,8 @@ import {
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
 import { periodKeySchema, resourceIdSchema, safeText } from "../http/input";
+import { lostArkCharacterNameSchema } from "./characters";
+import { createTaskSchema } from "./tasks";
 
 const safeBoardNameSchema = safeText({ maxChars: 30, maxBytes: 120 });
 const boardTaskColorSchema = z
@@ -33,6 +40,15 @@ const boardAxisSeparatorSchema = z.object({
   style: z.enum(["solid", "dashed", "dotted"]),
   color: boardTaskColorSchema
 });
+const boardDisplaySettingsSchema = z.object({
+  show_display_name: z.union([z.literal(0), z.literal(1)]),
+  show_server_name: z.union([z.literal(0), z.literal(1)]),
+  show_class_name: z.union([z.literal(0), z.literal(1)]),
+  show_item_level: z.union([z.literal(0), z.literal(1)]),
+  show_combat_power: z.union([z.literal(0), z.literal(1)])
+});
+const boardDefaultRowHeightSchema = z.number().int().min(16).max(1024);
+const boardDefaultColumnWidthSchema = z.number().int().min(16).max(1024);
 
 export const boardTableOrientationSchema = z.enum(["tasks_rows", "tasks_columns", "custom"]);
 
@@ -47,7 +63,10 @@ export const createBoardSheetSchema = z.object({
 export const createBoardTableSchema = z.object({
   sheetId: resourceIdSchema,
   name: safeBoardNameSchema,
-  orientation: boardTableOrientationSchema
+  orientation: boardTableOrientationSchema,
+  defaultRowHeight: boardDefaultRowHeightSchema.optional(),
+  defaultColumnWidth: boardDefaultColumnWidthSchema.optional(),
+  displaySettings: boardDisplaySettingsSchema.nullable().optional()
 });
 
 export const createBoardAxisItemSchema = z.object({
@@ -70,7 +89,30 @@ export const boardAxisOrderSchema = z
 export const updateBoardAxisItemSchema = z.object({
   label: safeBoardNameSchema,
   taskColor: boardTaskColorSchema.nullable().optional(),
-  separator: boardAxisSeparatorSchema.nullable().optional()
+  separator: boardAxisSeparatorSchema.nullable().optional(),
+  displaySettings: boardDisplaySettingsSchema.nullable().optional()
+});
+
+export const updateBoardTableSettingsSchema = z.object({
+  name: safeBoardNameSchema,
+  defaultRowHeight: boardDefaultRowHeightSchema,
+  defaultColumnWidth: boardDefaultColumnWidthSchema,
+  displaySettings: boardDisplaySettingsSchema.nullable().optional()
+});
+
+export const importBoardCharactersSchema = z.object({
+  characters: z
+    .array(
+      z.object({
+        name: lostArkCharacterNameSchema,
+        serverName: safeText({ maxChars: 20 }),
+        className: safeText({ maxChars: 20 }),
+        itemLevel: safeText({ maxChars: 20 }),
+        combatPower: safeText({ allowEmpty: true, maxChars: 20 }).nullable().optional()
+      })
+    )
+    .min(1)
+    .max(30)
 });
 
 export const boardCompletionPatchSchema = z.object({
@@ -144,6 +186,74 @@ boardRoutes.post("/board/tables", zValidator("json", createBoardTableSchema), as
   }
   return c.json(table, 201);
 });
+
+boardRoutes.patch(
+  "/board/tables/:id",
+  zValidator("param", boardTableIdParamSchema),
+  zValidator("json", updateBoardTableSettingsSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    const { id } = c.req.valid("param");
+    const input = c.req.valid("json");
+    const updated = await updateBoardTableSettings(c.env, user.id, id, input);
+    if (!updated) {
+      throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
+    }
+    return c.json({ ok: true });
+  }
+);
+
+boardRoutes.delete("/board/tables/:id", zValidator("param", boardTableIdParamSchema), async (c) => {
+  const user = await requireUser(c);
+  const { id } = c.req.valid("param");
+  const deleted = await deleteBoardTable(c.env, user.id, id);
+  if (!deleted) {
+    throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
+  }
+  return c.body(null, 204);
+});
+
+boardRoutes.post(
+  "/board/tables/:id/characters/import",
+  zValidator("param", boardTableIdParamSchema),
+  zValidator("json", importBoardCharactersSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    const { id } = c.req.valid("param");
+    const { characters } = c.req.valid("json");
+    const imported = await importBoardCharactersForTable(
+      c.env,
+      user.id,
+      id,
+      characters.map((character) => ({ ...character, combatPower: character.combatPower ?? null }))
+    );
+    if (!imported) {
+      throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
+    }
+    return c.json({ ok: true });
+  }
+);
+
+boardRoutes.post(
+  "/board/tables/:id/tasks",
+  zValidator("param", boardTableIdParamSchema),
+  zValidator("json", createTaskSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    const { id } = c.req.valid("param");
+    const input = c.req.valid("json");
+    const task = buildTaskDefinition(input);
+    const created = await createBoardTaskForTable(c.env, user.id, id, {
+      name: task.name,
+      scope: task.scope,
+      resetRule: task.resetRule
+    });
+    if (!created) {
+      throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
+    }
+    return c.json(created, 201);
+  }
+);
 
 boardRoutes.post("/board/axis-items", zValidator("json", createBoardAxisItemSchema), async (c) => {
   const user = await requireUser(c);

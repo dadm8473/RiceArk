@@ -8,7 +8,9 @@ import {
   type ResetRule
 } from "@riceark/core";
 import type { Env } from "../env";
+import { saveSelectedCharacters } from "./characters";
 import type { ChecklistOrientation } from "./settings";
+import { createUserTask } from "./tasks";
 
 export const DEFAULT_SHEET_NAME = "기본";
 export const DEFAULT_TABLE_NAME = "숙제";
@@ -52,6 +54,9 @@ export interface CreateBoardTableInput {
   sheetId: string;
   name: string;
   orientation: BoardOrientation;
+  defaultRowHeight?: number | undefined;
+  defaultColumnWidth?: number | undefined;
+  displaySettings?: BoardDisplaySettingsInput | null | undefined;
 }
 
 export interface CreateBoardAxisItemInput {
@@ -73,6 +78,13 @@ export interface BoardTableLayoutPatch {
   height: number | null;
 }
 
+export interface UpdateBoardTableSettingsInput {
+  name: string;
+  defaultRowHeight: number;
+  defaultColumnWidth: number;
+  displaySettings?: BoardDisplaySettingsInput | null | undefined;
+}
+
 export interface BoardAxisItemTransposeSource {
   id: string;
   axis: BoardAxis;
@@ -91,12 +103,35 @@ export interface UpdateBoardAxisItemInput {
   label: string;
   taskColor?: string | null | undefined;
   separator?: BoardAxisSeparatorInput | null | undefined;
+  displaySettings?: BoardDisplaySettingsInput | null | undefined;
 }
 
 export interface BoardAxisSeparatorInput {
   widthPx: number;
   style: "solid" | "dashed" | "dotted";
   color: string;
+}
+
+export interface BoardDisplaySettingsInput {
+  show_display_name: 0 | 1;
+  show_server_name: 0 | 1;
+  show_class_name: 0 | 1;
+  show_item_level: 0 | 1;
+  show_combat_power: 0 | 1;
+}
+
+export interface BoardCharacterSelectionInput {
+  name: string;
+  serverName: string;
+  className: string;
+  itemLevel: string;
+  combatPower: string | null;
+}
+
+export interface BoardTaskInput {
+  name: string;
+  scope: "character" | "roster";
+  resetRule: ResetRule;
 }
 
 export interface ManualBoardAxisItemDraft {
@@ -173,6 +208,16 @@ const DEFAULT_BOARD_DISPLAY_SETTINGS = {
   show_item_level: 1,
   show_combat_power: 0
 };
+
+function serializeBoardDisplaySettings(settings: BoardDisplaySettingsInput | null | undefined): string | null {
+  return settings ? JSON.stringify(settings) : null;
+}
+
+function getAxisForRole(table: { row_role: BoardAxisRole; column_role: BoardAxisRole }, role: BoardAxisRole): BoardAxis {
+  if (table.row_role === role) return "row";
+  if (table.column_role === role) return "column";
+  return role === "task" ? "row" : "column";
+}
 
 export function boardRolesForTableOrientation(orientation: BoardOrientation): BoardRoles {
   if (orientation === "custom") {
@@ -770,14 +815,218 @@ export async function createBoardTable(
   const sortOrder = (placement?.maxSortOrder ?? -10) + 10;
   const y = (placement?.tableCount ?? 0) * 220;
   const roles = boardRolesForTableOrientation(input.orientation);
+  const defaultRowHeight = input.defaultRowHeight ?? 40;
+  const defaultColumnWidth = input.defaultColumnWidth ?? 132;
 
   await env.DB.prepare(
     `INSERT INTO board_tables (
-       id, user_id, sheet_id, name, sort_order, x, y, row_role, column_role, task_axis
+       id,
+       user_id,
+       sheet_id,
+       name,
+       sort_order,
+       x,
+       y,
+       row_role,
+       column_role,
+       task_axis,
+       default_row_height,
+       default_column_width,
+       display_options_json
      )
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(id, userId, input.sheetId, input.name, sortOrder, y, roles.rowRole, roles.columnRole, roles.taskAxis)
+    .bind(
+      id,
+      userId,
+      input.sheetId,
+      input.name,
+      sortOrder,
+      y,
+      roles.rowRole,
+      roles.columnRole,
+      roles.taskAxis,
+      defaultRowHeight,
+      defaultColumnWidth,
+      serializeBoardDisplaySettings(input.displaySettings)
+    )
+    .run();
+
+  return { id };
+}
+
+export async function updateBoardTableSettings(
+  env: Env,
+  userId: string,
+  tableId: string,
+  input: UpdateBoardTableSettingsInput
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE board_tables
+     SET name = ?,
+         default_row_height = ?,
+         default_column_width = ?,
+         display_options_json = ?,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ?`
+  )
+    .bind(
+      input.name,
+      input.defaultRowHeight,
+      input.defaultColumnWidth,
+      serializeBoardDisplaySettings(input.displaySettings),
+      tableId,
+      userId
+    )
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+export async function deleteBoardTable(env: Env, userId: string, tableId: string): Promise<boolean> {
+  const table = await env.DB.prepare("SELECT id FROM board_tables WHERE id = ? AND user_id = ?")
+    .bind(tableId, userId)
+    .first<{ id: string }>();
+  if (!table) return false;
+
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM board_cell_completions WHERE user_id = ? AND table_id = ?").bind(userId, tableId),
+    env.DB.prepare("DELETE FROM board_cell_states WHERE user_id = ? AND table_id = ?").bind(userId, tableId),
+    env.DB.prepare("DELETE FROM board_axis_items WHERE user_id = ? AND table_id = ?").bind(userId, tableId),
+    env.DB.prepare("DELETE FROM board_tables WHERE id = ? AND user_id = ?").bind(tableId, userId)
+  ]);
+  return true;
+}
+
+export async function importBoardCharactersForTable(
+  env: Env,
+  userId: string,
+  tableId: string,
+  characters: BoardCharacterSelectionInput[]
+): Promise<boolean> {
+  await ensureDefaultBoard(env, userId);
+
+  const table = await env.DB.prepare("SELECT id, row_role, column_role FROM board_tables WHERE id = ? AND user_id = ?")
+    .bind(tableId, userId)
+    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole }>();
+  if (!table) return false;
+
+  await saveSelectedCharacters(env, userId, characters);
+  const axis = getAxisForRole(table, "character");
+  const maxSort = await env.DB.prepare(
+    "SELECT COALESCE(MAX(sort_order), -10) AS maxSortOrder FROM board_axis_items WHERE user_id = ? AND table_id = ? AND axis = ?"
+  )
+    .bind(userId, tableId, axis)
+    .first<{ maxSortOrder: number | null }>();
+  let sortOrder = (maxSort?.maxSortOrder ?? -10) + 10;
+  const statements = [];
+
+  for (const character of characters) {
+    const saved = await env.DB.prepare(
+      `SELECT id, name
+       FROM characters
+       WHERE user_id = ? AND name = ? AND server_name = ? AND enabled = 1 AND deleted_at IS NULL`
+    )
+      .bind(userId, character.name, character.serverName)
+      .first<{ id: string; name: string }>();
+    if (!saved) continue;
+
+    const existing = await env.DB.prepare(
+      `SELECT id
+       FROM board_axis_items
+       WHERE user_id = ? AND table_id = ? AND axis = ? AND kind = 'character' AND character_id = ?`
+    )
+      .bind(userId, tableId, axis, saved.id)
+      .first<{ id: string }>();
+
+    if (existing) {
+      statements.push(
+        env.DB.prepare(
+          `UPDATE board_axis_items
+           SET visible = 1, label = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND user_id = ?`
+        ).bind(saved.name, existing.id, userId)
+      );
+      continue;
+    }
+
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO board_axis_items (
+           id, user_id, table_id, axis, kind, label, character_id, task_id, task_scope, task_reset_type,
+           task_reset_rule_json, task_color, sort_order
+         )
+         VALUES (?, ?, ?, ?, 'character', ?, ?, NULL, NULL, NULL, NULL, NULL, ?)`
+      ).bind(crypto.randomUUID(), userId, tableId, axis, saved.name, saved.id, sortOrder)
+    );
+    sortOrder += 10;
+  }
+
+  if (statements.length > 0) await env.DB.batch(statements);
+  return true;
+}
+
+export async function createBoardTaskForTable(
+  env: Env,
+  userId: string,
+  tableId: string,
+  input: BoardTaskInput
+): Promise<{ id: string } | null> {
+  await ensureDefaultBoard(env, userId);
+
+  const table = await env.DB.prepare("SELECT id, row_role, column_role FROM board_tables WHERE id = ? AND user_id = ?")
+    .bind(tableId, userId)
+    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole }>();
+  if (!table) return null;
+
+  const taskId = await createUserTask(env, userId, {
+    name: input.name,
+    scope: input.scope,
+    resetRule: input.resetRule
+  });
+  const axis = getAxisForRole(table, "task");
+  const stats = await env.DB.prepare(
+    `SELECT COALESCE(MAX(sort_order), -10) AS maxSortOrder,
+            SUM(CASE WHEN kind = 'task' THEN 1 ELSE 0 END) AS taskCount
+     FROM board_axis_items
+     WHERE user_id = ? AND table_id = ? AND axis = ?`
+  )
+    .bind(userId, tableId, axis)
+    .first<{ maxSortOrder: number | null; taskCount: number | null }>();
+  const id = crypto.randomUUID();
+  const sortOrder = (stats?.maxSortOrder ?? -10) + 10;
+  const color = DEFAULT_TASK_COLORS[(stats?.taskCount ?? 0) % DEFAULT_TASK_COLORS.length]!;
+
+  await env.DB.prepare(
+    `INSERT INTO board_axis_items (
+       id,
+       user_id,
+       table_id,
+       axis,
+       kind,
+       label,
+       character_id,
+       task_id,
+       task_scope,
+       task_reset_type,
+       task_reset_rule_json,
+       task_color,
+       sort_order
+     )
+     VALUES (?, ?, ?, ?, 'task', ?, NULL, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      id,
+      userId,
+      tableId,
+      axis,
+      input.name,
+      taskId,
+      input.scope,
+      input.resetRule.type,
+      JSON.stringify(input.resetRule),
+      color,
+      sortOrder
+    )
     .run();
 
   return { id };
@@ -985,11 +1234,16 @@ export async function updateBoardAxisItem(
   input: UpdateBoardAxisItemInput
 ): Promise<boolean> {
   const separatorJson = input.separator === undefined || input.separator === null ? null : JSON.stringify(input.separator);
+  const displayOptionsJson =
+    input.displaySettings === undefined || input.displaySettings === null
+      ? null
+      : serializeBoardDisplaySettings(input.displaySettings);
   const result = await env.DB.prepare(
     `UPDATE board_axis_items
      SET label = ?,
          task_color = CASE WHEN ? = 1 AND kind = 'task' THEN ? ELSE task_color END,
          separator_json = CASE WHEN ? = 1 THEN ? ELSE separator_json END,
+         display_options_json = CASE WHEN ? = 1 THEN ? ELSE display_options_json END,
          updated_at = CURRENT_TIMESTAMP
      WHERE id = ? AND user_id = ? AND visible = 1`
   )
@@ -999,6 +1253,8 @@ export async function updateBoardAxisItem(
       input.taskColor ?? null,
       input.separator !== undefined ? 1 : 0,
       separatorJson,
+      input.displaySettings !== undefined ? 1 : 0,
+      displayOptionsJson,
       axisItemId,
       userId
     )

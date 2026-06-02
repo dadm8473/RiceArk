@@ -235,29 +235,11 @@ body {
   white-space: nowrap;
 }
 
-.board-reorder-button.active,
-.board-visibility-button.active {
-  color: #ffffff;
-  border-color: #1f4fd1;
-  background: #2563eb;
-}
-
 .board-form-error {
   margin: 0;
   color: #b42318;
   font-size: 13px;
   font-weight: 700;
-}
-
-.board-axis-create-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.board-axis-create-form input {
-  width: 104px;
 }
 
 .board-canvas {
@@ -417,34 +399,6 @@ body {
   background: #f8fafc;
 }
 
-.board-cell-visibility-toggle {
-  width: 26px;
-  height: 26px;
-  min-height: 26px;
-  padding: 0;
-  border-radius: 0;
-  color: #1f4fd1;
-  background: #eef4ff;
-}
-
-.board-cell-visibility-toggle.hidden {
-  color: #64748b;
-  border-style: dashed;
-  background: #f8fafc;
-}
-
-.board-size-input {
-  flex: 0 0 54px;
-  width: 54px;
-  min-width: 0;
-  height: 24px;
-  border: 1px solid #aab5c4;
-  border-radius: 0;
-  color: #111827;
-  background: #ffffff;
-  font-size: 12px;
-}
-
 .board-table-heading {
   display: flex;
   align-items: flex-start;
@@ -456,109 +410,38 @@ body {
   display: grid;
   min-width: 0;
   flex: 1 1 auto;
-  gap: 2px;
 }
 
-.board-table-heading span {
-  color: #475569;
-  font-size: 12px;
+.board-table-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
 }
 
-.board-table-drag-button,
-.board-table-resize-handle,
-.board-table-transpose-button {
+.board-table-actions button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 3px;
   height: 26px;
   min-height: 26px;
-  padding: 0;
+  padding: 0 6px;
   border-radius: 0;
   color: #334155;
   background: #f8fafc;
-  touch-action: none;
-  user-select: none;
-}
-
-.board-table-drag-button,
-.board-table-resize-handle {
-  width: 26px;
-}
-
-.board-table-drag-button {
-  flex: 0 0 auto;
-  cursor: grab;
-}
-
-.board-table-drag-button:active {
-  cursor: grabbing;
-}
-
-.board-table-resize-handle {
-  position: absolute;
-  right: 3px;
-  bottom: 3px;
-  cursor: nwse-resize;
-}
-
-.board-table-transpose-button {
-  flex: 0 0 auto;
-  gap: 4px;
-  padding: 0 6px;
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
 }
 
-.board-table-drag-button:hover,
-.board-table-resize-handle:hover,
-.board-table-transpose-button:hover {
+.board-table-actions button:hover {
   color: #1f4fd1;
   border-color: #7fa4f8;
   background: #eef4ff;
 }
 
-.board-table-metrics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.board-table-metrics span {
-  padding: 3px 6px;
-  border: 1px solid #d4dae4;
-  color: #334155;
-  font-size: 12px;
-  background: #f8fafc;
-}
-
-.board-table-layout-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 8px;
-}
-
-.board-table-layout-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  color: #334155;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.board-table-layout-field input {
-  width: 58px;
-  min-width: 0;
-  height: 24px;
-  border: 1px solid #aab5c4;
-  border-radius: 0;
-  color: #111827;
-  background: #ffffff;
-  font-size: 12px;
-}
 
 .board-empty {
   margin: 0;
@@ -924,30 +807,54 @@ body {
   font-size: 12px;
 }
 
-.transpose-preview {
+.table-config-modal {
+  width: min(620px, 100%);
+}
+
+.orientation-option-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  align-items: center;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  border: 1px solid #d8dee8;
-  padding: 10px;
-  background: #f8fafc;
 }
 
-.transpose-preview div {
+.orientation-option {
   display: grid;
-  gap: 4px;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  border: 1px solid #d8dee8;
+  padding: 8px;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 700;
 }
 
-.transpose-preview span {
-  color: #475569;
+.orientation-option small {
+  grid-column: 1 / -1;
+  color: #526173;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.character-detail-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  border: 1px solid #d8dee8;
+  padding: 8px;
+  color: #334155;
+  background: #f8fafc;
   font-size: 12px;
   font-weight: 700;
 }
 
-.transpose-preview strong {
-  color: #111827;
-  font-size: 13px;
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #526173;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .visibility-fieldset {
@@ -1165,6 +1072,11 @@ button {
 
   .compact-edit-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .orientation-option-grid,
+  .character-detail-panel {
+    grid-template-columns: 1fr;
   }
 
   .compact-task-form input,

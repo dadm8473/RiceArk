@@ -5,7 +5,6 @@ import { useSession } from "./features/auth/useSession";
 import { BoardOverview } from "./features/board/BoardOverview";
 import { useBoard } from "./features/board/useBoard";
 import { useDashboard } from "./features/dashboard/useDashboard";
-import { WorkspaceActions, type WorkspaceTool } from "./features/tools/WorkspaceActions";
 
 export function getAuthErrorMessage(search: string): string | null {
   const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
@@ -22,7 +21,6 @@ export function App() {
   const session = useSession();
   const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
-  const [activeTool, setActiveTool] = useState<WorkspaceTool | null>(null);
   const authErrorMessage = typeof window === "undefined" ? null : getAuthErrorMessage(window.location.search);
 
   const handleLogout = async () => {
@@ -58,11 +56,6 @@ export function App() {
         {!data && !error ? <p>로스트아크 숙제 체크리스트를 불러오는 중입니다.</p> : null}
         {data ? (
           <>
-            <WorkspaceActions
-              activeTool={activeTool}
-              onClose={() => setActiveTool(null)}
-              onOpen={setActiveTool}
-            />
             {board.data ? <BoardOverview board={board.data} onBoardChanged={board.reload} /> : null}
           </>
         ) : null}
