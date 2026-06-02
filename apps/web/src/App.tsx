@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { apiPatch, apiPostNoContent } from "./api/client";
+import { apiPostNoContent } from "./api/client";
 import { AuthMenu } from "./features/auth/AuthMenu";
 import { useSession } from "./features/auth/useSession";
 import { BoardOverview } from "./features/board/BoardOverview";
 import { useBoard } from "./features/board/useBoard";
-import { ChecklistMatrix } from "./features/dashboard/ChecklistMatrix";
 import { useDashboard } from "./features/dashboard/useDashboard";
 import { WorkspaceActions, type WorkspaceTool } from "./features/tools/WorkspaceActions";
 
@@ -38,12 +37,6 @@ export function App() {
     }
   };
 
-  const handleChecklistOrientationChange = async (checklistOrientation: "tasks_rows" | "tasks_columns") => {
-    if (data?.settings.checklist_orientation === checklistOrientation) return;
-    await apiPatch("/api/settings", { checklistOrientation });
-    window.location.reload();
-  };
-
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -67,13 +60,10 @@ export function App() {
           <>
             <WorkspaceActions
               activeTool={activeTool}
-              checklistOrientation={data.settings.checklist_orientation}
-              onChecklistOrientationChange={(orientation) => void handleChecklistOrientationChange(orientation)}
               onClose={() => setActiveTool(null)}
               onOpen={setActiveTool}
             />
             {board.data ? <BoardOverview board={board.data} onBoardChanged={board.reload} /> : null}
-            <ChecklistMatrix dashboard={data} />
           </>
         ) : null}
       </section>

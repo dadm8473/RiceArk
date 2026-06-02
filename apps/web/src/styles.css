@@ -760,16 +760,6 @@ body {
   min-height: 38px;
 }
 
-.orientation-control {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  color: #2f3a4b;
-  font-size: 13px;
-  font-weight: 700;
-}
-
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -1159,14 +1149,6 @@ button {
 
   .workspace-actions button {
     flex: 1 1 160px;
-  }
-
-  .orientation-control {
-    width: 100%;
-  }
-
-  .orientation-control .segmented {
-    width: 100%;
   }
 
   .modal-backdrop {
