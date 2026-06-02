@@ -1,0 +1,1 @@
+ALTER TABLE board_tables ADD COLUMN locked INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0, 1));

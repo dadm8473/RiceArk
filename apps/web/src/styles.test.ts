@@ -71,6 +71,14 @@ describe("matrix styles", () => {
     expect(characterLabelBlock).toContain("text-overflow: ellipsis;");
   });
 
+  it("wraps character metadata instead of hiding enabled display fields", () => {
+    const characterMetaBlock = styles.match(/\.board-character-meta\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(characterMetaBlock).toContain("white-space: normal;");
+    expect(characterMetaBlock).toContain("overflow-wrap: anywhere;");
+    expect(characterMetaBlock).not.toContain("text-overflow: ellipsis;");
+  });
+
   it("does not clip task color swatches with generic row span overflow", () => {
     const swatchBlock = styles.match(/\.board-task-color-swatch\s*{[^}]+}/)?.[0] ?? "";
 

@@ -21,7 +21,8 @@ const tables: BoardTable[] = [
     column_role: "character",
     task_axis: "rows",
     default_row_height: 40,
-    default_column_width: 132
+    default_column_width: 132,
+    locked: 0
   },
   {
     id: "table-2",
@@ -36,7 +37,8 @@ const tables: BoardTable[] = [
     column_role: "custom",
     task_axis: "none",
     default_row_height: 40,
-    default_column_width: 132
+    default_column_width: 132,
+    locked: 0
   }
 ];
 

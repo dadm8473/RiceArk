@@ -26,6 +26,10 @@ function startOfWeek(shiftedKst: Date, weekday: number): Date {
 }
 
 export function getPeriodKey(rule: ResetRule, now: Date = new Date()): string {
+  if (rule.type === "none") {
+    return "none:permanent";
+  }
+
   const shifted = toKstShiftedDate(now, rule.hour);
 
   if (rule.type === "daily") {

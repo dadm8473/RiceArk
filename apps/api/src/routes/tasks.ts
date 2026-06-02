@@ -29,14 +29,14 @@ const safeTaskNameSchema = safeText({ maxChars: 40, maxBytes: 160 });
 export const createTaskSchema = z.object({
   name: safeTaskNameSchema,
   scope: z.literal("character").optional().default("character"),
-  resetType: z.enum(["daily", "weekly", "biweekly", "custom"]),
+  resetType: z.enum(["daily", "weekly", "biweekly", "custom", "none"]),
   anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   intervalDays: z.number().int().min(1).max(365).optional()
 }).strict();
 
 export const updateTaskSchema = z.object({
   name: safeTaskNameSchema,
-  resetType: z.enum(["daily", "weekly", "biweekly", "custom"]),
+  resetType: z.enum(["daily", "weekly", "biweekly", "custom", "none"]),
   anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   intervalDays: z.number().int().min(1).max(365).optional()
 }).strict();

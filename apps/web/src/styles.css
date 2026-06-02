@@ -169,6 +169,23 @@ body {
   background: #2563eb;
 }
 
+.sheet-settings-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid #9aa6b8;
+  border-radius: 0;
+  color: #111827;
+  background: #ffffff;
+  white-space: nowrap;
+}
+
+.sheet-settings-button:hover {
+  background: #eef2f7;
+}
+
 .board-toolbar {
   display: flex;
   align-items: center;
@@ -272,6 +289,10 @@ body {
   box-shadow: 0 8px 20px rgb(15 23 42 / 16%);
 }
 
+.board-table-summary.locked {
+  border-color: #64748b;
+}
+
 .board-check-grid {
   display: grid;
   align-items: stretch;
@@ -341,12 +362,12 @@ body {
 
 .board-character-meta {
   max-width: 100%;
-  overflow: hidden;
+  overflow: visible;
+  overflow-wrap: anywhere;
   color: #526174;
   font-size: 10px;
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .board-task-color-swatch {
@@ -424,6 +445,7 @@ body {
 .board-table-title {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   justify-content: flex-start;
   min-width: 0;
   max-width: 180px;
@@ -448,6 +470,16 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.board-table-lock-badge {
+  flex: 0 0 auto;
+  border: 1px solid #8a96a8;
+  padding: 1px 5px;
+  color: #334155;
+  background: #eef2f7;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .board-table-move-handle:hover {
@@ -487,6 +519,13 @@ body {
   color: #1f4fd1;
   border-color: #7fa4f8;
   background: #eef4ff;
+}
+
+.board-table-actions button:disabled {
+  cursor: default;
+  color: #94a3b8;
+  border-color: #cbd5e1;
+  background: #f8fafc;
 }
 
 
@@ -974,6 +1013,13 @@ body {
   background: #971b12;
 }
 
+.sheet-settings-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
 .tool-panel {
   border: 1px solid #b7c1cf;
   border-radius: 8px;
@@ -1008,8 +1054,22 @@ body {
   min-width: 0;
 }
 
+.compact-task-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .compact-task-form select {
   flex: 0 0 112px;
+}
+
+.compact-task-reset select {
+  width: 118px;
 }
 
 .compact-task-form button {

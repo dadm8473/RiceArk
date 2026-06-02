@@ -22,8 +22,11 @@ describe("TaskForm", () => {
 
     expect(html).toContain('class="tool-panel compact-task-panel"');
     expect(html).toContain('class="inline-form compact-task-form"');
+    expect(html).toContain("초기화 주기");
     expect(html.indexOf("숙제 이름")).toBeLessThan(html.indexOf("일간"));
     expect(html.indexOf("일간")).toBeLessThan(html.indexOf("추가"));
+    expect(html).toContain("초기화 안함");
+    expect(html).not.toContain("커스텀");
     expect(html).toContain('class="primary-button"');
   });
 });

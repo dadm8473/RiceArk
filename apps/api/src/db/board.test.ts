@@ -4,9 +4,11 @@ import {
   DEFAULT_TABLE_NAME,
   buildBoardCompletionPatchesFromLegacy,
   buildDefaultAxisItemSeeds,
+  buildMissingDefaultAxisItemSeeds,
   buildManualBoardAxisItemDraft,
   buildBoardAxisItemTransposePlan,
   boardRolesForTableOrientation,
+  canApplyBoardTableSettingsUpdate,
   defaultBoardRolesForOrientation,
   defaultOrientationForTableRoles,
   findUnauthorizedBoardCellStatePatches,
@@ -65,6 +67,50 @@ describe("board db defaults", () => {
       columnRole: "custom",
       taskAxis: "none"
     });
+  });
+
+  it("allows locked board table settings only when structure is unchanged", () => {
+    const current = {
+      name: "숙제",
+      default_row_height: 40,
+      default_column_width: 132,
+      display_options_json: null,
+      locked: 1
+    };
+
+    expect(
+      canApplyBoardTableSettingsUpdate(current, {
+        name: "숙제",
+        defaultRowHeight: 40,
+        defaultColumnWidth: 132,
+        locked: 0,
+        displaySettings: undefined
+      })
+    ).toBe(true);
+    expect(
+      canApplyBoardTableSettingsUpdate(current, {
+        name: "주간 숙제",
+        defaultRowHeight: 40,
+        defaultColumnWidth: 132,
+        locked: 1,
+        displaySettings: undefined
+      })
+    ).toBe(false);
+    expect(
+      canApplyBoardTableSettingsUpdate({ ...current, locked: 0 }, {
+        name: "주간 숙제",
+        defaultRowHeight: 44,
+        defaultColumnWidth: 144,
+        locked: 1,
+        displaySettings: {
+          show_display_name: 1,
+          show_server_name: 1,
+          show_class_name: 0,
+          show_item_level: 1,
+          show_combat_power: 0
+        }
+      })
+    ).toBe(true);
   });
 
   it("plans axis transposition with temporary sort orders to avoid unique collisions", () => {
@@ -257,6 +303,50 @@ describe("board db defaults", () => {
       { axis: "row", kind: "character", characterId: "character-a", label: "냠수나이스1", sortOrder: 0 },
       { axis: "column", kind: "task", taskId: "task-a", label: "쿠르잔 전선", sortOrder: 0 }
     ]);
+  });
+
+  it("does not keep syncing newly imported global characters into an initialized default table", () => {
+    expect(
+      buildMissingDefaultAxisItemSeeds({
+        orientation: "tasks_rows",
+        defaultTableCreated: false,
+        existingAxisItems: [
+          {
+            axis: "row",
+            kind: "task",
+            task_id: "task-a",
+            character_id: null,
+            sort_order: 0
+          }
+        ],
+        tasks: [],
+        characters: [{ id: "character-b", name: "표비캐릭터", sortOrder: 20 }]
+      })
+    ).toEqual([]);
+  });
+
+  it("seeds initial default table axis items when the default table is newly created", () => {
+    expect(
+      buildMissingDefaultAxisItemSeeds({
+        orientation: "tasks_rows",
+        defaultTableCreated: true,
+        existingAxisItems: [],
+        tasks: [],
+        characters: [{ id: "character-a", name: "냠수나이스1", sortOrder: 10 }]
+      })
+    ).toMatchObject([{ axis: "column", kind: "character", characterId: "character-a", label: "냠수나이스1", sortOrder: 0 }]);
+  });
+
+  it("does not seed an empty default table after it already existed", () => {
+    expect(
+      buildMissingDefaultAxisItemSeeds({
+        orientation: "tasks_rows",
+        defaultTableCreated: false,
+        existingAxisItems: [],
+        tasks: [],
+        characters: [{ id: "character-a", name: "냠수나이스1", sortOrder: 10 }]
+      })
+    ).toEqual([]);
   });
 
   it("maps legacy task-character completions to board row and column item ids", () => {

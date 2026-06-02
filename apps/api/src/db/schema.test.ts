@@ -42,6 +42,18 @@ describe("D1 schema", () => {
     expect(migration).toContain("checklist_orientation TEXT");
   });
 
+  it("stores board table lock state", () => {
+    expect(migration).toContain("locked INTEGER NOT NULL DEFAULT 0");
+  });
+
+  it("stores board axis cross sizes for row width and column height", () => {
+    expect(migration).toContain("cross_size_px INTEGER");
+  });
+
+  it("allows tasks that do not reset automatically", () => {
+    expect(migration).toContain("reset_type IN ('daily', 'weekly', 'biweekly', 'custom', 'none')");
+  });
+
   it("stores character display visibility settings", () => {
     for (const column of [
       "show_display_name INTEGER",

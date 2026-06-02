@@ -8,6 +8,7 @@ import {
   createBoardSheet,
   createBoardTable,
   createBoardTaskForTable,
+  deleteBoardSheet,
   deleteBoardTable,
   hideBoardAxisItem,
   importBoardCharactersForTable,
@@ -60,6 +61,10 @@ export const createBoardSheetSchema = z.object({
   name: safeBoardNameSchema
 }).strict();
 
+export const boardSheetIdParamSchema = z.object({
+  id: resourceIdSchema
+}).strict();
+
 export const createBoardTableSchema = z.object({
   sheetId: resourceIdSchema,
   name: safeBoardNameSchema,
@@ -98,6 +103,7 @@ export const updateBoardTableSettingsSchema = z.object({
   name: safeBoardNameSchema,
   defaultRowHeight: boardDefaultRowHeightSchema,
   defaultColumnWidth: boardDefaultColumnWidthSchema,
+  locked: z.union([z.literal(0), z.literal(1)]).optional(),
   displaySettings: boardDisplaySettingsSchema.nullable().optional()
 }).strict();
 
@@ -144,8 +150,11 @@ export const boardCellStatePatchBatchSchema = z.object({
 }).strict();
 
 export const boardAxisSizePatchSchema = z.object({
-  sizePx: z.number().int().min(16).max(1024)
-}).strict();
+  sizePx: z.number().int().min(16).max(1024).optional(),
+  crossSizePx: z.number().int().min(16).max(1024).optional()
+}).strict().refine((patch) => patch.sizePx !== undefined || patch.crossSizePx !== undefined, {
+  message: "At least one size value is required"
+});
 
 export const boardAxisItemIdParamSchema = z.object({
   id: resourceIdSchema
@@ -180,6 +189,19 @@ boardRoutes.post("/board/sheets", zValidator("json", createBoardSheetSchema), as
   return c.json(sheet, 201);
 });
 
+boardRoutes.delete("/board/sheets/:id", zValidator("param", boardSheetIdParamSchema), async (c) => {
+  const user = await requireUser(c);
+  const { id } = c.req.valid("param");
+  const result = await deleteBoardSheet(c.env, user.id, id);
+  if (result === "not_found") {
+    throw new ApiError(404, "board_sheet_not_found", "시트를 찾을 수 없습니다.");
+  }
+  if (result === "last_sheet") {
+    throw new ApiError(400, "board_sheet_last_one", "마지막 시트는 삭제할 수 없습니다.");
+  }
+  return c.body(null, 204);
+});
+
 boardRoutes.post("/board/tables", zValidator("json", createBoardTableSchema), async (c) => {
   const user = await requireUser(c);
   const input = c.req.valid("json");
@@ -199,7 +221,10 @@ boardRoutes.patch(
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
     const updated = await updateBoardTableSettings(c.env, user.id, id, input);
-    if (!updated) {
+    if (updated === "locked") {
+      throw new ApiError(423, "board_table_locked", "잠긴 표는 잠금을 해제한 뒤 수정할 수 있습니다.");
+    }
+    if (updated === "not_found") {
       throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
     }
     return c.json({ ok: true });
@@ -357,8 +382,8 @@ boardRoutes.patch(
   async (c) => {
     const user = await requireUser(c);
     const { id } = c.req.valid("param");
-    const { sizePx } = c.req.valid("json");
-    const updated = await updateBoardAxisItemSize(c.env, user.id, id, sizePx);
+    const patch = c.req.valid("json");
+    const updated = await updateBoardAxisItemSize(c.env, user.id, id, patch);
     if (!updated) {
       throw new ApiError(404, "board_axis_item_not_found", "Board axis item not found");
     }

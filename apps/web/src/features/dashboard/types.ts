@@ -13,7 +13,7 @@ export interface DashboardTask {
   id: string;
   name: string;
   scope: "character" | "roster";
-  reset_type: "daily" | "weekly" | "biweekly" | "custom";
+  reset_type: "daily" | "weekly" | "biweekly" | "custom" | "none";
   reset_rule_json: string;
 }
 

@@ -22,13 +22,15 @@ export function buildTaskDefinition(input: BuildTaskInput) {
               timezone: "Asia/Seoul",
               anchorDate: input.anchorDate ?? "2026-05-27"
             }
-          : {
-              type: "custom",
-              intervalDays: input.intervalDays ?? 1,
-              hour: 6,
-              timezone: "Asia/Seoul",
-              anchorDate: input.anchorDate ?? "2026-05-29"
-            };
+          : input.resetType === "none"
+            ? { type: "none" }
+            : {
+                type: "custom",
+                intervalDays: input.intervalDays ?? 1,
+                hour: 6,
+                timezone: "Asia/Seoul",
+                anchorDate: input.anchorDate ?? "2026-05-29"
+              };
 
   return {
     id: crypto.randomUUID(),

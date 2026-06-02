@@ -18,6 +18,11 @@ describe("createTaskSchema", () => {
       scope: "character",
       resetType: "daily"
     });
+    expect(createTaskSchema.parse({ name: "메모", resetType: "none" })).toMatchObject({
+      name: "메모",
+      scope: "character",
+      resetType: "none"
+    });
   });
 
   it("rejects roster as a special task scope", () => {
@@ -36,6 +41,10 @@ describe("updateTaskSchema", () => {
     expect(updateTaskSchema.parse({ name: "에브니 큐브", resetType: "weekly" })).toMatchObject({
       name: "에브니 큐브",
       resetType: "weekly"
+    });
+    expect(updateTaskSchema.parse({ name: "메모", resetType: "none" })).toMatchObject({
+      name: "메모",
+      resetType: "none"
     });
   });
 

@@ -38,4 +38,10 @@ describe("getPeriodKey", () => {
     expect(getPeriodKey(rule, new Date("2026-05-20T12:00:00.000Z"))).toBe("custom:2026-05-11");
     expect(getPeriodKey(rule, new Date("2026-05-21T00:00:00.000Z"))).toBe("custom:2026-05-21");
   });
+
+  it("uses one permanent period key when reset is disabled", () => {
+    const rule: ResetRule = { type: "none" };
+    expect(getPeriodKey(rule, new Date("2026-05-20T12:00:00.000Z"))).toBe("none:permanent");
+    expect(getPeriodKey(rule, new Date("2026-06-20T12:00:00.000Z"))).toBe("none:permanent");
+  });
 });

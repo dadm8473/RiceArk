@@ -6,6 +6,7 @@ import {
   boardAxisSizePatchSchema,
   boardCellStatePatchSchema,
   boardCompletionPatchSchema,
+  boardSheetIdParamSchema,
   boardTableIdParamSchema,
   boardTableLayoutPatchSchema,
   createBoardAxisItemSchema,
@@ -63,8 +64,13 @@ describe("board route schemas", () => {
 
   it("accepts bounded pixel sizes", () => {
     expect(boardAxisSizePatchSchema.safeParse({ sizePx: 48 }).success).toBe(true);
+    expect(boardAxisSizePatchSchema.safeParse({ sizePx: 48, crossSizePx: 160 }).success).toBe(true);
+    expect(boardAxisSizePatchSchema.safeParse({ crossSizePx: 48 }).success).toBe(true);
+    expect(boardAxisSizePatchSchema.safeParse({}).success).toBe(false);
     expect(boardAxisSizePatchSchema.safeParse({ sizePx: 0 }).success).toBe(false);
+    expect(boardAxisSizePatchSchema.safeParse({ crossSizePx: 0 }).success).toBe(false);
     expect(boardAxisSizePatchSchema.safeParse({ sizePx: 2000 }).success).toBe(false);
+    expect(boardAxisSizePatchSchema.safeParse({ crossSizePx: 2000 }).success).toBe(false);
   });
 
   it("validates board axis item ids for size updates", () => {
@@ -82,6 +88,11 @@ describe("board route schemas", () => {
   it("validates board table ids for table-level actions", () => {
     expect(boardTableIdParamSchema.safeParse({ id: "table-1" }).success).toBe(true);
     expect(boardTableIdParamSchema.safeParse({ id: "table🙂" }).success).toBe(false);
+  });
+
+  it("validates board sheet ids for sheet-level actions", () => {
+    expect(boardSheetIdParamSchema.safeParse({ id: "sheet-1" }).success).toBe(true);
+    expect(boardSheetIdParamSchema.safeParse({ id: "sheet🙂" }).success).toBe(false);
   });
 
   it("rejects unsafe board table layout patches", () => {
@@ -234,6 +245,7 @@ describe("board route schemas", () => {
         name: "숙제",
         defaultRowHeight: 40,
         defaultColumnWidth: 132,
+        locked: 1,
         displaySettings: {
           show_display_name: 1,
           show_server_name: 0,
@@ -243,6 +255,14 @@ describe("board route schemas", () => {
         }
       }).success
     ).toBe(true);
+    expect(
+      updateBoardTableSettingsSchema.safeParse({
+        name: "숙제",
+        defaultRowHeight: 40,
+        defaultColumnWidth: 132,
+        locked: 2
+      }).success
+    ).toBe(false);
     expect(
       updateBoardTableSettingsSchema.safeParse({
         name: "숙제",

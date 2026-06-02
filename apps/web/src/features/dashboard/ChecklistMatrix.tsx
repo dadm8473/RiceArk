@@ -330,7 +330,11 @@ function CharacterLabelContent({
 }
 
 function getResetTypeLabel(resetType: DashboardTask["reset_type"]): string {
-  return resetType === "daily" ? "일간" : resetType === "weekly" ? "주간" : resetType === "biweekly" ? "격주간" : "커스텀";
+  if (resetType === "daily") return "일간";
+  if (resetType === "weekly") return "주간";
+  if (resetType === "biweekly") return "격주";
+  if (resetType === "none") return "초기화 안함";
+  return "커스텀";
 }
 
 export function CharacterEditModal({
@@ -515,12 +519,12 @@ export function TaskEditModal({ task, onClose }: { task: DashboardTask; onClose:
             <input maxLength={40} value={name} onChange={(event) => setName(event.target.value)} />
           </label>
           <label>
-            초기화 기간
+            초기화 주기
             <select value={resetType} onChange={(event) => setResetType(event.target.value as DashboardTask["reset_type"])}>
               <option value="daily">일간</option>
               <option value="weekly">주간</option>
-              <option value="biweekly">격주간</option>
-              <option value="custom">커스텀</option>
+              <option value="biweekly">격주</option>
+              <option value="none">초기화 안함</option>
             </select>
           </label>
           <p className="notice-text">현재 설정: {getResetTypeLabel(task.reset_type)}</p>

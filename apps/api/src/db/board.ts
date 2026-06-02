@@ -82,7 +82,18 @@ export interface UpdateBoardTableSettingsInput {
   name: string;
   defaultRowHeight: number;
   defaultColumnWidth: number;
+  locked?: 0 | 1 | undefined;
   displaySettings?: BoardDisplaySettingsInput | null | undefined;
+}
+
+export type BoardTableSettingsUpdateResult = "updated" | "not_found" | "locked";
+
+export interface CurrentBoardTableSettings {
+  name: string;
+  default_row_height: number;
+  default_column_width: number;
+  display_options_json: string | null;
+  locked: number;
 }
 
 export interface BoardAxisItemTransposeSource {
@@ -134,6 +145,11 @@ export interface BoardTaskInput {
   resetRule: ResetRule;
 }
 
+export interface BoardAxisItemSizePatch {
+  sizePx?: number | undefined;
+  crossSizePx?: number | undefined;
+}
+
 export interface ManualBoardAxisItemDraft {
   axis: BoardAxis;
   kind: "task" | "custom";
@@ -175,7 +191,7 @@ export interface DefaultBoardTaskSource {
   id: string;
   name: string;
   scope: "character" | "roster";
-  resetType: "daily" | "weekly" | "biweekly" | "custom";
+  resetType: "daily" | "weekly" | "biweekly" | "custom" | "none";
   resetRuleJson: string;
   sortOrder: number;
 }
@@ -193,7 +209,7 @@ export interface DefaultAxisItemSeed {
   characterId: string | null;
   taskId: string | null;
   taskScope: "character" | "roster" | null;
-  taskResetType: "daily" | "weekly" | "biweekly" | "custom" | null;
+  taskResetType: "daily" | "weekly" | "biweekly" | "custom" | "none" | null;
   taskResetRuleJson: string | null;
   taskColor: string | null;
   sortOrder: number;
@@ -211,6 +227,36 @@ const DEFAULT_BOARD_DISPLAY_SETTINGS = {
 
 function serializeBoardDisplaySettings(settings: BoardDisplaySettingsInput | null | undefined): string | null {
   return settings ? JSON.stringify(settings) : null;
+}
+
+function getNextBoardTableDisplayOptionsJson(
+  current: Pick<CurrentBoardTableSettings, "display_options_json">,
+  input: Pick<UpdateBoardTableSettingsInput, "displaySettings">
+): string | null {
+  return input.displaySettings === undefined ? current.display_options_json : serializeBoardDisplaySettings(input.displaySettings);
+}
+
+export function canApplyBoardTableSettingsUpdate(
+  current: CurrentBoardTableSettings,
+  input: UpdateBoardTableSettingsInput
+): boolean {
+  if (current.locked !== 1) return true;
+
+  const displayOptionsJson = getNextBoardTableDisplayOptionsJson(current, input);
+  return (
+    input.name === current.name &&
+    input.defaultRowHeight === current.default_row_height &&
+    input.defaultColumnWidth === current.default_column_width &&
+    displayOptionsJson === current.display_options_json
+  );
+}
+
+async function isBoardTableLocked(env: Env, userId: string, tableId: string): Promise<boolean | null> {
+  const table = await env.DB.prepare("SELECT locked FROM board_tables WHERE id = ? AND user_id = ?")
+    .bind(tableId, userId)
+    .first<{ locked: number }>();
+  if (!table) return null;
+  return table.locked === 1;
 }
 
 function getAxisForRole(table: { row_role: BoardAxisRole; column_role: BoardAxisRole }, role: BoardAxisRole): BoardAxis {
@@ -477,6 +523,50 @@ export function buildDefaultAxisItemSeeds(input: {
   return [...buildTaskSeeds("row", input.tasks), ...buildCharacterSeeds("column", input.characters)];
 }
 
+export function buildMissingDefaultAxisItemSeeds(input: {
+  orientation: ChecklistOrientation;
+  defaultTableCreated: boolean;
+  existingAxisItems: Array<{
+    axis: BoardAxis;
+    kind: "character" | "task" | "custom";
+    task_id: string | null;
+    character_id: string | null;
+    sort_order: number;
+  }>;
+  tasks: DefaultBoardTaskSource[];
+  characters: DefaultBoardCharacterSource[];
+}): DefaultAxisItemSeed[] {
+  if (!input.defaultTableCreated) return [];
+
+  const existingKeys = new Set(input.existingAxisItems.map(axisItemKey));
+  const nextSortByAxis = new Map<BoardAxis, number>([
+    ["row", 0],
+    ["column", 0]
+  ]);
+  const hasExistingAxisItems = new Map<BoardAxis, boolean>([
+    ["row", false],
+    ["column", false]
+  ]);
+
+  for (const item of input.existingAxisItems) {
+    hasExistingAxisItems.set(item.axis, true);
+    nextSortByAxis.set(item.axis, Math.max(nextSortByAxis.get(item.axis) ?? 0, item.sort_order + 10));
+  }
+
+  return buildDefaultAxisItemSeeds({ orientation: input.orientation, tasks: input.tasks, characters: input.characters })
+    .filter((seed) => !existingKeys.has(seedKey(seed)))
+    .map((seed) => {
+      const appendSortOrder = nextSortByAxis.get(seed.axis) ?? 0;
+      const sortOrder = hasExistingAxisItems.get(seed.axis) ? appendSortOrder : seed.sortOrder;
+      nextSortByAxis.set(seed.axis, sortOrder + 10);
+
+      return {
+        ...seed,
+        sortOrder
+      };
+    });
+}
+
 function seedKey(seed: DefaultAxisItemSeed): string {
   return JSON.stringify([seed.axis, seed.kind, seed.taskId ?? seed.characterId]);
 }
@@ -520,7 +610,7 @@ async function getOrCreateDefaultTable(
   userId: string,
   sheetId: string,
   orientation: ChecklistOrientation
-): Promise<{ id: string; orientation: ChecklistOrientation }> {
+): Promise<{ id: string; orientation: ChecklistOrientation; created: boolean }> {
   const existing = await env.DB.prepare(
     "SELECT id, row_role, column_role FROM board_tables WHERE user_id = ? AND sheet_id = ? ORDER BY sort_order LIMIT 1"
   )
@@ -532,7 +622,8 @@ async function getOrCreateDefaultTable(
       orientation: defaultOrientationForTableRoles(
         { rowRole: existing.row_role, columnRole: existing.column_role },
         orientation
-      )
+      ),
+      created: false
     };
   }
 
@@ -546,7 +637,7 @@ async function getOrCreateDefaultTable(
   )
     .bind(id, userId, sheetId, DEFAULT_TABLE_NAME, roles.rowRole, roles.columnRole, roles.taskAxis)
     .run();
-  return { id, orientation };
+  return { id, orientation, created: true };
 }
 
 async function loadDefaultBoardTasks(env: Env, userId: string): Promise<DefaultBoardTaskSource[]> {
@@ -568,7 +659,7 @@ async function loadDefaultBoardTasks(env: Env, userId: string): Promise<DefaultB
       id: string;
       name: string;
       scope: "character" | "roster";
-      reset_type: "daily" | "weekly" | "biweekly" | "custom";
+      reset_type: "daily" | "weekly" | "biweekly" | "custom" | "none";
       reset_rule_json: string;
       sort_order: number;
     }>();
@@ -611,61 +702,46 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
       .all<{ axis: BoardAxis; kind: "character" | "task" | "custom"; task_id: string | null; character_id: string | null; sort_order: number }>()
   ]);
 
-  const existingKeys = new Set(existingAxisItems.results.map(axisItemKey));
-  const nextSortByAxis = new Map<BoardAxis, number>([
-    ["row", 0],
-    ["column", 0]
-  ]);
-  const hasExistingAxisItems = new Map<BoardAxis, boolean>([
-    ["row", false],
-    ["column", false]
-  ]);
-
-  for (const item of existingAxisItems.results) {
-    hasExistingAxisItems.set(item.axis, true);
-    nextSortByAxis.set(item.axis, Math.max(nextSortByAxis.get(item.axis) ?? 0, item.sort_order + 10));
-  }
-
-  const statements = buildDefaultAxisItemSeeds({ orientation: table.orientation, tasks, characters })
-    .filter((seed) => !existingKeys.has(seedKey(seed)))
-    .map((seed) => {
-      const appendSortOrder = nextSortByAxis.get(seed.axis) ?? 0;
-      const sortOrder = hasExistingAxisItems.get(seed.axis) ? appendSortOrder : seed.sortOrder;
-      nextSortByAxis.set(seed.axis, sortOrder + 10);
-
-      return env.DB.prepare(
-        `INSERT INTO board_axis_items (
-           id,
-           user_id,
-           table_id,
-           axis,
-           kind,
-           label,
-           character_id,
-           task_id,
-           task_scope,
-           task_reset_type,
-           task_reset_rule_json,
-           task_color,
-           sort_order
-         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).bind(
-        crypto.randomUUID(),
-        userId,
-        table.id,
-        seed.axis,
-        seed.kind,
-        seed.label,
-        seed.characterId,
-        seed.taskId,
-        seed.taskScope,
-        seed.taskResetType,
-        seed.taskResetRuleJson,
-        seed.taskColor,
-        sortOrder
-      );
-    });
+  const statements = buildMissingDefaultAxisItemSeeds({
+    orientation: table.orientation,
+    defaultTableCreated: table.created,
+    existingAxisItems: existingAxisItems.results,
+    tasks,
+    characters
+  }).map((seed) =>
+    env.DB.prepare(
+      `INSERT INTO board_axis_items (
+         id,
+         user_id,
+         table_id,
+         axis,
+         kind,
+         label,
+         character_id,
+         task_id,
+         task_scope,
+         task_reset_type,
+         task_reset_rule_json,
+         task_color,
+         sort_order
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      crypto.randomUUID(),
+      userId,
+      table.id,
+      seed.axis,
+      seed.kind,
+      seed.label,
+      seed.characterId,
+      seed.taskId,
+      seed.taskScope,
+      seed.taskResetType,
+      seed.taskResetRuleJson,
+      seed.taskColor,
+      seed.sortOrder
+    )
+  );
 
   if (statements.length > 0) {
     await env.DB.batch(statements);
@@ -794,6 +870,59 @@ export async function createBoardSheet(
   return { id };
 }
 
+export type DeleteBoardSheetResult = "deleted" | "last_sheet" | "not_found";
+
+export async function deleteBoardSheet(env: Env, userId: string, sheetId: string): Promise<DeleteBoardSheetResult> {
+  await ensureDefaultBoard(env, userId);
+
+  const sheet = await env.DB.prepare("SELECT id, is_default FROM sheets WHERE id = ? AND user_id = ?")
+    .bind(sheetId, userId)
+    .first<{ id: string; is_default: number }>();
+  if (!sheet) return "not_found";
+
+  const sheetCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM sheets WHERE user_id = ?")
+    .bind(userId)
+    .first<{ count: number }>();
+  if ((sheetCount?.count ?? 0) <= 1) return "last_sheet";
+
+  const tableIdsForSheet = "SELECT id FROM board_tables WHERE user_id = ? AND sheet_id = ?";
+  const statements = [];
+
+  if (sheet.is_default === 1) {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE sheets
+         SET is_default = CASE
+           WHEN id = (
+             SELECT id FROM sheets
+             WHERE user_id = ? AND id <> ?
+             ORDER BY sort_order, name
+             LIMIT 1
+           ) THEN 1
+           ELSE 0
+         END,
+         updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = ?`
+      ).bind(userId, sheetId, userId)
+    );
+  }
+
+  statements.push(
+    env.DB.prepare(`DELETE FROM board_cell_completions WHERE user_id = ? AND table_id IN (${tableIdsForSheet})`).bind(
+      userId,
+      userId,
+      sheetId
+    ),
+    env.DB.prepare(`DELETE FROM board_cell_states WHERE user_id = ? AND table_id IN (${tableIdsForSheet})`).bind(userId, userId, sheetId),
+    env.DB.prepare(`DELETE FROM board_axis_items WHERE user_id = ? AND table_id IN (${tableIdsForSheet})`).bind(userId, userId, sheetId),
+    env.DB.prepare("DELETE FROM board_tables WHERE user_id = ? AND sheet_id = ?").bind(userId, sheetId),
+    env.DB.prepare("DELETE FROM sheets WHERE id = ? AND user_id = ?").bind(sheetId, userId)
+  );
+
+  await env.DB.batch(statements);
+  return "deleted";
+}
+
 export async function createBoardTable(
   env: Env,
   userId: string,
@@ -860,13 +989,30 @@ export async function updateBoardTableSettings(
   userId: string,
   tableId: string,
   input: UpdateBoardTableSettingsInput
-): Promise<boolean> {
+): Promise<BoardTableSettingsUpdateResult> {
+  const current = await env.DB.prepare(
+    `SELECT name, default_row_height, default_column_width, display_options_json, locked
+     FROM board_tables
+     WHERE id = ? AND user_id = ?`
+  )
+    .bind(tableId, userId)
+    .first<CurrentBoardTableSettings>();
+  if (!current) return "not_found";
+
+  const displayOptionsJson = getNextBoardTableDisplayOptionsJson(current, input);
+  const nextLocked = input.locked ?? (current.locked === 1 ? 1 : 0);
+
+  if (!canApplyBoardTableSettingsUpdate(current, input)) {
+    return "locked";
+  }
+
   const result = await env.DB.prepare(
     `UPDATE board_tables
      SET name = ?,
          default_row_height = ?,
          default_column_width = ?,
          display_options_json = ?,
+         locked = ?,
          updated_at = CURRENT_TIMESTAMP
      WHERE id = ? AND user_id = ?`
   )
@@ -874,19 +1020,21 @@ export async function updateBoardTableSettings(
       input.name,
       input.defaultRowHeight,
       input.defaultColumnWidth,
-      serializeBoardDisplaySettings(input.displaySettings),
+      displayOptionsJson,
+      nextLocked,
       tableId,
       userId
     )
     .run();
-  return (result.meta.changes ?? 0) > 0;
+  return (result.meta.changes ?? 0) > 0 ? "updated" : "not_found";
 }
 
 export async function deleteBoardTable(env: Env, userId: string, tableId: string): Promise<boolean> {
-  const table = await env.DB.prepare("SELECT id FROM board_tables WHERE id = ? AND user_id = ?")
+  const table = await env.DB.prepare("SELECT id, locked FROM board_tables WHERE id = ? AND user_id = ?")
     .bind(tableId, userId)
-    .first<{ id: string }>();
+    .first<{ id: string; locked: number }>();
   if (!table) return false;
+  if (table.locked === 1) return false;
 
   await env.DB.batch([
     env.DB.prepare("DELETE FROM board_cell_completions WHERE user_id = ? AND table_id = ?").bind(userId, tableId),
@@ -905,10 +1053,11 @@ export async function importBoardCharactersForTable(
 ): Promise<boolean> {
   await ensureDefaultBoard(env, userId);
 
-  const table = await env.DB.prepare("SELECT id, row_role, column_role FROM board_tables WHERE id = ? AND user_id = ?")
+  const table = await env.DB.prepare("SELECT id, row_role, column_role, locked FROM board_tables WHERE id = ? AND user_id = ?")
     .bind(tableId, userId)
-    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole }>();
+    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole; locked: number }>();
   if (!table) return false;
+  if (table.locked === 1) return false;
 
   await saveSelectedCharacters(env, userId, characters);
   const axis = getAxisForRole(table, "character");
@@ -973,10 +1122,11 @@ export async function createBoardTaskForTable(
 ): Promise<{ id: string } | null> {
   await ensureDefaultBoard(env, userId);
 
-  const table = await env.DB.prepare("SELECT id, row_role, column_role FROM board_tables WHERE id = ? AND user_id = ?")
+  const table = await env.DB.prepare("SELECT id, row_role, column_role, locked FROM board_tables WHERE id = ? AND user_id = ?")
     .bind(tableId, userId)
-    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole }>();
+    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole; locked: number }>();
   if (!table) return null;
+  if (table.locked === 1) return null;
 
   const taskId = await createUserTask(env, userId, {
     name: input.name,
@@ -1039,10 +1189,11 @@ export async function createBoardAxisItem(
 ): Promise<{ id: string } | null> {
   await ensureDefaultBoard(env, userId);
 
-  const table = await env.DB.prepare("SELECT id, row_role, column_role FROM board_tables WHERE id = ? AND user_id = ?")
+  const table = await env.DB.prepare("SELECT id, row_role, column_role, locked FROM board_tables WHERE id = ? AND user_id = ?")
     .bind(input.tableId, userId)
-    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole }>();
+    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole; locked: number }>();
   if (!table) return null;
+  if (table.locked === 1) return null;
 
   const stats = await env.DB.prepare(
     `SELECT COALESCE(MAX(sort_order), -10) AS maxSortOrder,
@@ -1105,10 +1256,11 @@ export async function reorderBoardAxisItems(
   userId: string,
   input: BoardAxisOrderInput
 ): Promise<boolean> {
-  const table = await env.DB.prepare("SELECT id FROM board_tables WHERE id = ? AND user_id = ?")
+  const table = await env.DB.prepare("SELECT id, locked FROM board_tables WHERE id = ? AND user_id = ?")
     .bind(input.tableId, userId)
-    .first<{ id: string }>();
+    .first<{ id: string; locked: number }>();
   if (!table) return false;
+  if (table.locked === 1) return false;
 
   const existing = await env.DB.prepare(
     `SELECT id
@@ -1154,7 +1306,7 @@ export async function updateBoardTableLayout(
   const result = await env.DB.prepare(
     `UPDATE board_tables
      SET x = ?, y = ?, width = ?, height = ?, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ?`
+     WHERE id = ? AND user_id = ? AND locked = 0`
   )
     .bind(patch.x, patch.y, patch.width, patch.height, tableId, userId)
     .run();
@@ -1163,11 +1315,12 @@ export async function updateBoardTableLayout(
 
 export async function transposeBoardTable(env: Env, userId: string, tableId: string): Promise<boolean> {
   const table = await env.DB.prepare(
-    "SELECT id, row_role, column_role, task_axis FROM board_tables WHERE id = ? AND user_id = ?"
+    "SELECT id, row_role, column_role, task_axis, locked FROM board_tables WHERE id = ? AND user_id = ?"
   )
     .bind(tableId, userId)
-    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole; task_axis: BoardTaskAxis }>();
+    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole; task_axis: BoardTaskAxis; locked: number }>();
   if (!table) return false;
+  if (table.locked === 1) return false;
 
   const axisItems = await env.DB.prepare(
     "SELECT id, axis, sort_order FROM board_axis_items WHERE user_id = ? AND table_id = ? ORDER BY axis, sort_order, label"
@@ -1245,7 +1398,14 @@ export async function updateBoardAxisItem(
          separator_json = CASE WHEN ? = 1 THEN ? ELSE separator_json END,
          display_options_json = CASE WHEN ? = 1 THEN ? ELSE display_options_json END,
          updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ? AND visible = 1`
+     WHERE id = ? AND user_id = ? AND visible = 1
+       AND EXISTS (
+         SELECT 1
+         FROM board_tables
+         WHERE board_tables.id = board_axis_items.table_id
+           AND board_tables.user_id = board_axis_items.user_id
+           AND board_tables.locked = 0
+       )`
   )
     .bind(
       input.label,
@@ -1266,7 +1426,14 @@ export async function hideBoardAxisItem(env: Env, userId: string, axisItemId: st
   const result = await env.DB.prepare(
     `UPDATE board_axis_items
      SET visible = 0, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ? AND visible = 1`
+     WHERE id = ? AND user_id = ? AND visible = 1
+       AND EXISTS (
+         SELECT 1
+         FROM board_tables
+         WHERE board_tables.id = board_axis_items.table_id
+           AND board_tables.user_id = board_axis_items.user_id
+           AND board_tables.locked = 0
+       )`
   )
     .bind(axisItemId, userId)
     .run();
@@ -1325,6 +1492,14 @@ export async function saveBoardCellStatePatches(
   patches: BoardCellStatePatch[]
 ): Promise<boolean> {
   const merged = mergeBoardCellStatePatches(patches);
+  const lockedTableIds = new Set<string>();
+  for (const tableId of unique(merged.map((patch) => patch.tableId))) {
+    if ((await isBoardTableLocked(env, userId, tableId)) === true) lockedTableIds.add(tableId);
+  }
+  if (merged.some((patch) => lockedTableIds.has(patch.tableId))) {
+    return false;
+  }
+
   const authorizedTargets = await loadAuthorizedBoardCompletionTargets(
     env,
     userId,
@@ -1412,14 +1587,30 @@ export async function updateBoardAxisItemSize(
   env: Env,
   userId: string,
   axisItemId: string,
-  sizePx: number
+  patch: BoardAxisItemSizePatch
 ): Promise<boolean> {
   const result = await env.DB.prepare(
     `UPDATE board_axis_items
-     SET size_px = ?, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ?`
+     SET size_px = CASE WHEN ? = 1 THEN ? ELSE size_px END,
+         cross_size_px = CASE WHEN ? = 1 THEN ? ELSE cross_size_px END,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ?
+       AND EXISTS (
+         SELECT 1
+         FROM board_tables
+         WHERE board_tables.id = board_axis_items.table_id
+           AND board_tables.user_id = board_axis_items.user_id
+           AND board_tables.locked = 0
+       )`
   )
-    .bind(sizePx, axisItemId, userId)
+    .bind(
+      patch.sizePx !== undefined ? 1 : 0,
+      patch.sizePx ?? null,
+      patch.crossSizePx !== undefined ? 1 : 0,
+      patch.crossSizePx ?? null,
+      axisItemId,
+      userId
+    )
     .run();
 
   return (result.meta.changes ?? 0) > 0;

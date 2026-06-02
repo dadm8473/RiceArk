@@ -69,4 +69,8 @@ export function safeText(options: SafeTextOptions) {
 }
 
 export const resourceIdSchema = z.string().min(1).max(80).regex(/^[A-Za-z0-9:_-]+$/);
-export const periodKeySchema = z.string().min(1).max(32).regex(/^(daily|weekly|biweekly|custom):\d{4}-\d{2}-\d{2}$/);
+export const periodKeySchema = z
+  .string()
+  .min(1)
+  .max(32)
+  .regex(/^(?:(daily|weekly|biweekly|custom):\d{4}-\d{2}-\d{2}|none:permanent)$/);

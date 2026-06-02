@@ -1,5 +1,15 @@
-import { Columns3, Plus, Rows3, Save, Settings, Trash2, UserPlus, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent, type ReactNode } from "react";
+import { Columns3, Lock, Plus, Rows3, Save, Settings, Trash2, Unlock, UserPlus, X } from "lucide-react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type CSSProperties,
+  type FormEvent,
+  type PointerEvent,
+  type ReactNode
+} from "react";
 import { apiDelete, apiPatch, apiPost } from "../../api/client";
 import { CharacterImport } from "../characters/CharacterImport";
 import { TaskForm } from "../tasks/TaskForm";
@@ -11,7 +21,7 @@ import {
   type BoardTableLayoutPatch,
   type BoardTableLayoutPointerStart
 } from "./tableLayout";
-import type { BoardAxisItem, BoardOrientation, BoardPayload, BoardTable } from "./types";
+import type { BoardAxisItem, BoardOrientation, BoardPayload, BoardSheet, BoardTable } from "./types";
 import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
 
 interface Props {
@@ -52,8 +62,18 @@ const BOARD_CANVAS_MIN_WIDTH = 480;
 const BOARD_CANVAS_MIN_HEIGHT = 260;
 const BOARD_TABLE_FALLBACK_WIDTH = 360;
 const BOARD_TABLE_FALLBACK_HEIGHT = 240;
+const BOARD_ROW_HEADER_FALLBACK_WIDTH = 160;
+const BOARD_COLUMN_HEADER_FALLBACK_HEIGHT = 30;
 const BOARD_TABLE_HORIZONTAL_CHROME = 30;
 const BOARD_TABLE_VERTICAL_CHROME = 96;
+const BOARD_DISPLAY_OPTIONS: Array<{ key: BoardDisplaySettingKey; label: string }> = [
+  { key: "show_display_name", label: "축약" },
+  { key: "show_server_name", label: "서버" },
+  { key: "show_class_name", label: "직업" },
+  { key: "show_item_level", label: "레벨" },
+  { key: "show_combat_power", label: "전투력" }
+];
+const BOARD_DISPLAY_OPTION_KEYS = BOARD_DISPLAY_OPTIONS.map((option) => option.key);
 
 function cellKey(rowItemId: string, columnItemId: string): string {
   return JSON.stringify([rowItemId, columnItemId]);
@@ -99,6 +119,22 @@ function getEffectiveBoardDisplaySettings(
   boardSettings: BoardDisplaySettings
 ): BoardDisplaySettings {
   return parseBoardDisplaySettings(item.display_options_json) ?? parseBoardDisplaySettings(table.display_options_json) ?? boardSettings;
+}
+
+export function getMixedBoardDisplaySettingKeys(
+  axisItems: BoardAxisItem[],
+  table: BoardTable,
+  boardSettings: BoardDisplaySettings
+): Set<BoardDisplaySettingKey> {
+  const characterItems = axisItems.filter((item) => item.kind === "character" && item.visible === 1);
+  const mixedKeys = new Set<BoardDisplaySettingKey>();
+
+  for (const key of BOARD_DISPLAY_OPTION_KEYS) {
+    const values = new Set(characterItems.map((item) => getEffectiveBoardDisplaySettings(item, table, boardSettings)[key]));
+    if (values.size > 1) mixedKeys.add(key);
+  }
+
+  return mixedKeys;
 }
 
 function getBoardCharacterName(item: BoardAxisItem): string {
@@ -148,8 +184,16 @@ export function shouldSaveBoardCharacterDetails(
   );
 }
 
-function buildGridColumns(table: BoardTable, columns: BoardAxisItem[]): string {
-  return `160px ${columns.map((column) => `${column.size_px ?? table.default_column_width}px`).join(" ")}`;
+function getBoardRowHeaderWidth(rows: BoardAxisItem[]): number {
+  return Math.max(BOARD_ROW_HEADER_FALLBACK_WIDTH, ...rows.map((row) => row.cross_size_px ?? 0));
+}
+
+function getBoardColumnHeaderHeight(columns: BoardAxisItem[]): number {
+  return Math.max(BOARD_COLUMN_HEADER_FALLBACK_HEIGHT, ...columns.map((column) => column.cross_size_px ?? 0));
+}
+
+function buildGridColumns(table: BoardTable, rows: BoardAxisItem[], columns: BoardAxisItem[]): string {
+  return [`${getBoardRowHeaderWidth(rows)}px`, ...columns.map((column) => `${column.size_px ?? table.default_column_width}px`)].join(" ");
 }
 
 function parseBoardAxisSeparator(separatorJson: string | null | undefined): BoardAxisSeparator | null {
@@ -192,8 +236,11 @@ function getEstimatedBoardTableSize(table: BoardTable, axisItems: BoardAxisItem[
   const columnWidth = columns.reduce((total, column) => total + (column.size_px ?? table.default_column_width), 0);
 
   return {
-    width: Math.max(BOARD_TABLE_FALLBACK_WIDTH, 160 + columnWidth + BOARD_TABLE_HORIZONTAL_CHROME),
-    height: Math.max(BOARD_TABLE_FALLBACK_HEIGHT, rowHeight + BOARD_TABLE_VERTICAL_CHROME)
+    width: Math.max(BOARD_TABLE_FALLBACK_WIDTH, getBoardRowHeaderWidth(rows) + columnWidth + BOARD_TABLE_HORIZONTAL_CHROME),
+    height: Math.max(
+      BOARD_TABLE_FALLBACK_HEIGHT,
+      rowHeight + BOARD_TABLE_VERTICAL_CHROME + Math.max(0, getBoardColumnHeaderHeight(columns) - BOARD_COLUMN_HEADER_FALLBACK_HEIGHT)
+    )
   };
 }
 
@@ -213,11 +260,54 @@ function getBoardCanvasStyle(tables: BoardTable[], axisItems: BoardAxisItem[]): 
   } as CSSProperties;
 }
 
+export function applyBoardTableSettingsToAxisItems(
+  axisItems: BoardAxisItem[],
+  tableId: string,
+  input: {
+    defaultRowHeight: number;
+    defaultColumnWidth: number;
+    displaySettings?: BoardDisplaySettings | null | undefined;
+    applyRowSize: boolean;
+    applyColumnSize: boolean;
+    characterSeparator?: BoardAxisSeparator | null | undefined;
+  }
+): BoardAxisItem[] {
+  return axisItems.map((item) => {
+    if (item.table_id !== tableId || item.visible !== 1) return item;
+
+    let next = item;
+    if (input.applyRowSize && item.axis === "row") {
+      next = { ...next, size_px: input.defaultRowHeight };
+    }
+    if (input.applyColumnSize && item.axis === "column") {
+      next = { ...next, size_px: input.defaultColumnWidth };
+    }
+    if (item.kind === "character" && input.characterSeparator !== undefined) {
+      next = {
+        ...next,
+        separator_json: input.characterSeparator === null ? null : JSON.stringify(input.characterSeparator)
+      };
+    }
+    if (item.kind === "character" && input.displaySettings !== undefined) {
+      next = {
+        ...next,
+        display_options_json: input.displaySettings === null ? null : JSON.stringify(input.displaySettings)
+      };
+    }
+
+    return next;
+  });
+}
+
 function getBoardTableStyle(table: BoardTable): CSSProperties {
   return {
     left: `${table.x}px`,
     top: `${table.y}px`
   };
+}
+
+function isBoardTableLocked(table: BoardTable): boolean {
+  return table.locked === 1;
 }
 
 export function BoardOverview({ board, onBoardChanged }: Props) {
@@ -227,14 +317,14 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   const [axisItems, setAxisItems] = useState(board.axisItems);
   const [tables, setTables] = useState(board.tables);
   const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
-  const [sheetName, setSheetName] = useState("");
   const [tableName, setTableName] = useState("");
   const [tableOrientation, setTableOrientation] = useState<BoardOrientation>("custom");
   const [tableDefaultRowHeight, setTableDefaultRowHeight] = useState("40");
   const [tableDefaultColumnWidth, setTableDefaultColumnWidth] = useState("132");
   const [tableDisplaySettings, setTableDisplaySettings] = useState<BoardDisplaySettings>(board.settings);
+  const [isSheetSettingsOpen, setIsSheetSettingsOpen] = useState(false);
   const [isCreateTableOpen, setIsCreateTableOpen] = useState(false);
-  const [pendingAction, setPendingAction] = useState<"sheet" | "table" | null>(null);
+  const [pendingAction, setPendingAction] = useState<"sheet" | "sheet-delete" | "table" | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [editingAxisItem, setEditingAxisItem] = useState<BoardAxisItem | null>(null);
   const [activeTableTool, setActiveTableTool] = useState<ActiveTableTool | null>(null);
@@ -276,6 +366,7 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     taskColor?: string | null,
     separator?: BoardAxisSeparator | null,
     sizePx?: number | null,
+    crossSizePx?: number | null,
     displaySettings?: BoardDisplaySettings | null,
     shouldUpdateDetails = true
   ) {
@@ -287,8 +378,12 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
         displaySettings
       });
     }
-    if (sizePx !== undefined && sizePx !== null) {
-      await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId) + "/size", { sizePx });
+    const sizePatch = {
+      ...(sizePx !== undefined && sizePx !== null ? { sizePx } : {}),
+      ...(crossSizePx !== undefined && crossSizePx !== null ? { crossSizePx } : {})
+    };
+    if (Object.keys(sizePatch).length > 0) {
+      await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId) + "/size", sizePatch);
     }
     setAxisItems((current) =>
       current.map((item) =>
@@ -305,6 +400,7 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
                     : JSON.stringify(separator)
                 : item.separator_json,
               size_px: sizePx === undefined || sizePx === null ? item.size_px : sizePx,
+              cross_size_px: crossSizePx === undefined || crossSizePx === null ? item.cross_size_px : crossSizePx,
               display_options_json:
                 !shouldUpdateDetails || displaySettings === undefined
                   ? item.display_options_json
@@ -355,20 +451,38 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     window.location.reload();
   }
 
-  async function handleCreateSheet(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const name = sheetName.trim();
+  async function handleCreateSheet(nameInput: string) {
+    const name = nameInput.trim();
     if (!name) return;
 
     setPendingAction("sheet");
     setFormError(null);
     try {
       const sheet = await apiPost<{ id: string }>("/api/board/sheets", { name });
-      setSheetName("");
       setActiveSheetId(sheet.id);
+      setIsSheetSettingsOpen(false);
       await refreshBoard();
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "시트를 추가하지 못했습니다.");
+      const message = err instanceof Error ? err.message : "시트를 추가하지 못했습니다.";
+      setFormError(message);
+      throw new Error(message);
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function handleDeleteSheet(sheetId: string) {
+    setPendingAction("sheet-delete");
+    setFormError(null);
+    try {
+      await apiDelete("/api/board/sheets/" + encodeURIComponent(sheetId));
+      if (activeSheet?.id === sheetId) setActiveSheetId(null);
+      setIsSheetSettingsOpen(false);
+      await refreshBoard();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "시트를 삭제하지 못했습니다.";
+      setFormError(message);
+      throw new Error(message);
     } finally {
       setPendingAction(null);
     }
@@ -410,40 +524,46 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
       name: string;
       defaultRowHeight: number;
       defaultColumnWidth: number;
-      displaySettings: BoardDisplaySettings | null;
-      applyRowSize: boolean;
-      applyColumnSize: boolean;
-      characterSeparator?: BoardAxisSeparator | null | undefined;
-    }
-  ) {
-    await apiPatch("/api/board/tables/" + encodeURIComponent(tableId), {
-      name: input.name,
-      defaultRowHeight: input.defaultRowHeight,
-      defaultColumnWidth: input.defaultColumnWidth,
-      displaySettings: input.displaySettings
-    });
+    displaySettings: BoardDisplaySettings | null;
+    applyRowSize: boolean;
+    applyColumnSize: boolean;
+    locked: 0 | 1;
+    characterSeparator?: BoardAxisSeparator | null | undefined;
+  }
+) {
+    const currentTable = tables.find((table) => table.id === tableId);
+    const wasLocked = currentTable ? isBoardTableLocked(currentTable) : false;
     const rows = axisItems.filter((item) => item.table_id === tableId && item.axis === "row" && item.visible === 1);
     const columns = axisItems.filter((item) => item.table_id === tableId && item.axis === "column" && item.visible === 1);
     const characterItems = axisItems.filter((item) => item.table_id === tableId && item.kind === "character" && item.visible === 1);
 
-    if (input.applyRowSize) {
+    if (!wasLocked && input.applyRowSize) {
       await Promise.all(rows.map((item) => apiPatch("/api/board/axis-items/" + encodeURIComponent(item.id) + "/size", { sizePx: input.defaultRowHeight })));
     }
-    if (input.applyColumnSize) {
+    if (!wasLocked && input.applyColumnSize) {
       await Promise.all(
         columns.map((item) => apiPatch("/api/board/axis-items/" + encodeURIComponent(item.id) + "/size", { sizePx: input.defaultColumnWidth }))
       );
     }
-    if (input.characterSeparator !== undefined) {
+    if (!wasLocked && (input.characterSeparator !== undefined || input.displaySettings !== undefined)) {
       await Promise.all(
         characterItems.map((item) =>
           apiPatch("/api/board/axis-items/" + encodeURIComponent(item.id), {
             label: item.label,
-            separator: input.characterSeparator
+            ...(input.characterSeparator !== undefined ? { separator: input.characterSeparator } : {}),
+            ...(input.displaySettings !== undefined ? { displaySettings: input.displaySettings } : {})
           })
         )
       );
     }
+
+    await apiPatch("/api/board/tables/" + encodeURIComponent(tableId), {
+      name: input.name,
+      defaultRowHeight: input.defaultRowHeight,
+      defaultColumnWidth: input.defaultColumnWidth,
+      locked: input.locked,
+      displaySettings: input.displaySettings
+    });
 
     setTables((current) =>
       current.map((table) =>
@@ -453,25 +573,15 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
               name: input.name,
               default_row_height: input.defaultRowHeight,
               default_column_width: input.defaultColumnWidth,
+              locked: input.locked,
               display_options_json: input.displaySettings ? JSON.stringify(input.displaySettings) : null
             }
           : table
       )
     );
-    setAxisItems((current) =>
-      current.map((item) => {
-        if (item.table_id !== tableId) return item;
-        if (input.applyRowSize && item.axis === "row") return { ...item, size_px: input.defaultRowHeight };
-        if (input.applyColumnSize && item.axis === "column") return { ...item, size_px: input.defaultColumnWidth };
-        if (input.characterSeparator !== undefined && item.kind === "character") {
-          return {
-            ...item,
-            separator_json: input.characterSeparator === null ? null : JSON.stringify(input.characterSeparator)
-          };
-        }
-        return item;
-      })
-    );
+    if (!wasLocked) {
+      setAxisItems((current) => applyBoardTableSettingsToAxisItems(current, tableId, input));
+    }
     setEditingTable(null);
   }
 
@@ -482,7 +592,25 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     setEditingTable(null);
   }
 
+  async function handleTableLockToggle(table: BoardTable) {
+    const nextLocked = isBoardTableLocked(table) ? 0 : 1;
+    setFormError(null);
+    try {
+      await apiPatch("/api/board/tables/" + encodeURIComponent(table.id), {
+        name: table.name,
+        defaultRowHeight: table.default_row_height,
+        defaultColumnWidth: table.default_column_width,
+        locked: nextLocked
+      });
+      setTables((current) => current.map((item) => (item.id === table.id ? { ...item, locked: nextLocked } : item)));
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "표 잠금 상태를 저장하지 못했습니다.");
+      await refreshBoard();
+    }
+  }
+
   function handleTableMoveStart(table: BoardTable, event: PointerEvent<HTMLButtonElement>) {
+    if (isBoardTableLocked(table)) return;
     if (event.button !== 0) return;
 
     event.preventDefault();
@@ -558,61 +686,82 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
       {activeTables.length === 0 ? <p className="board-empty">이 시트에는 아직 표가 없습니다.</p> : null}
       {activeTables.length > 0 ? (
         <div className="board-canvas-space">
-          {activeTables.map((table) => (
-            <article
-              key={table.id}
-              className={`board-table-summary${movingTableId === table.id ? " moving" : ""}`}
-              style={getBoardTableStyle(table)}
-            >
-              <div className="board-table-heading">
-                <button
-                  className="board-table-title board-table-move-handle"
-                  type="button"
-                  aria-label={`${table.name} 표 이동`}
-                  title="표 제목을 드래그해서 이동"
-                  onPointerCancel={(event) => finishTableMove(table.id, event)}
-                  onPointerDown={(event) => handleTableMoveStart(table, event)}
-                  onPointerMove={(event) => handleTableMove(table.id, event)}
-                  onPointerUp={(event) => finishTableMove(table.id, event)}
-                >
-                  <strong>{table.name}</strong>
-                </button>
-                <div className="board-table-actions">
-                  <button
-                    type="button"
-                    aria-label={`${table.name} 캐릭터 추가 또는 가져오기`}
-                    title="캐릭터 추가/가져오기"
-                    onClick={() => setActiveTableTool({ table, tool: "characters" })}
-                  >
-                    <UserPlus aria-hidden="true" size={14} />
-                    캐릭터
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`${table.name} 숙제 추가`}
-                    title="숙제 추가"
-                    onClick={() => setActiveTableTool({ table, tool: "tasks" })}
-                  >
-                    <Plus aria-hidden="true" size={14} />
-                    숙제
-                  </button>
-                  <button type="button" aria-label={`${table.name} 표 설정`} title="표 설정" onClick={() => setEditingTable(table)}>
-                    <Settings aria-hidden="true" size={14} />
-                    설정
-                  </button>
+          {activeTables.map((table) => {
+            const locked = isBoardTableLocked(table);
+            return (
+              <article
+                key={table.id}
+                className={`board-table-summary${movingTableId === table.id ? " moving" : ""}${locked ? " locked" : ""}`}
+                style={getBoardTableStyle(table)}
+              >
+                <div className="board-table-heading">
+                  {locked ? (
+                    <div className="board-table-title">
+                      <strong>{table.name}</strong>
+                      <span className="board-table-lock-badge">잠김</span>
+                    </div>
+                  ) : (
+                    <button
+                      className="board-table-title board-table-move-handle"
+                      type="button"
+                      aria-label={`${table.name} 표 이동`}
+                      title="표 제목을 드래그해서 이동"
+                      onPointerCancel={(event) => finishTableMove(table.id, event)}
+                      onPointerDown={(event) => handleTableMoveStart(table, event)}
+                      onPointerMove={(event) => handleTableMove(table.id, event)}
+                      onPointerUp={(event) => finishTableMove(table.id, event)}
+                    >
+                      <strong>{table.name}</strong>
+                    </button>
+                  )}
+                  <div className="board-table-actions">
+                    <button
+                      type="button"
+                      aria-label={`${table.name} 캐릭터 추가 또는 가져오기`}
+                      title={locked ? "잠금을 해제한 뒤 캐릭터를 추가할 수 있습니다." : "캐릭터 추가/가져오기"}
+                      disabled={locked}
+                      onClick={() => setActiveTableTool({ table, tool: "characters" })}
+                    >
+                      <UserPlus aria-hidden="true" size={14} />
+                      캐릭터
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`${table.name} 숙제 추가`}
+                      title={locked ? "잠금을 해제한 뒤 숙제를 추가할 수 있습니다." : "숙제 추가"}
+                      disabled={locked}
+                      onClick={() => setActiveTableTool({ table, tool: "tasks" })}
+                    >
+                      <Plus aria-hidden="true" size={14} />
+                      숙제
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`${table.name} 표 ${locked ? "잠금 해제" : "잠금"}`}
+                      title={locked ? "표 잠금 해제" : "표 잠금"}
+                      onClick={() => void handleTableLockToggle(table)}
+                    >
+                      {locked ? <Unlock aria-hidden="true" size={14} /> : <Lock aria-hidden="true" size={14} />}
+                      {locked ? "해제" : "잠금"}
+                    </button>
+                    <button type="button" aria-label={`${table.name} 표 설정`} title="표 설정" onClick={() => setEditingTable(table)}>
+                      <Settings aria-hidden="true" size={14} />
+                      설정
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <BoardTableGrid
-                axisItems={axisItems}
-                cellStates={cellStates}
-                completions={completions}
-                table={table}
-                onAxisItemEdit={setEditingAxisItem}
-                onToggle={handleCompletionToggle}
-                settings={board.settings}
-              />
-            </article>
-          ))}
+                <BoardTableGrid
+                  axisItems={axisItems}
+                  cellStates={cellStates}
+                  completions={completions}
+                  table={table}
+                  onAxisItemEdit={locked ? undefined : setEditingAxisItem}
+                  onToggle={handleCompletionToggle}
+                  settings={board.settings}
+                />
+              </article>
+            );
+          })}
         </div>
       ) : null}
     </div>
@@ -633,18 +782,10 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
             {sheet.name}
           </button>
         ))}
-        <form className="board-create-form" aria-label="시트 추가" onSubmit={handleCreateSheet}>
-          <input
-            aria-label="새 시트 이름"
-            maxLength={30}
-            placeholder="새 시트"
-            value={sheetName}
-            onChange={(event) => setSheetName(event.currentTarget.value)}
-          />
-          <button disabled={pendingAction === "sheet"} type="submit">
-            시트 추가
-          </button>
-        </form>
+        <button className="sheet-settings-button" type="button" aria-label="시트 설정" title="시트 설정" onClick={() => setIsSheetSettingsOpen(true)}>
+          <Settings aria-hidden="true" size={16} />
+          설정
+        </button>
       </div>
       <div className="board-toolbar">
         <button className="button" disabled={!activeSheet} type="button" onClick={() => setIsCreateTableOpen(true)}>
@@ -654,6 +795,16 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
         {formError ? <p className="board-form-error">{formError}</p> : null}
       </div>
       {boardCanvas}
+      {isSheetSettingsOpen ? (
+        <BoardSheetSettingsModal
+          activeSheetId={activeSheet?.id ?? null}
+          isPending={pendingAction === "sheet" || pendingAction === "sheet-delete"}
+          sheets={sortedSheets}
+          onClose={() => setIsSheetSettingsOpen(false)}
+          onCreate={handleCreateSheet}
+          onDelete={handleDeleteSheet}
+        />
+      ) : null}
       {isCreateTableOpen ? (
         <BoardTableCreateModal
           defaultColumnWidth={tableDefaultColumnWidth}
@@ -707,29 +858,146 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   );
 }
 
-function BoardDisplayOptions({ onChange, settings }: { onChange: (settings: BoardDisplaySettings) => void; settings: BoardDisplaySettings }) {
-  const options: Array<{ key: BoardDisplaySettingKey; label: string }> = [
-    { key: "show_display_name", label: "축약" },
-    { key: "show_server_name", label: "서버" },
-    { key: "show_class_name", label: "직업" },
-    { key: "show_item_level", label: "레벨" },
-    { key: "show_combat_power", label: "전투력" }
-  ];
-
+export function BoardDisplayOptions({
+  disabled = false,
+  mixedKeys,
+  onChange,
+  settings
+}: {
+  disabled?: boolean | undefined;
+  mixedKeys?: ReadonlySet<BoardDisplaySettingKey> | undefined;
+  onChange: (settings: BoardDisplaySettings, changedKey: BoardDisplaySettingKey) => void;
+  settings: BoardDisplaySettings;
+}) {
   return (
     <fieldset className="board-display-options">
       <legend>표시 옵션</legend>
-      {options.map((option) => (
+      {BOARD_DISPLAY_OPTIONS.map((option) => (
         <label key={option.key}>
-          <input
+          <BoardDisplayOptionCheckbox
             checked={settings[option.key] !== 0}
-            type="checkbox"
-            onChange={(event) => onChange({ ...settings, [option.key]: event.currentTarget.checked ? 1 : 0 })}
+            disabled={disabled}
+            mixed={mixedKeys?.has(option.key) ?? false}
+            onChange={(event) => onChange({ ...settings, [option.key]: event.currentTarget.checked ? 1 : 0 }, option.key)}
           />
           {option.label}
         </label>
       ))}
     </fieldset>
+  );
+}
+
+function BoardDisplayOptionCheckbox({
+  checked,
+  disabled,
+  mixed,
+  onChange
+}: {
+  checked: boolean;
+  disabled: boolean;
+  mixed: boolean;
+  onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = mixed;
+  }, [mixed]);
+
+  return <input ref={ref} aria-checked={mixed ? "mixed" : checked} checked={checked} disabled={disabled} type="checkbox" onChange={onChange} />;
+}
+
+export function BoardSheetSettingsModal({
+  activeSheetId,
+  isPending,
+  onClose,
+  onCreate,
+  onDelete,
+  sheets
+}: {
+  activeSheetId: string | null;
+  isPending: boolean;
+  onClose: () => void;
+  onCreate: (name: string) => Promise<void>;
+  onDelete: (sheetId: string) => Promise<void>;
+  sheets: BoardSheet[];
+}) {
+  const [newSheetName, setNewSheetName] = useState("");
+  const [deleteSheetId, setDeleteSheetId] = useState(activeSheetId ?? sheets[0]?.id ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const canDelete = sheets.length > 1 && Boolean(deleteSheetId);
+
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newSheetName.trim();
+    if (!name) return;
+
+    setError(null);
+    try {
+      await onCreate(name);
+      setNewSheetName("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "시트를 추가하지 못했습니다.");
+    }
+  }
+
+  async function remove() {
+    if (!canDelete) return;
+
+    setError(null);
+    try {
+      await onDelete(deleteSheetId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "시트를 삭제하지 못했습니다.");
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="tool-modal edit-modal sheet-settings-modal" aria-modal="true" role="dialog" aria-label="시트 설정">
+        <header className="tool-modal-header">
+          <h2>시트 설정</h2>
+          <button className="modal-close-button" type="button" aria-label="닫기" onClick={onClose}>
+            <X aria-hidden="true" size={18} />
+          </button>
+        </header>
+        <div className="tool-modal-body edit-form">
+          <form className="sheet-settings-section" onSubmit={create}>
+            <label>
+              새 시트
+              <input
+                aria-label="새 시트 이름"
+                maxLength={30}
+                placeholder="새 시트"
+                value={newSheetName}
+                onChange={(event) => setNewSheetName(event.currentTarget.value)}
+              />
+            </label>
+            <button className="primary-button" disabled={isPending || !newSheetName.trim()} type="submit">
+              <Plus aria-hidden="true" size={16} />
+              시트 추가
+            </button>
+          </form>
+          <div className="sheet-settings-section">
+            <label>
+              삭제할 시트
+              <select aria-label="삭제할 시트" value={deleteSheetId} onChange={(event) => setDeleteSheetId(event.currentTarget.value)}>
+                {sheets.map((sheet) => (
+                  <option key={sheet.id} value={sheet.id}>
+                    {sheet.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="danger-button" disabled={isPending || !canDelete} type="button" onClick={() => void remove()}>
+              <Trash2 aria-hidden="true" size={16} />
+              시트 삭제
+            </button>
+          </div>
+          {error ? <p className="error-text">{error}</p> : null}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -894,6 +1162,7 @@ function BoardTableSettingsModal({
       displaySettings: BoardDisplaySettings | null;
       applyRowSize: boolean;
       applyColumnSize: boolean;
+      locked: 0 | 1;
       characterSeparator?: BoardAxisSeparator | null | undefined;
     }
   ) => Promise<void>;
@@ -904,6 +1173,8 @@ function BoardTableSettingsModal({
   const [rowHeight, setRowHeight] = useState(String(table.default_row_height));
   const [columnWidth, setColumnWidth] = useState(String(table.default_column_width));
   const [displaySettings, setDisplaySettings] = useState(parseBoardDisplaySettings(table.display_options_json) ?? settings);
+  const [locked, setLocked] = useState(isBoardTableLocked(table));
+  const [touchedDisplayKeys, setTouchedDisplayKeys] = useState<Set<BoardDisplaySettingKey>>(() => new Set());
   const [applyRowSize, setApplyRowSize] = useState(true);
   const [applyColumnSize, setApplyColumnSize] = useState(true);
   const [applyCharacterSeparator, setApplyCharacterSeparator] = useState(false);
@@ -914,6 +1185,21 @@ function BoardTableSettingsModal({
   const [error, setError] = useState<string | null>(null);
   const characterSeparators = axisItems.filter((item) => item.kind === "character").map((item) => item.separator_json ?? null);
   const mixedCharacterSeparators = new Set(characterSeparators).size > 1;
+  const mixedDisplayKeys = useMemo(() => getMixedBoardDisplaySettingKeys(axisItems, table, settings), [axisItems, table, settings]);
+  const structureLocked = isBoardTableLocked(table);
+  const visibleMixedDisplayKeys = useMemo(
+    () => new Set([...mixedDisplayKeys].filter((key) => !touchedDisplayKeys.has(key))),
+    [mixedDisplayKeys, touchedDisplayKeys]
+  );
+
+  function updateDisplaySettings(nextSettings: BoardDisplaySettings, changedKey: BoardDisplaySettingKey) {
+    setDisplaySettings(nextSettings);
+    setTouchedDisplayKeys((current) => {
+      const next = new Set(current);
+      next.add(changedKey);
+      return next;
+    });
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -924,9 +1210,10 @@ function BoardTableSettingsModal({
         name: name.trim(),
         defaultRowHeight: normalizeBoundedIntegerDraft(rowHeight, { min: 16, max: 1024, fallback: table.default_row_height }),
         defaultColumnWidth: normalizeBoundedIntegerDraft(columnWidth, { min: 16, max: 1024, fallback: table.default_column_width }),
-        displaySettings,
+        displaySettings: structureLocked ? parseBoardDisplaySettings(table.display_options_json) : displaySettings,
         applyRowSize,
         applyColumnSize,
+        locked: locked ? 1 : 0,
         characterSeparator: applyCharacterSeparator
           ? {
               widthPx: normalizeBoundedIntegerDraft(separatorWidthPx, { min: 1, max: 8, fallback: 2 }),
@@ -962,22 +1249,40 @@ function BoardTableSettingsModal({
           </button>
         </header>
         <form className="tool-modal-body edit-form" onSubmit={submit}>
+          <label className="toggle-row table-lock-toggle">
+            <input checked={locked} type="checkbox" onChange={(event) => setLocked(event.currentTarget.checked)} />
+            표 잠금
+          </label>
+          {structureLocked ? <p className="compact-notice">잠긴 표는 체크 완료/해제만 가능하며, 잠금을 해제한 뒤 다시 열면 구조를 수정할 수 있습니다.</p> : null}
           <label>
             표 이름
-            <input maxLength={30} value={name} onChange={(event) => setName(event.currentTarget.value)} />
+            <input disabled={structureLocked} maxLength={30} value={name} onChange={(event) => setName(event.currentTarget.value)} />
           </label>
           <div className="compact-edit-grid">
             <label>
               행 높이 일괄값
-              <input max={1024} min={16} type="number" value={rowHeight} onChange={(event) => setRowHeight(event.currentTarget.value)} />
+              <input
+                disabled={structureLocked}
+                max={1024}
+                min={16}
+                type="number"
+                value={rowHeight}
+                onChange={(event) => setRowHeight(event.currentTarget.value)}
+              />
               <span className="inline-check">
-                <input checked={applyRowSize} type="checkbox" onChange={(event) => setApplyRowSize(event.currentTarget.checked)} />
+                <input
+                  checked={applyRowSize}
+                  disabled={structureLocked}
+                  type="checkbox"
+                  onChange={(event) => setApplyRowSize(event.currentTarget.checked)}
+                />
                 기존 행 적용
               </span>
             </label>
             <label>
               열 너비 일괄값
               <input
+                disabled={structureLocked}
                 max={1024}
                 min={16}
                 type="number"
@@ -985,7 +1290,12 @@ function BoardTableSettingsModal({
                 onChange={(event) => setColumnWidth(event.currentTarget.value)}
               />
               <span className="inline-check">
-                <input checked={applyColumnSize} type="checkbox" onChange={(event) => setApplyColumnSize(event.currentTarget.checked)} />
+                <input
+                  checked={applyColumnSize}
+                  disabled={structureLocked}
+                  type="checkbox"
+                  onChange={(event) => setApplyColumnSize(event.currentTarget.checked)}
+                />
                 기존 열 적용
               </span>
             </label>
@@ -998,6 +1308,7 @@ function BoardTableSettingsModal({
             <label className="toggle-row">
               <input
                 checked={applyCharacterSeparator}
+                disabled={structureLocked}
                 type="checkbox"
                 onChange={(event) => setApplyCharacterSeparator(event.currentTarget.checked)}
               />
@@ -1008,6 +1319,7 @@ function BoardTableSettingsModal({
                 <label>
                   두께
                   <input
+                    disabled={structureLocked}
                     max={8}
                     min={1}
                     type="number"
@@ -1017,7 +1329,11 @@ function BoardTableSettingsModal({
                 </label>
                 <label>
                   종류
-                  <select value={separatorStyle} onChange={(event) => setSeparatorStyle(event.currentTarget.value as BoardAxisSeparator["style"])}>
+                  <select
+                    disabled={structureLocked}
+                    value={separatorStyle}
+                    onChange={(event) => setSeparatorStyle(event.currentTarget.value as BoardAxisSeparator["style"])}
+                  >
                     <option value="solid">실선</option>
                     <option value="dashed">파선</option>
                     <option value="dotted">점선</option>
@@ -1028,6 +1344,7 @@ function BoardTableSettingsModal({
                   <input
                     aria-label={`${table.name} 캐릭터 구분선 색상`}
                     className="color-edit-input"
+                    disabled={structureLocked}
                     type="color"
                     value={separatorColor}
                     onChange={(event) => setSeparatorColor(event.currentTarget.value)}
@@ -1036,10 +1353,10 @@ function BoardTableSettingsModal({
               </div>
             ) : null}
           </fieldset>
-          <BoardDisplayOptions settings={displaySettings} onChange={setDisplaySettings} />
+          <BoardDisplayOptions disabled={structureLocked} mixedKeys={visibleMixedDisplayKeys} settings={displaySettings} onChange={updateDisplaySettings} />
           {error ? <p className="error-text">{error}</p> : null}
           <div className="edit-actions">
-            <button className="danger-button" disabled={pending !== null} type="button" onClick={() => void remove()}>
+            <button className="danger-button" disabled={pending !== null || structureLocked} type="button" onClick={() => void remove()}>
               <Trash2 aria-hidden="true" size={16} />
               표 삭제
             </button>
@@ -1067,7 +1384,7 @@ function BoardTableGrid({
   cellStates: BoardPayload["cellStates"];
   completions: BoardPayload["completions"];
   table: BoardTable;
-  onAxisItemEdit: (item: BoardAxisItem) => void;
+  onAxisItemEdit?: ((item: BoardAxisItem) => void) | undefined;
   onToggle: (patch: BoardCompletionPatch) => void;
   settings: BoardDisplaySettings;
 }) {
@@ -1088,15 +1405,57 @@ function BoardTableGrid({
       .map((completion) => cellKey(completion.row_item_id, completion.column_item_id))
   );
 
-  if (rows.length === 0 || columns.length === 0) {
+  if (rows.length === 0 && columns.length === 0) {
     return <p className="board-empty">이 표에는 아직 행 또는 열이 없습니다.</p>;
   }
 
+  if (rows.length === 0) {
+    const columnHeaderHeight = getBoardColumnHeaderHeight(columns);
+    return (
+      <div className="board-check-grid" style={{ gridTemplateColumns: buildGridColumns(table, rows, columns) }}>
+        <div className="board-axis-corner" style={{ minHeight: `${columnHeaderHeight}px` }} />
+        {columns.map((column) => (
+          <BoardColumnHeader
+            key={column.id}
+            column={column}
+            columnHeaderHeight={columnHeaderHeight}
+            onAxisItemEdit={onAxisItemEdit}
+            settings={settings}
+            table={table}
+          />
+        ))}
+        <p className="board-empty board-grid-empty-state" style={{ gridColumn: `1 / span ${columns.length + 1}` }}>
+          행이 없습니다.
+        </p>
+      </div>
+    );
+  }
+
+  if (columns.length === 0) {
+    return (
+      <div className="board-check-grid" style={{ gridTemplateColumns: buildGridColumns(table, rows, columns) }}>
+        <div className="board-axis-corner" />
+        <p className="board-empty board-grid-empty-state">열이 없습니다.</p>
+        {rows.map((row) => (
+          <BoardRowHeader key={row.id} onAxisItemEdit={onAxisItemEdit} row={row} rowHeight={row.size_px ?? table.default_row_height} settings={settings} table={table} />
+        ))}
+      </div>
+    );
+  }
+
+  const columnHeaderHeight = getBoardColumnHeaderHeight(columns);
   return (
-    <div className="board-check-grid" style={{ gridTemplateColumns: buildGridColumns(table, columns) }}>
-      <div className="board-axis-corner" />
+    <div className="board-check-grid" style={{ gridTemplateColumns: buildGridColumns(table, rows, columns) }}>
+      <div className="board-axis-corner" style={{ minHeight: `${columnHeaderHeight}px` }} />
       {columns.map((column) => (
-        <BoardColumnHeader key={column.id} column={column} onAxisItemEdit={onAxisItemEdit} settings={settings} table={table} />
+        <BoardColumnHeader
+          key={column.id}
+          column={column}
+          columnHeaderHeight={columnHeaderHeight}
+          onAxisItemEdit={onAxisItemEdit}
+          settings={settings}
+          table={table}
+        />
       ))}
       {rows.map((row) => (
         <BoardGridRow
@@ -1116,14 +1475,43 @@ function BoardTableGrid({
   );
 }
 
+function BoardRowHeader({
+  onAxisItemEdit,
+  row,
+  rowHeight,
+  settings,
+  table
+}: {
+  onAxisItemEdit?: ((item: BoardAxisItem) => void) | undefined;
+  row: BoardAxisItem;
+  rowHeight: number;
+  settings: BoardDisplaySettings;
+  table: BoardTable;
+}) {
+  const rowSeparator = getSeparatorBorder(row);
+
+  return (
+    <BoardAxisLabel
+      className="board-axis-label board-row-label"
+      item={row}
+      onEdit={onAxisItemEdit ? () => onAxisItemEdit(row) : undefined}
+      style={{ minHeight: `${rowHeight}px`, ...(rowSeparator ? { borderBottom: rowSeparator } : {}) }}
+    >
+      <BoardAxisLabelText item={row} settings={getEffectiveBoardDisplaySettings(row, table, settings)} />
+    </BoardAxisLabel>
+  );
+}
+
 function BoardColumnHeader({
   column,
+  columnHeaderHeight,
   onAxisItemEdit,
   settings,
   table
 }: {
   column: BoardAxisItem;
-  onAxisItemEdit: (item: BoardAxisItem) => void;
+  columnHeaderHeight: number;
+  onAxisItemEdit?: ((item: BoardAxisItem) => void) | undefined;
   settings: BoardDisplaySettings;
   table: BoardTable;
 }) {
@@ -1133,8 +1521,8 @@ function BoardColumnHeader({
     <BoardAxisLabel
       className="board-axis-label board-column-label"
       item={column}
-      onEdit={() => onAxisItemEdit(column)}
-      style={columnSeparator ? { borderRight: columnSeparator } : undefined}
+      onEdit={onAxisItemEdit ? () => onAxisItemEdit(column) : undefined}
+      style={{ minHeight: `${columnHeaderHeight}px`, ...(columnSeparator ? { borderRight: columnSeparator } : {}) }}
     >
       <BoardAxisLabelText item={column} settings={getEffectiveBoardDisplaySettings(column, table, settings)} />
     </BoardAxisLabel>
@@ -1185,7 +1573,7 @@ function BoardAxisLabel({
   children: ReactNode;
   className: string;
   item: BoardAxisItem;
-  onEdit?: () => void;
+  onEdit?: (() => void) | undefined;
   style?: CSSProperties | undefined;
 }) {
   if (onEdit) {
@@ -1216,26 +1604,18 @@ function BoardGridRow({
   columns: BoardAxisItem[];
   completedCells: Set<string>;
   hiddenCells: Set<string>;
-  onAxisItemEdit: (item: BoardAxisItem) => void;
+  onAxisItemEdit?: ((item: BoardAxisItem) => void) | undefined;
   onToggle: (patch: BoardCompletionPatch) => void;
   row: BoardAxisItem;
   rowHeight: number;
   settings: BoardDisplaySettings;
   table: BoardTable;
 }) {
-  const rowSeparator = getSeparatorBorder(row);
-
   return (
     <>
-      <BoardAxisLabel
-        className="board-axis-label board-row-label"
-        item={row}
-        onEdit={() => onAxisItemEdit(row)}
-        style={{ minHeight: `${rowHeight}px`, ...(rowSeparator ? { borderBottom: rowSeparator } : {}) }}
-      >
-        <BoardAxisLabelText item={row} settings={getEffectiveBoardDisplaySettings(row, table, settings)} />
-      </BoardAxisLabel>
+      <BoardRowHeader onAxisItemEdit={onAxisItemEdit} row={row} rowHeight={rowHeight} settings={settings} table={table} />
       {columns.map((column) => {
+        const rowSeparator = getSeparatorBorder(row);
         const key = cellKey(row.id, column.id);
         const taskColor = getTaskColor(row, column);
         const colorStyle = taskColor ? ({ "--task-color": taskColor } as CSSProperties) : undefined;
@@ -1307,6 +1687,7 @@ export function BoardAxisItemEditModal({
     taskColor?: string | null,
     separator?: BoardAxisSeparator | null,
     sizePx?: number | null,
+    crossSizePx?: number | null,
     displaySettings?: BoardDisplaySettings | null,
     shouldUpdateDetails?: boolean
   ) => Promise<void>;
@@ -1314,7 +1695,9 @@ export function BoardAxisItemEditModal({
   const initialSeparator = parseBoardAxisSeparator(item.separator_json);
   const [label, setLabel] = useState(item.label);
   const sizeFallback = item.axis === "row" ? table?.default_row_height ?? 40 : table?.default_column_width ?? 132;
+  const crossSizeFallback = item.axis === "row" ? BOARD_ROW_HEADER_FALLBACK_WIDTH : BOARD_COLUMN_HEADER_FALLBACK_HEIGHT;
   const [sizePx, setSizePx] = useState(String(item.size_px ?? sizeFallback));
+  const [crossSizePx, setCrossSizePx] = useState(String(item.cross_size_px ?? crossSizeFallback));
   const [characterDisplayName, setCharacterDisplayName] = useState(item.character_display_name ?? "");
   const [characterItemLevel, setCharacterItemLevel] = useState(item.character_item_level ?? "");
   const [characterCombatPower, setCharacterCombatPower] = useState(item.character_combat_power ?? "");
@@ -1374,6 +1757,7 @@ export function BoardAxisItemEditModal({
         isTaskItem ? taskColor : undefined,
         separator,
         normalizeBoundedIntegerDraft(sizePx, { min: 16, max: 1024, fallback: sizeFallback }),
+        normalizeBoundedIntegerDraft(crossSizePx, { min: 16, max: 1024, fallback: crossSizeFallback }),
         isCharacterItem ? displaySettings : undefined,
         shouldUpdateAxisDetails
       );
@@ -1447,16 +1831,28 @@ export function BoardAxisItemEditModal({
               </label>
             </div>
           ) : null}
-          <label>
-            {item.axis === "row" ? "행 높이" : "열 너비"}
-            <input
-              max={1024}
-              min={16}
-              type="number"
-              value={sizePx}
-              onChange={(event) => setSizePx(event.currentTarget.value)}
-            />
-          </label>
+          <div className="compact-edit-grid axis-size-edit-grid">
+            <label>
+              {item.axis === "row" ? "행 높이" : "열 너비"}
+              <input
+                max={1024}
+                min={16}
+                type="number"
+                value={sizePx}
+                onChange={(event) => setSizePx(event.currentTarget.value)}
+              />
+            </label>
+            <label>
+              {item.axis === "row" ? "행 너비" : "열 높이"}
+              <input
+                max={1024}
+                min={16}
+                type="number"
+                value={crossSizePx}
+                onChange={(event) => setCrossSizePx(event.currentTarget.value)}
+              />
+            </label>
+          </div>
           {isTaskItem ? (
             <label>
               체크 색상
