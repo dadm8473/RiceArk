@@ -27,6 +27,7 @@ describe("createTaskSchema", () => {
   it("rejects unsafe task names", () => {
     expect(createTaskSchema.safeParse({ name: "쿠르잔🙂", resetType: "daily" }).success).toBe(false);
     expect(createTaskSchema.safeParse({ name: "쿠르잔\u200B전선", resetType: "daily" }).success).toBe(false);
+    expect(createTaskSchema.safeParse({ name: "쿠르잔\u0301전선", resetType: "daily" }).success).toBe(false);
   });
 });
 

@@ -17,9 +17,10 @@ export const completionPatchSchema = z.object({
         periodKey: periodKeySchema,
         completed: z.boolean()
       })
+      .strict()
     )
     .max(200)
-});
+}).strict();
 
 export const dashboardRoutes = new Hono<{ Bindings: Env }>();
 

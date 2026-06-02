@@ -18,6 +18,7 @@ export const taskOrderSchema = z
   .object({
     taskIds: z.array(resourceIdSchema).max(200)
   })
+  .strict()
   .refine((input) => !hasDuplicates(input.taskIds), {
     message: "Duplicate task ids are not allowed",
     path: ["taskIds"]
@@ -31,18 +32,18 @@ export const createTaskSchema = z.object({
   resetType: z.enum(["daily", "weekly", "biweekly", "custom"]),
   anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   intervalDays: z.number().int().min(1).max(365).optional()
-});
+}).strict();
 
 export const updateTaskSchema = z.object({
   name: safeTaskNameSchema,
   resetType: z.enum(["daily", "weekly", "biweekly", "custom"]),
   anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   intervalDays: z.number().int().min(1).max(365).optional()
-});
+}).strict();
 
 export const taskIdParamSchema = z.object({
   id: resourceIdSchema
-});
+}).strict();
 
 taskRoutes.patch(
   "/tasks/order",

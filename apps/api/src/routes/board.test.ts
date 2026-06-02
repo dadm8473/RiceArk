@@ -11,6 +11,8 @@ import {
   createBoardAxisItemSchema,
   createBoardSheetSchema,
   createBoardTableSchema,
+  importBoardCharactersSchema,
+  updateBoardTableSettingsSchema,
   updateBoardAxisItemSchema
 } from "./board";
 
@@ -215,6 +217,54 @@ describe("board route schemas", () => {
     expect(createBoardSheetSchema.safeParse({ name: "" }).success).toBe(false);
     expect(createBoardTableSchema.safeParse({ sheetId: "sheet🙂", name: "숙제", orientation: "tasks_rows" }).success).toBe(false);
     expect(createBoardTableSchema.safeParse({ sheetId: "sheet-1", name: "숙제", orientation: "unknown" }).success).toBe(false);
+    expect(createBoardTableSchema.safeParse({ sheetId: "sheet-1", name: "숙제", orientation: "custom", extra: "x" }).success).toBe(false);
+    expect(
+      createBoardTableSchema.safeParse({
+        sheetId: "sheet-1",
+        name: "숙제",
+        orientation: "custom",
+        defaultRowHeight: 9999
+      }).success
+    ).toBe(false);
+  });
+
+  it("validates board table settings strictly", () => {
+    expect(
+      updateBoardTableSettingsSchema.safeParse({
+        name: "숙제",
+        defaultRowHeight: 40,
+        defaultColumnWidth: 132,
+        displaySettings: {
+          show_display_name: 1,
+          show_server_name: 0,
+          show_class_name: 0,
+          show_item_level: 1,
+          show_combat_power: 0
+        }
+      }).success
+    ).toBe(true);
+    expect(
+      updateBoardTableSettingsSchema.safeParse({
+        name: "숙제",
+        defaultRowHeight: 40,
+        defaultColumnWidth: 132,
+        applyRowSize: true
+      }).success
+    ).toBe(false);
+    expect(
+      updateBoardTableSettingsSchema.safeParse({
+        name: "숙제",
+        defaultRowHeight: 40,
+        defaultColumnWidth: 132,
+        displaySettings: {
+          show_display_name: 2,
+          show_server_name: 0,
+          show_class_name: 0,
+          show_item_level: 1,
+          show_combat_power: 0
+        }
+      }).success
+    ).toBe(false);
   });
 
   it("accepts normalized custom axis item labels for board tables", () => {
@@ -278,6 +328,36 @@ describe("board route schemas", () => {
       updateBoardAxisItemSchema.safeParse({
         label: "카제로스",
         separator: { widthPx: 2, style: "double", color: "#334455" }
+      }).success
+    ).toBe(false);
+    expect(updateBoardAxisItemSchema.safeParse({ label: "카제로스", unknown: true }).success).toBe(false);
+  });
+
+  it("rejects unsafe table-scoped character imports", () => {
+    expect(
+      importBoardCharactersSchema.safeParse({
+        characters: [
+          {
+            name: "냠수 나이스1",
+            serverName: "아만",
+            className: "브레이커",
+            itemLevel: "1,778.33",
+            combatPower: "2,549.41"
+          }
+        ]
+      }).success
+    ).toBe(false);
+    expect(
+      importBoardCharactersSchema.safeParse({
+        characters: [
+          {
+            name: "냠수나이스1",
+            serverName: "아만🙂",
+            className: "브레이커",
+            itemLevel: "1,778.33",
+            combatPower: "2,549.41"
+          }
+        ]
       }).success
     ).toBe(false);
   });

@@ -11,7 +11,7 @@ const densitySettingsSchema = z.object({
   density: z.enum(["comfortable", "default", "compact"]),
   rowHeight: z.number().int().min(28).max(72),
   columnWidth: z.number().int().min(96).max(220)
-});
+}).strict();
 
 const characterDisplaySettingsSchema = z.object({
   characterDisplay: z.object({
@@ -20,15 +20,15 @@ const characterDisplaySettingsSchema = z.object({
     className: z.boolean(),
     itemLevel: z.boolean(),
     combatPower: z.boolean()
-  })
-});
+  }).strict()
+}).strict();
 
 export const settingsPatchSchema = z.union([
   densitySettingsSchema,
   characterDisplaySettingsSchema,
   z.object({
     checklistOrientation: z.enum(["tasks_rows", "tasks_columns"])
-  })
+  }).strict()
 ]);
 
 settingsRoutes.patch(

@@ -337,7 +337,12 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
       characterSeparator?: BoardAxisSeparator | null | undefined;
     }
   ) {
-    await apiPatch("/api/board/tables/" + encodeURIComponent(tableId), input);
+    await apiPatch("/api/board/tables/" + encodeURIComponent(tableId), {
+      name: input.name,
+      defaultRowHeight: input.defaultRowHeight,
+      defaultColumnWidth: input.defaultColumnWidth,
+      displaySettings: input.displaySettings
+    });
     const rows = axisItems.filter((item) => item.table_id === tableId && item.axis === "row" && item.visible === 1);
     const columns = axisItems.filter((item) => item.table_id === tableId && item.axis === "column" && item.visible === 1);
     const characterItems = axisItems.filter((item) => item.table_id === tableId && item.kind === "character" && item.visible === 1);

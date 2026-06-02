@@ -19,7 +19,7 @@ export const characterRoutes = new Hono<{ Bindings: Env }>();
 
 export const characterDisplayNameSchema = z.object({
   displayName: safeText({ allowEmpty: true, maxChars: 20 }).nullable()
-});
+}).strict();
 
 export const lostArkCharacterNameSchema = safeText({ maxChars: LOSTARK_CHARACTER_NAME_MAX_LENGTH }).refine(isValidLostArkCharacterName, {
   message: "Lost Ark character name must be 12 characters or fewer and contain only Hangul, Latin letters, or numbers"
@@ -27,25 +27,34 @@ export const lostArkCharacterNameSchema = safeText({ maxChars: LOSTARK_CHARACTER
 
 export const characterSearchSchema = z.object({
   name: lostArkCharacterNameSchema
-});
+}).strict();
 
 const editableCharacterText = (max: number) => safeText({ maxChars: max });
 const optionalEditableCharacterText = (max: number) => safeText({ allowEmpty: true, maxChars: max }).nullable();
+export const numericCharacterStatPattern = /^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?$/;
+export const numericCharacterStatText = safeText({ maxChars: 20 }).refine((value) => numericCharacterStatPattern.test(value), {
+  message: "Character stat must be numeric"
+});
+export const optionalNumericCharacterStatText = safeText({ allowEmpty: true, maxChars: 20 })
+  .nullable()
+  .refine((value) => value === null || value === "" || numericCharacterStatPattern.test(value), {
+    message: "Character stat must be numeric"
+  });
 
 export const characterDetailsSchema = z
   .object({
     displayName: optionalEditableCharacterText(20),
     serverName: editableCharacterText(20),
     className: editableCharacterText(20),
-    itemLevel: editableCharacterText(20),
-    combatPower: optionalEditableCharacterText(20),
+    itemLevel: numericCharacterStatText,
+    combatPower: optionalNumericCharacterStatText,
     memo: safeText({ allowEmpty: true, maxBytes: 1024, maxChars: 200, multiline: true }).nullable()
   })
   .strict();
 
 export const characterIdParamSchema = z.object({
   id: resourceIdSchema
-});
+}).strict();
 
 function hasDuplicates(values: string[]): boolean {
   return new Set(values).size !== values.length;
@@ -55,6 +64,7 @@ export const characterOrderSchema = z
   .object({
     characterIds: z.array(resourceIdSchema).max(100)
   })
+  .strict()
   .refine((input) => !hasDuplicates(input.characterIds), {
     message: "Duplicate character ids are not allowed",
     path: ["characterIds"]
@@ -144,13 +154,14 @@ characterRoutes.post(
             name: lostArkCharacterNameSchema,
             serverName: editableCharacterText(20),
             className: editableCharacterText(20),
-            itemLevel: editableCharacterText(20),
-            combatPower: optionalEditableCharacterText(20).optional()
+            itemLevel: numericCharacterStatText,
+            combatPower: optionalNumericCharacterStatText.optional()
           })
+          .strict()
         )
         .min(1)
         .max(30)
-    })
+    }).strict()
   ),
   async (c) => {
     const user = await requireUser(c);

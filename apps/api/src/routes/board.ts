@@ -27,7 +27,7 @@ import {
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
 import { periodKeySchema, resourceIdSchema, safeText } from "../http/input";
-import { lostArkCharacterNameSchema } from "./characters";
+import { lostArkCharacterNameSchema, numericCharacterStatText, optionalNumericCharacterStatText } from "./characters";
 import { createTaskSchema } from "./tasks";
 
 const safeBoardNameSchema = safeText({ maxChars: 30, maxBytes: 120 });
@@ -39,14 +39,14 @@ const boardAxisSeparatorSchema = z.object({
   widthPx: z.number().int().min(1).max(8),
   style: z.enum(["solid", "dashed", "dotted"]),
   color: boardTaskColorSchema
-});
+}).strict();
 const boardDisplaySettingsSchema = z.object({
   show_display_name: z.union([z.literal(0), z.literal(1)]),
   show_server_name: z.union([z.literal(0), z.literal(1)]),
   show_class_name: z.union([z.literal(0), z.literal(1)]),
   show_item_level: z.union([z.literal(0), z.literal(1)]),
   show_combat_power: z.union([z.literal(0), z.literal(1)])
-});
+}).strict();
 const boardDefaultRowHeightSchema = z.number().int().min(16).max(1024);
 const boardDefaultColumnWidthSchema = z.number().int().min(16).max(1024);
 
@@ -58,7 +58,7 @@ function hasDuplicates(values: string[]): boolean {
 
 export const createBoardSheetSchema = z.object({
   name: safeBoardNameSchema
-});
+}).strict();
 
 export const createBoardTableSchema = z.object({
   sheetId: resourceIdSchema,
@@ -67,13 +67,13 @@ export const createBoardTableSchema = z.object({
   defaultRowHeight: boardDefaultRowHeightSchema.optional(),
   defaultColumnWidth: boardDefaultColumnWidthSchema.optional(),
   displaySettings: boardDisplaySettingsSchema.nullable().optional()
-});
+}).strict();
 
 export const createBoardAxisItemSchema = z.object({
   tableId: resourceIdSchema,
   axis: z.enum(["row", "column"]),
   label: safeBoardNameSchema
-});
+}).strict();
 
 export const boardAxisOrderSchema = z
   .object({
@@ -81,6 +81,7 @@ export const boardAxisOrderSchema = z
     axis: z.enum(["row", "column"]),
     axisItemIds: z.array(resourceIdSchema).max(300)
   })
+  .strict()
   .refine((input) => !hasDuplicates(input.axisItemIds), {
     message: "Duplicate board axis item ids are not allowed",
     path: ["axisItemIds"]
@@ -91,14 +92,14 @@ export const updateBoardAxisItemSchema = z.object({
   taskColor: boardTaskColorSchema.nullable().optional(),
   separator: boardAxisSeparatorSchema.nullable().optional(),
   displaySettings: boardDisplaySettingsSchema.nullable().optional()
-});
+}).strict();
 
 export const updateBoardTableSettingsSchema = z.object({
   name: safeBoardNameSchema,
   defaultRowHeight: boardDefaultRowHeightSchema,
   defaultColumnWidth: boardDefaultColumnWidthSchema,
   displaySettings: boardDisplaySettingsSchema.nullable().optional()
-});
+}).strict();
 
 export const importBoardCharactersSchema = z.object({
   characters: z
@@ -107,13 +108,14 @@ export const importBoardCharactersSchema = z.object({
         name: lostArkCharacterNameSchema,
         serverName: safeText({ maxChars: 20 }),
         className: safeText({ maxChars: 20 }),
-        itemLevel: safeText({ maxChars: 20 }),
-        combatPower: safeText({ allowEmpty: true, maxChars: 20 }).nullable().optional()
+        itemLevel: numericCharacterStatText,
+        combatPower: optionalNumericCharacterStatText.optional()
       })
+      .strict()
     )
     .min(1)
     .max(30)
-});
+}).strict();
 
 export const boardCompletionPatchSchema = z.object({
   patches: z
@@ -125,39 +127,40 @@ export const boardCompletionPatchSchema = z.object({
         periodKey: periodKeySchema,
         completed: z.boolean()
       })
+      .strict()
     )
     .max(200)
-});
+}).strict();
 
 export const boardCellStatePatchSchema = z.object({
   tableId: resourceIdSchema,
   rowItemId: resourceIdSchema,
   columnItemId: resourceIdSchema,
   checkboxVisible: z.boolean()
-});
+}).strict();
 
 export const boardCellStatePatchBatchSchema = z.object({
   patches: z.array(boardCellStatePatchSchema).max(200)
-});
+}).strict();
 
 export const boardAxisSizePatchSchema = z.object({
   sizePx: z.number().int().min(16).max(1024)
-});
+}).strict();
 
 export const boardAxisItemIdParamSchema = z.object({
   id: resourceIdSchema
-});
+}).strict();
 
 export const boardTableIdParamSchema = z.object({
   id: resourceIdSchema
-});
+}).strict();
 
 export const boardTableLayoutPatchSchema = z.object({
   x: z.number().int().min(0).max(10000),
   y: z.number().int().min(0).max(10000),
   width: z.number().int().min(160).max(4000).nullable(),
   height: z.number().int().min(120).max(4000).nullable()
-});
+}).strict();
 
 export const boardRoutes = new Hono<{ Bindings: Env }>();
 

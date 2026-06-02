@@ -106,6 +106,29 @@ describe("characterDetailsSchema", () => {
     ).toBe(false);
   });
 
+  it("rejects non-numeric character level and combat power text", () => {
+    expect(
+      characterDetailsSchema.safeParse({
+        displayName: "냠1",
+        serverName: "루페온",
+        className: "소서리스",
+        itemLevel: "높음",
+        combatPower: "2,549.41",
+        memo: null
+      }).success
+    ).toBe(false);
+    expect(
+      characterDetailsSchema.safeParse({
+        displayName: "냠1",
+        serverName: "루페온",
+        className: "소서리스",
+        itemLevel: "1,640.00",
+        combatPower: "전투력높음",
+        memo: null
+      }).success
+    ).toBe(false);
+  });
+
   it("normalizes safe editable character text", () => {
     expect(
       characterDetailsSchema.parse({

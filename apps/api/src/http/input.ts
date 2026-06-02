@@ -4,6 +4,7 @@ const DISALLOWED_SINGLE_LINE_CONTROL = /\p{Cc}/u;
 const DISALLOWED_MULTI_LINE_CONTROL = /[\u0000-\u0009\u000B\u000C\u000E-\u001F\u007F-\u009F]/u;
 const DISALLOWED_FORMAT_OR_PRIVATE = /[\p{Cf}\p{Cs}\p{Co}\p{Cn}]/u;
 const DISALLOWED_EMOJI = /\p{Extended_Pictographic}/u;
+const DISALLOWED_COMBINING_MARK = /\p{M}/u;
 
 export interface SafeTextOptions {
   allowEmpty?: boolean;
@@ -53,7 +54,12 @@ export function safeText(options: SafeTextOptions) {
       const hasControl = options.multiline
         ? DISALLOWED_MULTI_LINE_CONTROL.test(value)
         : DISALLOWED_SINGLE_LINE_CONTROL.test(value);
-      if (hasControl || DISALLOWED_FORMAT_OR_PRIVATE.test(value) || DISALLOWED_EMOJI.test(value)) {
+      if (
+        hasControl ||
+        DISALLOWED_FORMAT_OR_PRIVATE.test(value) ||
+        DISALLOWED_EMOJI.test(value) ||
+        DISALLOWED_COMBINING_MARK.test(value)
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "Text contains unsupported characters"
