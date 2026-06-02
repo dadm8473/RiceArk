@@ -52,6 +52,8 @@ const BOARD_CANVAS_MIN_WIDTH = 480;
 const BOARD_CANVAS_MIN_HEIGHT = 260;
 const BOARD_TABLE_FALLBACK_WIDTH = 360;
 const BOARD_TABLE_FALLBACK_HEIGHT = 240;
+const BOARD_TABLE_HORIZONTAL_CHROME = 30;
+const BOARD_TABLE_VERTICAL_CHROME = 96;
 
 function cellKey(rowItemId: string, columnItemId: string): string {
   return JSON.stringify([rowItemId, columnItemId]);
@@ -131,6 +133,21 @@ function getBoardCharacterMeta(item: BoardAxisItem, settings: BoardDisplaySettin
   ].filter((value): value is string => Boolean(value));
 }
 
+export function shouldSaveBoardCharacterDetails(
+  item: BoardAxisItem,
+  displayName: string,
+  itemLevel: string,
+  combatPower: string
+): boolean {
+  if (item.kind !== "character" || !item.character_id) return false;
+
+  return (
+    displayName.trim() !== (item.character_display_name ?? "") ||
+    itemLevel.trim() !== (item.character_item_level ?? "") ||
+    combatPower.trim() !== (item.character_combat_power ?? "")
+  );
+}
+
 function buildGridColumns(table: BoardTable, columns: BoardAxisItem[]): string {
   return `160px ${columns.map((column) => `${column.size_px ?? table.default_column_width}px`).join(" ")}`;
 }
@@ -161,14 +178,33 @@ function getSeparatorBorder(item: BoardAxisItem): string | undefined {
   return separator ? `${separator.widthPx}px ${separator.style} ${separator.color}` : undefined;
 }
 
-function getBoardCanvasStyle(tables: BoardTable[]): CSSProperties {
+function getEstimatedBoardTableSize(table: BoardTable, axisItems: BoardAxisItem[]): { width: number; height: number } {
+  const rows = axisItems.filter((item) => item.table_id === table.id && item.axis === "row" && item.visible === 1);
+  const columns = axisItems.filter((item) => item.table_id === table.id && item.axis === "column" && item.visible === 1);
+  if (rows.length === 0 || columns.length === 0) {
+    return {
+      width: BOARD_TABLE_FALLBACK_WIDTH,
+      height: BOARD_TABLE_FALLBACK_HEIGHT
+    };
+  }
+
+  const rowHeight = rows.reduce((total, row) => total + (row.size_px ?? table.default_row_height), 0);
+  const columnWidth = columns.reduce((total, column) => total + (column.size_px ?? table.default_column_width), 0);
+
+  return {
+    width: Math.max(BOARD_TABLE_FALLBACK_WIDTH, 160 + columnWidth + BOARD_TABLE_HORIZONTAL_CHROME),
+    height: Math.max(BOARD_TABLE_FALLBACK_HEIGHT, rowHeight + BOARD_TABLE_VERTICAL_CHROME)
+  };
+}
+
+function getBoardCanvasStyle(tables: BoardTable[], axisItems: BoardAxisItem[]): CSSProperties {
   const width = Math.max(
     BOARD_CANVAS_MIN_WIDTH,
-    ...tables.map((table) => table.x + BOARD_TABLE_FALLBACK_WIDTH)
+    ...tables.map((table) => table.x + getEstimatedBoardTableSize(table, axisItems).width)
   );
   const height = Math.max(
     BOARD_CANVAS_MIN_HEIGHT,
-    ...tables.map((table) => table.y + BOARD_TABLE_FALLBACK_HEIGHT)
+    ...tables.map((table) => table.y + getEstimatedBoardTableSize(table, axisItems).height)
   );
 
   return {
@@ -518,7 +554,7 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     .sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name));
 
   const boardCanvas = (
-    <div className="board-canvas" style={getBoardCanvasStyle(activeTables)}>
+    <div className="board-canvas" style={getBoardCanvasStyle(activeTables, axisItems)}>
       {activeTables.length === 0 ? <p className="board-empty">이 시트에는 아직 표가 없습니다.</p> : null}
       {activeTables.length > 0 ? (
         <div className="board-canvas-space">
@@ -1134,7 +1170,7 @@ function BoardAxisLabelText({
           style={{ background: item.task_color }}
         />
       ) : null}
-      <span>{item.label}</span>
+      <span className="board-task-label">{item.label}</span>
     </span>
   );
 }
@@ -1321,7 +1357,11 @@ export function BoardAxisItemEditModal({
     setPending("save");
     setError(null);
     try {
-      if (isImportedCharacterItem && item.character_id) {
+      if (
+        isImportedCharacterItem &&
+        item.character_id &&
+        shouldSaveBoardCharacterDetails(item, characterDisplayName, characterItemLevel, characterCombatPower)
+      ) {
         await onCharacterSave(item.character_id, {
           displayName: normalizedCharacterDisplayName ? normalizedCharacterDisplayName : null,
           itemLevel: normalizedCharacterItemLevel,
@@ -1372,7 +1412,6 @@ export function BoardAxisItemEditModal({
           )}
           {isCharacterItem ? (
             <div className="character-detail-panel">
-              <strong>캐릭터 정보</strong>
               <span>서버 {item.character_server_name ?? "-"}</span>
               <span>닉네임 {getBoardCharacterName(item)}</span>
               <span>직업 {item.character_class_name ?? "-"}</span>

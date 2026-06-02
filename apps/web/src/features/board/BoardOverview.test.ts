@@ -1,8 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { BoardAxisItemEditModal, BoardOverview } from "./BoardOverview";
-import type { BoardPayload } from "./types";
+import { BoardAxisItemEditModal, BoardOverview, shouldSaveBoardCharacterDetails } from "./BoardOverview";
+import type { BoardAxisItem, BoardPayload } from "./types";
 
 const board: BoardPayload = {
   userId: "user-1",
@@ -283,6 +283,26 @@ describe("BoardOverview", () => {
     expect(html).not.toContain("width:100%");
   });
 
+  it("sizes the board canvas to include all visible rows", () => {
+    const manyRows: BoardAxisItem[] = Array.from({ length: 8 }, (_, index) => ({
+      ...board.axisItems[0]!,
+      id: `row-task-${index + 1}`,
+      label: `숙제 ${index + 1}`,
+      sort_order: index * 10,
+      size_px: 40
+    }));
+    const html = renderToStaticMarkup(
+      createElement(BoardOverview, {
+        board: {
+          ...board,
+          axisItems: [...manyRows, board.axisItems[1]!]
+        }
+      })
+    );
+
+    expect(html).toContain("--board-canvas-height:416px");
+  });
+
   it("renders imported character identity as read-only while editing mutable details", () => {
     const characterItem = {
       ...board.axisItems[1]!,
@@ -304,7 +324,7 @@ describe("BoardOverview", () => {
       })
     );
 
-    expect(html).toContain("캐릭터 정보");
+    expect(html).not.toContain("캐릭터 정보");
     expect(html).toContain("서버 아만");
     expect(html).toContain("닉네임 냠수나이스1");
     expect(html).toContain("직업 브레이커");
@@ -314,5 +334,18 @@ describe("BoardOverview", () => {
     expect(html).toContain('value="2,549.41"');
     expect(html).not.toContain('value="아만"');
     expect(html).not.toContain('value="브레이커"');
+  });
+
+  it("does not save character details when only display options change", () => {
+    const characterItem = {
+      ...board.axisItems[1]!,
+      character_display_name: "냠1",
+      character_item_level: "1,778.33",
+      character_combat_power: "2,549.41"
+    };
+
+    expect(shouldSaveBoardCharacterDetails(characterItem, "냠1", "1,778.33", "2,549.41")).toBe(false);
+    expect(shouldSaveBoardCharacterDetails(characterItem, "냠2", "1,778.33", "2,549.41")).toBe(true);
+    expect(shouldSaveBoardCharacterDetails(characterItem, "냠1", "1,779.00", "2,549.41")).toBe(true);
   });
 });

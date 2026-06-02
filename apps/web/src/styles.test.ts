@@ -70,4 +70,20 @@ describe("matrix styles", () => {
     expect(characterAxisBlock).toContain("text-align: center;");
     expect(characterLabelBlock).toContain("text-overflow: ellipsis;");
   });
+
+  it("does not clip task color swatches with generic row span overflow", () => {
+    const swatchBlock = styles.match(/\.board-task-color-swatch\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(styles).not.toContain(".board-column-label span,\n.board-row-label span");
+    expect(swatchBlock).toContain("overflow: visible;");
+  });
+
+  it("keeps the table move target compact even when the title is long", () => {
+    const titleBlock = styles.match(/\.board-table-title\s*{[^}]+}/)?.[0] ?? "";
+    const titleTextBlock = styles.match(/\.board-table-title strong\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(titleBlock).toContain("flex: 0 1 auto;");
+    expect(titleBlock).toContain("max-width: 180px;");
+    expect(titleTextBlock).toContain("text-overflow: ellipsis;");
+  });
 });

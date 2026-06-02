@@ -316,18 +316,11 @@ body {
   background: #e8eef7;
 }
 
-.board-column-label span,
-.board-row-label span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .board-axis-label-text {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
 }
 
 .board-character-axis-label {
@@ -362,6 +355,14 @@ body {
   height: 10px;
   border: 1px solid #ffffff;
   box-shadow: 0 0 0 1px #9aa8ba;
+  overflow: visible;
+}
+
+.board-task-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .board-row-label {
@@ -425,7 +426,8 @@ body {
   align-items: center;
   justify-content: flex-start;
   min-width: 0;
-  flex: 1 1 auto;
+  max-width: 180px;
+  flex: 0 1 auto;
 }
 
 .board-table-move-handle {
@@ -439,6 +441,13 @@ body {
   touch-action: none;
   cursor: grab;
   user-select: none;
+}
+
+.board-table-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .board-table-move-handle:hover {
