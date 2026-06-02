@@ -231,10 +231,10 @@ describe("BoardOverview", () => {
     expect(html).not.toContain('aria-label="숙제 높이"');
   });
 
-  it("does not render direct table move and resize handles", () => {
+  it("renders table movement without direct resize handles", () => {
     const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
 
-    expect(html).not.toContain('aria-label="숙제 표 이동"');
+    expect(html).toContain('aria-label="숙제 표 이동"');
     expect(html).not.toContain('aria-label="숙제 표 크기 조절"');
   });
 

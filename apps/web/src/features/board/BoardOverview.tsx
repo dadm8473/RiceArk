@@ -1,9 +1,15 @@
 import { Columns3, Plus, Rows3, Save, Settings, Trash2, UserPlus, X } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent, type ReactNode } from "react";
 import { apiDelete, apiPatch, apiPost } from "../../api/client";
 import { CharacterImport } from "../characters/CharacterImport";
 import { TaskForm } from "../tasks/TaskForm";
 import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
+import {
+  applyBoardTableLayoutPatch,
+  getBoardTableMovePatch,
+  type BoardTableLayoutPatch,
+  type BoardTableLayoutPointerStart
+} from "./tableLayout";
 import type { BoardAxisItem, BoardOrientation, BoardPayload, BoardTable } from "./types";
 import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
 
@@ -32,6 +38,13 @@ interface BoardAxisSeparator {
 interface ActiveTableTool {
   table: BoardTable;
   tool: "characters" | "tasks";
+}
+
+interface TableMoveSession {
+  tableId: string;
+  pointerId: number;
+  start: BoardTableLayoutPointerStart;
+  patch: BoardTableLayoutPatch | null;
 }
 
 const BOARD_CANVAS_MIN_WIDTH = 480;
@@ -194,6 +207,8 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   const [editingAxisItem, setEditingAxisItem] = useState<BoardAxisItem | null>(null);
   const [activeTableTool, setActiveTableTool] = useState<ActiveTableTool | null>(null);
   const [editingTable, setEditingTable] = useState<BoardTable | null>(null);
+  const [movingTableId, setMovingTableId] = useState<string | null>(null);
+  const tableMoveSessionRef = useRef<TableMoveSession | null>(null);
   const sortedSheets = useMemo(
     () => board.sheets.slice().sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name)),
     [board.sheets]
@@ -403,6 +418,65 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     setEditingTable(null);
   }
 
+  function handleTableMoveStart(table: BoardTable, event: PointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setFormError(null);
+    setMovingTableId(table.id);
+    tableMoveSessionRef.current = {
+      tableId: table.id,
+      pointerId: event.pointerId,
+      start: {
+        x: table.x,
+        y: table.y,
+        width: table.width,
+        height: table.height,
+        pointerX: event.clientX,
+        pointerY: event.clientY
+      },
+      patch: null
+    };
+  }
+
+  function handleTableMove(tableId: string, event: PointerEvent<HTMLButtonElement>) {
+    const session = tableMoveSessionRef.current;
+    if (!session || session.tableId !== tableId || session.pointerId !== event.pointerId) return;
+
+    const patch = getBoardTableMovePatch(session.start, {
+      pointerX: event.clientX,
+      pointerY: event.clientY
+    });
+    session.patch = patch;
+    setTables((current) => applyBoardTableLayoutPatch(current, tableId, patch));
+  }
+
+  function finishTableMove(tableId: string, event: PointerEvent<HTMLButtonElement>) {
+    const session = tableMoveSessionRef.current;
+    if (!session || session.tableId !== tableId || session.pointerId !== event.pointerId) return;
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    tableMoveSessionRef.current = null;
+    setMovingTableId(null);
+
+    if (session.patch) {
+      void persistTableLayout(tableId, session.patch);
+    }
+  }
+
+  async function persistTableLayout(tableId: string, patch: BoardTableLayoutPatch) {
+    try {
+      await apiPatch("/api/board/tables/" + encodeURIComponent(tableId) + "/layout", patch);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "표 위치를 저장하지 못했습니다.");
+      await refreshBoard();
+    }
+  }
+
   if (!activeSheet) {
     return (
       <section className="board-overview" aria-label="보드">
@@ -421,11 +495,24 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
       {activeTables.length > 0 ? (
         <div className="board-canvas-space">
           {activeTables.map((table) => (
-            <article key={table.id} className="board-table-summary" style={getBoardTableStyle(table)}>
+            <article
+              key={table.id}
+              className={`board-table-summary${movingTableId === table.id ? " moving" : ""}`}
+              style={getBoardTableStyle(table)}
+            >
               <div className="board-table-heading">
-                <div className="board-table-title">
+                <button
+                  className="board-table-title board-table-move-handle"
+                  type="button"
+                  aria-label={`${table.name} 표 이동`}
+                  title="표 제목을 드래그해서 이동"
+                  onPointerCancel={(event) => finishTableMove(table.id, event)}
+                  onPointerDown={(event) => handleTableMoveStart(table, event)}
+                  onPointerMove={(event) => handleTableMove(table.id, event)}
+                  onPointerUp={(event) => finishTableMove(table.id, event)}
+                >
                   <strong>{table.name}</strong>
-                </div>
+                </button>
                 <div className="board-table-actions">
                   <button
                     type="button"

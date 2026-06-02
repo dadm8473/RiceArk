@@ -53,4 +53,21 @@ describe("matrix styles", () => {
     expect(styles).toContain("@keyframes spin");
     expect(spinBlock).toContain("animation: spin 1s linear infinite;");
   });
+
+  it("keeps edit modal checkboxes at one compact size", () => {
+    const checkboxBlock = styles.match(/\.edit-form input\[type="checkbox"\]\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(checkboxBlock).toContain("width: 16px;");
+    expect(checkboxBlock).toContain("height: 16px;");
+    expect(checkboxBlock).toContain("min-height: 0;");
+  });
+
+  it("centers character names in board axis labels", () => {
+    const characterAxisBlock = styles.match(/\.board-character-axis-label\s*{[^}]+}/)?.[0] ?? "";
+    const characterLabelBlock = styles.match(/\.board-character-label\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(characterAxisBlock).toContain("align-items: center;");
+    expect(characterAxisBlock).toContain("text-align: center;");
+    expect(characterLabelBlock).toContain("text-overflow: ellipsis;");
+  });
 });
