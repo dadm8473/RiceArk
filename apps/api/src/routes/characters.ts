@@ -44,11 +44,9 @@ export const optionalNumericCharacterStatText = safeText({ allowEmpty: true, max
 export const characterDetailsSchema = z
   .object({
     displayName: optionalEditableCharacterText(20),
-    serverName: editableCharacterText(20),
-    className: editableCharacterText(20),
     itemLevel: numericCharacterStatText,
     combatPower: optionalNumericCharacterStatText,
-    memo: safeText({ allowEmpty: true, maxBytes: 1024, maxChars: 200, multiline: true }).nullable()
+    memo: safeText({ allowEmpty: true, maxBytes: 1024, maxChars: 200, multiline: true }).nullable().optional()
   })
   .strict();
 
@@ -104,11 +102,9 @@ characterRoutes.patch(
     const normalized = {
       ...input,
       displayName: input.displayName?.trim() ? input.displayName.trim() : null,
-      serverName: input.serverName.trim(),
-      className: input.className.trim(),
       itemLevel: input.itemLevel.trim(),
       combatPower: input.combatPower?.trim() ? input.combatPower.trim() : null,
-      memo: input.memo?.trim() ? input.memo.trim() : null
+      memo: input.memo === undefined ? undefined : input.memo?.trim() ? input.memo.trim() : null
     };
     const updated = await updateCharacterDetails(c.env, user.id, id, normalized);
     if (!updated) throw new ApiError(404, "character_not_found", "Character not found");

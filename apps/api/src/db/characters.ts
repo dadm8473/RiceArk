@@ -52,31 +52,26 @@ export async function updateCharacterDetails(
   characterId: string,
   input: {
     displayName: string | null;
-    serverName: string;
-    className: string;
     itemLevel: string;
     combatPower: string | null;
-    memo: string | null;
+    memo?: string | null | undefined;
   }
 ): Promise<boolean> {
   const result = await env.DB.prepare(
     `UPDATE characters
      SET display_name = ?,
-         server_name = ?,
-         class_name = ?,
          item_level = ?,
          combat_power = ?,
-         memo = ?,
+         memo = CASE WHEN ? = 1 THEN ? ELSE memo END,
          updated_at = CURRENT_TIMESTAMP
      WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL`
   )
     .bind(
       input.displayName,
-      input.serverName,
-      input.className,
       input.itemLevel,
       input.combatPower,
-      input.memo,
+      input.memo !== undefined ? 1 : 0,
+      input.memo ?? null,
       characterId,
       userId
     )

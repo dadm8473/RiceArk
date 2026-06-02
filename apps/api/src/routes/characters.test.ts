@@ -38,33 +38,41 @@ describe("characterSearchSchema", () => {
 });
 
 describe("characterDetailsSchema", () => {
-  it("accepts editable character details except the character name", () => {
+  it("accepts editable character details except immutable identity fields", () => {
     expect(
       characterDetailsSchema.parse({
         displayName: "냠1",
-        serverName: "루페온",
-        className: "소서리스",
         itemLevel: "1,640.00",
         combatPower: "2,549.41",
         memo: "상아탑 고정"
       })
     ).toMatchObject({
       displayName: "냠1",
-      serverName: "루페온",
-      className: "소서리스",
       itemLevel: "1,640.00",
       combatPower: "2,549.41",
       memo: "상아탑 고정"
     });
   });
 
-  it("does not accept character name edits", () => {
+  it("does not accept character identity edits", () => {
     expect(
       characterDetailsSchema.safeParse({
         name: "다른이름",
         displayName: "냠1",
-        serverName: "루페온",
-        className: "소서리스",
+        itemLevel: "1,640.00"
+      }).success
+    ).toBe(false);
+    expect(
+      characterDetailsSchema.safeParse({
+        displayName: "냠1",
+        serverName: "카단",
+        itemLevel: "1,640.00"
+      }).success
+    ).toBe(false);
+    expect(
+      characterDetailsSchema.safeParse({
+        displayName: "냠1",
+        className: "도화가",
         itemLevel: "1,640.00"
       }).success
     ).toBe(false);
@@ -74,9 +82,7 @@ describe("characterDetailsSchema", () => {
     expect(
       characterDetailsSchema.safeParse({
         displayName: null,
-        serverName: " ",
-        className: "소서리스",
-        itemLevel: "1,640.00",
+        itemLevel: " ",
         combatPower: null,
         memo: null
       }).success
@@ -87,18 +93,14 @@ describe("characterDetailsSchema", () => {
     expect(
       characterDetailsSchema.safeParse({
         displayName: "냠1",
-        serverName: "루\u0000페온",
-        className: "소서리스",
         itemLevel: "1,640.00",
         combatPower: "2,549.41",
-        memo: "상아탑 고정"
+        memo: "상아탑\u0000고정"
       }).success
     ).toBe(false);
     expect(
       characterDetailsSchema.safeParse({
         displayName: "냠1",
-        serverName: "루페온",
-        className: "소서리스",
         itemLevel: "1,640.00",
         combatPower: "2,549.41",
         memo: "메모🙂"
@@ -110,8 +112,6 @@ describe("characterDetailsSchema", () => {
     expect(
       characterDetailsSchema.safeParse({
         displayName: "냠1",
-        serverName: "루페온",
-        className: "소서리스",
         itemLevel: "높음",
         combatPower: "2,549.41",
         memo: null
@@ -120,8 +120,6 @@ describe("characterDetailsSchema", () => {
     expect(
       characterDetailsSchema.safeParse({
         displayName: "냠1",
-        serverName: "루페온",
-        className: "소서리스",
         itemLevel: "1,640.00",
         combatPower: "전투력높음",
         memo: null
@@ -133,15 +131,12 @@ describe("characterDetailsSchema", () => {
     expect(
       characterDetailsSchema.parse({
         displayName: "  ＮＡＭ１  ",
-        serverName: " 루페온 ",
-        className: "소서리스",
         itemLevel: "１,６４０.００",
         combatPower: "２,５４９.４１",
         memo: "  상아탑\r\n고정  "
       })
     ).toMatchObject({
       displayName: "NAM1",
-      serverName: "루페온",
       itemLevel: "1,640.00",
       combatPower: "2,549.41",
       memo: "상아탑\n고정"

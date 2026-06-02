@@ -343,8 +343,6 @@ export function CharacterEditModal({
   onClose: () => void;
 }) {
   const [displayName, setDisplayName] = useState(character.display_name ?? "");
-  const [serverName, setServerName] = useState(character.server_name);
-  const [className, setClassName] = useState(character.class_name);
   const [itemLevel, setItemLevel] = useState(character.item_level);
   const [combatPower, setCombatPower] = useState(character.combat_power ?? "");
   const [memo, setMemo] = useState(character.memo ?? "");
@@ -359,8 +357,6 @@ export function CharacterEditModal({
     try {
       await apiPatch(`/api/characters/${character.id}`, {
         displayName,
-        serverName,
-        className,
         itemLevel,
         combatPower: combatPower.trim() ? combatPower : null,
         memo: memo.trim() ? memo : null
@@ -395,18 +391,15 @@ export function CharacterEditModal({
             <span>캐릭터 이름</span>
             <strong>{character.name}</strong>
           </div>
+          <div className="character-detail-panel">
+            <span>서버 {character.server_name}</span>
+            <span>닉네임 {character.name}</span>
+            <span>직업 {character.class_name}</span>
+          </div>
           <div className="compact-edit-grid">
             <label>
               축약 이름
               <input maxLength={20} placeholder={character.name} value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
-            </label>
-            <label>
-              서버
-              <input maxLength={20} value={serverName} onChange={(event) => setServerName(event.target.value)} />
-            </label>
-            <label>
-              직업
-              <input maxLength={20} value={className} onChange={(event) => setClassName(event.target.value)} />
             </label>
             <label>
               레벨

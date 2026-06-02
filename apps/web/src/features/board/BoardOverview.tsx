@@ -4,6 +4,7 @@ import { apiDelete, apiPatch, apiPost } from "../../api/client";
 import { CharacterImport } from "../characters/CharacterImport";
 import { TaskForm } from "../tasks/TaskForm";
 import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
+import { normalizeBoundedIntegerDraft } from "./numberInput";
 import {
   applyBoardTableLayoutPatch,
   getBoardTableMovePatch,
@@ -160,11 +161,6 @@ function getSeparatorBorder(item: BoardAxisItem): string | undefined {
   return separator ? `${separator.widthPx}px ${separator.style} ${separator.color}` : undefined;
 }
 
-function normalizeAxisSize(value: number): number | null {
-  if (!Number.isFinite(value)) return null;
-  return Math.min(1024, Math.max(16, Math.round(value)));
-}
-
 function getBoardCanvasStyle(tables: BoardTable[]): CSSProperties {
   const width = Math.max(
     BOARD_CANVAS_MIN_WIDTH,
@@ -198,8 +194,8 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
   const [sheetName, setSheetName] = useState("");
   const [tableName, setTableName] = useState("");
   const [tableOrientation, setTableOrientation] = useState<BoardOrientation>("custom");
-  const [tableDefaultRowHeight, setTableDefaultRowHeight] = useState(40);
-  const [tableDefaultColumnWidth, setTableDefaultColumnWidth] = useState(132);
+  const [tableDefaultRowHeight, setTableDefaultRowHeight] = useState("40");
+  const [tableDefaultColumnWidth, setTableDefaultColumnWidth] = useState("132");
   const [tableDisplaySettings, setTableDisplaySettings] = useState<BoardDisplaySettings>(board.settings);
   const [isCreateTableOpen, setIsCreateTableOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<"sheet" | "table" | null>(null);
@@ -244,14 +240,17 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
     taskColor?: string | null,
     separator?: BoardAxisSeparator | null,
     sizePx?: number | null,
-    displaySettings?: BoardDisplaySettings | null
+    displaySettings?: BoardDisplaySettings | null,
+    shouldUpdateDetails = true
   ) {
-    await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId), {
-      label,
-      taskColor,
-      separator,
-      displaySettings
-    });
+    if (shouldUpdateDetails) {
+      await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId), {
+        label,
+        taskColor,
+        separator,
+        displaySettings
+      });
+    }
     if (sizePx !== undefined && sizePx !== null) {
       await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId) + "/size", { sizePx });
     }
@@ -260,12 +259,18 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
         item.id === axisItemId
           ? {
               ...item,
-              label,
-              task_color: taskColor === undefined ? item.task_color : taskColor,
-              separator_json: separator === undefined ? item.separator_json : separator === null ? null : JSON.stringify(separator),
+              label: shouldUpdateDetails ? label : item.label,
+              task_color: shouldUpdateDetails && taskColor !== undefined ? taskColor : item.task_color,
+              separator_json: shouldUpdateDetails
+                ? separator === undefined
+                  ? item.separator_json
+                  : separator === null
+                    ? null
+                    : JSON.stringify(separator)
+                : item.separator_json,
               size_px: sizePx === undefined || sizePx === null ? item.size_px : sizePx,
               display_options_json:
-                displaySettings === undefined
+                !shouldUpdateDetails || displaySettings === undefined
                   ? item.display_options_json
                   : displaySettings === null
                     ? null
@@ -275,6 +280,29 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
       )
     );
     setEditingAxisItem(null);
+  }
+
+  async function handleBoardCharacterSave(
+    characterId: string,
+    input: {
+      displayName: string | null;
+      itemLevel: string;
+      combatPower: string | null;
+    }
+  ) {
+    await apiPatch("/api/characters/" + encodeURIComponent(characterId), input);
+    setAxisItems((current) =>
+      current.map((item) =>
+        item.character_id === characterId
+          ? {
+              ...item,
+              character_display_name: input.displayName,
+              character_item_level: input.itemLevel,
+              character_combat_power: input.combatPower
+            }
+          : item
+      )
+    );
   }
 
   async function handleAxisItemDelete(axisItemId: string) {
@@ -322,14 +350,14 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
         sheetId: activeSheet.id,
         name,
         orientation: tableOrientation,
-        defaultRowHeight: tableDefaultRowHeight,
-        defaultColumnWidth: tableDefaultColumnWidth,
+        defaultRowHeight: normalizeBoundedIntegerDraft(tableDefaultRowHeight, { min: 16, max: 1024, fallback: 40 }),
+        defaultColumnWidth: normalizeBoundedIntegerDraft(tableDefaultColumnWidth, { min: 16, max: 1024, fallback: 132 }),
         displaySettings: tableDisplaySettings
       });
       setTableName("");
       setTableOrientation("custom");
-      setTableDefaultRowHeight(40);
-      setTableDefaultColumnWidth(132);
+      setTableDefaultRowHeight("40");
+      setTableDefaultColumnWidth("132");
       setTableDisplaySettings(board.settings);
       setIsCreateTableOpen(false);
       await refreshBoard();
@@ -624,6 +652,7 @@ export function BoardOverview({ board, onBoardChanged }: Props) {
           settings={board.settings}
           table={tables.find((table) => table.id === editingAxisItem.table_id) ?? null}
           onClose={() => setEditingAxisItem(null)}
+          onCharacterSave={handleBoardCharacterSave}
           onDelete={handleAxisItemDelete}
           onSave={handleAxisItemSave}
         />
@@ -711,14 +740,14 @@ function BoardTableCreateModal({
   onSubmit,
   orientation
 }: {
-  defaultColumnWidth: number;
-  defaultRowHeight: number;
+  defaultColumnWidth: string;
+  defaultRowHeight: string;
   displaySettings: BoardDisplaySettings;
   isPending: boolean;
   name: string;
   onClose: () => void;
-  onDefaultColumnWidthChange: (value: number) => void;
-  onDefaultRowHeightChange: (value: number) => void;
+  onDefaultColumnWidthChange: (value: string) => void;
+  onDefaultRowHeightChange: (value: string) => void;
   onDisplaySettingsChange: (settings: BoardDisplaySettings) => void;
   onNameChange: (name: string) => void;
   onOrientationChange: (orientation: BoardOrientation) => void;
@@ -780,7 +809,7 @@ function BoardTableCreateModal({
                 min={16}
                 type="number"
                 value={defaultRowHeight}
-                onChange={(event) => onDefaultRowHeightChange(normalizeAxisSize(Number(event.currentTarget.value)) ?? 40)}
+                onChange={(event) => onDefaultRowHeightChange(event.currentTarget.value)}
               />
             </label>
             <label>
@@ -790,7 +819,7 @@ function BoardTableCreateModal({
                 min={16}
                 type="number"
                 value={defaultColumnWidth}
-                onChange={(event) => onDefaultColumnWidthChange(normalizeAxisSize(Number(event.currentTarget.value)) ?? 132)}
+                onChange={(event) => onDefaultColumnWidthChange(event.currentTarget.value)}
               />
             </label>
           </div>
@@ -836,13 +865,13 @@ function BoardTableSettingsModal({
   table: BoardTable;
 }) {
   const [name, setName] = useState(table.name);
-  const [rowHeight, setRowHeight] = useState(table.default_row_height);
-  const [columnWidth, setColumnWidth] = useState(table.default_column_width);
+  const [rowHeight, setRowHeight] = useState(String(table.default_row_height));
+  const [columnWidth, setColumnWidth] = useState(String(table.default_column_width));
   const [displaySettings, setDisplaySettings] = useState(parseBoardDisplaySettings(table.display_options_json) ?? settings);
   const [applyRowSize, setApplyRowSize] = useState(true);
   const [applyColumnSize, setApplyColumnSize] = useState(true);
   const [applyCharacterSeparator, setApplyCharacterSeparator] = useState(false);
-  const [separatorWidthPx, setSeparatorWidthPx] = useState(2);
+  const [separatorWidthPx, setSeparatorWidthPx] = useState("2");
   const [separatorStyle, setSeparatorStyle] = useState<BoardAxisSeparator["style"]>("solid");
   const [separatorColor, setSeparatorColor] = useState("#64748b");
   const [pending, setPending] = useState<"save" | "delete" | null>(null);
@@ -857,14 +886,14 @@ function BoardTableSettingsModal({
     try {
       await onSave(table.id, {
         name: name.trim(),
-        defaultRowHeight: normalizeAxisSize(rowHeight) ?? 40,
-        defaultColumnWidth: normalizeAxisSize(columnWidth) ?? 132,
+        defaultRowHeight: normalizeBoundedIntegerDraft(rowHeight, { min: 16, max: 1024, fallback: table.default_row_height }),
+        defaultColumnWidth: normalizeBoundedIntegerDraft(columnWidth, { min: 16, max: 1024, fallback: table.default_column_width }),
         displaySettings,
         applyRowSize,
         applyColumnSize,
         characterSeparator: applyCharacterSeparator
           ? {
-              widthPx: Math.min(8, Math.max(1, Math.round(separatorWidthPx))),
+              widthPx: normalizeBoundedIntegerDraft(separatorWidthPx, { min: 1, max: 8, fallback: 2 }),
               style: separatorStyle,
               color: separatorColor
             }
@@ -904,7 +933,7 @@ function BoardTableSettingsModal({
           <div className="compact-edit-grid">
             <label>
               행 높이 일괄값
-              <input max={1024} min={16} type="number" value={rowHeight} onChange={(event) => setRowHeight(Number(event.currentTarget.value))} />
+              <input max={1024} min={16} type="number" value={rowHeight} onChange={(event) => setRowHeight(event.currentTarget.value)} />
               <span className="inline-check">
                 <input checked={applyRowSize} type="checkbox" onChange={(event) => setApplyRowSize(event.currentTarget.checked)} />
                 기존 행 적용
@@ -917,7 +946,7 @@ function BoardTableSettingsModal({
                 min={16}
                 type="number"
                 value={columnWidth}
-                onChange={(event) => setColumnWidth(Number(event.currentTarget.value))}
+                onChange={(event) => setColumnWidth(event.currentTarget.value)}
               />
               <span className="inline-check">
                 <input checked={applyColumnSize} type="checkbox" onChange={(event) => setApplyColumnSize(event.currentTarget.checked)} />
@@ -947,7 +976,7 @@ function BoardTableSettingsModal({
                     min={1}
                     type="number"
                     value={separatorWidthPx}
-                    onChange={(event) => setSeparatorWidthPx(Number(event.currentTarget.value))}
+                    onChange={(event) => setSeparatorWidthPx(event.currentTarget.value)}
                   />
                 </label>
                 <label>
@@ -1214,9 +1243,10 @@ function BoardGridRow({
   );
 }
 
-function BoardAxisItemEditModal({
+export function BoardAxisItemEditModal({
   item,
   onClose,
+  onCharacterSave,
   onDelete,
   onSave,
   settings,
@@ -1226,6 +1256,14 @@ function BoardAxisItemEditModal({
   settings: BoardDisplaySettings;
   table: BoardTable | null;
   onClose: () => void;
+  onCharacterSave: (
+    characterId: string,
+    input: {
+      displayName: string | null;
+      itemLevel: string;
+      combatPower: string | null;
+    }
+  ) => Promise<void>;
   onDelete: (axisItemId: string) => Promise<void>;
   onSave: (
     axisItemId: string,
@@ -1233,18 +1271,24 @@ function BoardAxisItemEditModal({
     taskColor?: string | null,
     separator?: BoardAxisSeparator | null,
     sizePx?: number | null,
-    displaySettings?: BoardDisplaySettings | null
+    displaySettings?: BoardDisplaySettings | null,
+    shouldUpdateDetails?: boolean
   ) => Promise<void>;
 }) {
   const initialSeparator = parseBoardAxisSeparator(item.separator_json);
   const [label, setLabel] = useState(item.label);
-  const [sizePx, setSizePx] = useState(item.size_px ?? (item.axis === "row" ? table?.default_row_height ?? 40 : table?.default_column_width ?? 132));
-  const [taskColor, setTaskColor] = useState(item.task_color ?? "#2563eb");
-  const [displaySettings, setDisplaySettings] = useState(
-    parseBoardDisplaySettings(item.display_options_json) ?? (table ? parseBoardDisplaySettings(table.display_options_json) : null) ?? settings
-  );
+  const sizeFallback = item.axis === "row" ? table?.default_row_height ?? 40 : table?.default_column_width ?? 132;
+  const [sizePx, setSizePx] = useState(String(item.size_px ?? sizeFallback));
+  const [characterDisplayName, setCharacterDisplayName] = useState(item.character_display_name ?? "");
+  const [characterItemLevel, setCharacterItemLevel] = useState(item.character_item_level ?? "");
+  const [characterCombatPower, setCharacterCombatPower] = useState(item.character_combat_power ?? "");
+  const initialTaskColor = item.task_color ?? "#2563eb";
+  const [taskColor, setTaskColor] = useState(initialTaskColor);
+  const initialDisplaySettings =
+    parseBoardDisplaySettings(item.display_options_json) ?? (table ? parseBoardDisplaySettings(table.display_options_json) : null) ?? settings;
+  const [displaySettings, setDisplaySettings] = useState(initialDisplaySettings);
   const [separatorEnabled, setSeparatorEnabled] = useState(initialSeparator !== null);
-  const [separatorWidthPx, setSeparatorWidthPx] = useState(initialSeparator?.widthPx ?? 2);
+  const [separatorWidthPx, setSeparatorWidthPx] = useState(String(initialSeparator?.widthPx ?? 2));
   const [separatorStyle, setSeparatorStyle] = useState<BoardAxisSeparator["style"]>(initialSeparator?.style ?? "solid");
   const [separatorColor, setSeparatorColor] = useState(initialSeparator?.color ?? "#64748b");
   const [pending, setPending] = useState<"save" | "delete" | null>(null);
@@ -1252,13 +1296,23 @@ function BoardAxisItemEditModal({
   const normalizedLabel = label.trim();
   const isTaskItem = item.kind === "task";
   const isCharacterItem = item.kind === "character";
+  const isImportedCharacterItem = isCharacterItem && Boolean(item.character_id);
+  const normalizedCharacterDisplayName = characterDisplayName.trim();
+  const normalizedCharacterItemLevel = characterItemLevel.trim();
+  const normalizedCharacterCombatPower = characterCombatPower.trim();
+  const canSave = isImportedCharacterItem ? Boolean(normalizedCharacterItemLevel) : Boolean(normalizedLabel);
   const separator = separatorEnabled
     ? {
-        widthPx: Math.min(8, Math.max(1, Math.round(separatorWidthPx))),
+        widthPx: normalizeBoundedIntegerDraft(separatorWidthPx, { min: 1, max: 8, fallback: initialSeparator?.widthPx ?? 2 }),
         style: separatorStyle,
         color: separatorColor
       }
     : null;
+  const shouldUpdateAxisDetails =
+    (!isImportedCharacterItem && normalizedLabel !== item.label) ||
+    (isTaskItem && taskColor !== initialTaskColor) ||
+    JSON.stringify(separator) !== JSON.stringify(initialSeparator) ||
+    (isCharacterItem && JSON.stringify(displaySettings) !== JSON.stringify(initialDisplaySettings));
 
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1267,7 +1321,22 @@ function BoardAxisItemEditModal({
     setPending("save");
     setError(null);
     try {
-      await onSave(item.id, normalizedLabel, isTaskItem ? taskColor : undefined, separator, sizePx, isCharacterItem ? displaySettings : undefined);
+      if (isImportedCharacterItem && item.character_id) {
+        await onCharacterSave(item.character_id, {
+          displayName: normalizedCharacterDisplayName ? normalizedCharacterDisplayName : null,
+          itemLevel: normalizedCharacterItemLevel,
+          combatPower: normalizedCharacterCombatPower ? normalizedCharacterCombatPower : null
+        });
+      }
+      await onSave(
+        item.id,
+        isImportedCharacterItem ? item.label : normalizedLabel,
+        isTaskItem ? taskColor : undefined,
+        separator,
+        normalizeBoundedIntegerDraft(sizePx, { min: 16, max: 1024, fallback: sizeFallback }),
+        isCharacterItem ? displaySettings : undefined,
+        shouldUpdateAxisDetails
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "항목을 저장하지 못했습니다.");
       setPending(null);
@@ -1295,17 +1364,48 @@ function BoardAxisItemEditModal({
           </button>
         </header>
         <form className="tool-modal-body edit-form" onSubmit={handleSave}>
-          <label>
-            이름
-            <input maxLength={30} value={label} onChange={(event) => setLabel(event.currentTarget.value)} />
-          </label>
+          {isImportedCharacterItem ? null : (
+            <label>
+              이름
+              <input maxLength={30} value={label} onChange={(event) => setLabel(event.currentTarget.value)} />
+            </label>
+          )}
           {isCharacterItem ? (
             <div className="character-detail-panel">
+              <strong>캐릭터 정보</strong>
               <span>서버 {item.character_server_name ?? "-"}</span>
               <span>닉네임 {getBoardCharacterName(item)}</span>
               <span>직업 {item.character_class_name ?? "-"}</span>
-              <span>레벨 {item.character_item_level ?? "-"}</span>
-              <span>전투력 {item.character_combat_power ?? "-"}</span>
+            </div>
+          ) : null}
+          {isImportedCharacterItem ? (
+            <div className="compact-edit-grid">
+              <label>
+                축약 이름
+                <input
+                  maxLength={20}
+                  placeholder={getBoardCharacterName(item)}
+                  value={characterDisplayName}
+                  onChange={(event) => setCharacterDisplayName(event.currentTarget.value)}
+                />
+              </label>
+              <label>
+                레벨
+                <input
+                  maxLength={20}
+                  value={characterItemLevel}
+                  onChange={(event) => setCharacterItemLevel(event.currentTarget.value)}
+                />
+              </label>
+              <label>
+                전투력
+                <input
+                  maxLength={20}
+                  placeholder="정보 없음"
+                  value={characterCombatPower}
+                  onChange={(event) => setCharacterCombatPower(event.currentTarget.value)}
+                />
+              </label>
             </div>
           ) : null}
           <label>
@@ -1315,7 +1415,7 @@ function BoardAxisItemEditModal({
               min={16}
               type="number"
               value={sizePx}
-              onChange={(event) => setSizePx(normalizeAxisSize(Number(event.currentTarget.value)) ?? sizePx)}
+              onChange={(event) => setSizePx(event.currentTarget.value)}
             />
           </label>
           {isTaskItem ? (
@@ -1353,7 +1453,7 @@ function BoardAxisItemEditModal({
                     min={1}
                     type="number"
                     value={separatorWidthPx}
-                    onChange={(event) => setSeparatorWidthPx(Number(event.currentTarget.value))}
+                    onChange={(event) => setSeparatorWidthPx(event.currentTarget.value)}
                   />
                 </label>
                 <label>
@@ -1386,7 +1486,7 @@ function BoardAxisItemEditModal({
               <Trash2 aria-hidden="true" size={16} />
               항목 삭제
             </button>
-            <button className="primary-button" disabled={pending !== null || !normalizedLabel} type="submit">
+            <button className="primary-button" disabled={pending !== null || !canSave} type="submit">
               <Save aria-hidden="true" size={16} />
               저장
             </button>

@@ -101,8 +101,11 @@ describe("ChecklistMatrix", () => {
 
     expect(html).toContain('aria-label="닫기"');
     expect(html).toContain('class="readonly-value"');
-    expect(html).not.toContain('readOnly=""');
-    expect(html).not.toContain('readonly=""');
+    expect(html).toContain("서버 루페온");
+    expect(html).toContain("닉네임 냠수나이스1");
+    expect(html).toContain("직업 소서리스");
+    expect(html).not.toContain('value="루페온"');
+    expect(html).not.toContain('value="소서리스"');
     expect(html).toContain('class="compact-edit-grid"');
     expect(html).toContain("전투력이 비어 있으면 캐릭터 가져오기를 다시 실행하면 업데이트됩니다.");
     expect(html).toContain('class="primary-button"');

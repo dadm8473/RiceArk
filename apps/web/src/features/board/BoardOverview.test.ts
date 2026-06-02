@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { BoardOverview } from "./BoardOverview";
+import { BoardAxisItemEditModal, BoardOverview } from "./BoardOverview";
 import type { BoardPayload } from "./types";
 
 const board: BoardPayload = {
@@ -281,5 +281,38 @@ describe("BoardOverview", () => {
 
     expect(html).toContain("보드 데이터를 준비하는 중입니다.");
     expect(html).not.toContain("width:100%");
+  });
+
+  it("renders imported character identity as read-only while editing mutable details", () => {
+    const characterItem = {
+      ...board.axisItems[1]!,
+      character_display_name: "냠1",
+      character_server_name: "아만",
+      character_class_name: "브레이커",
+      character_item_level: "1,778.33",
+      character_combat_power: "2,549.41"
+    };
+    const html = renderToStaticMarkup(
+      createElement(BoardAxisItemEditModal, {
+        item: characterItem,
+        settings: board.settings,
+        table: board.tables[0]!,
+        onClose: () => undefined,
+        onDelete: async () => undefined,
+        onSave: async () => undefined,
+        onCharacterSave: async () => undefined
+      })
+    );
+
+    expect(html).toContain("캐릭터 정보");
+    expect(html).toContain("서버 아만");
+    expect(html).toContain("닉네임 냠수나이스1");
+    expect(html).toContain("직업 브레이커");
+    expect(html).toContain("축약 이름");
+    expect(html).toContain('value="냠1"');
+    expect(html).toContain('value="1,778.33"');
+    expect(html).toContain('value="2,549.41"');
+    expect(html).not.toContain('value="아만"');
+    expect(html).not.toContain('value="브레이커"');
   });
 });
