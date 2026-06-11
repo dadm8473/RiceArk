@@ -1896,6 +1896,30 @@ body {
   opacity: 0.2;
 }
 
+/* 순서 편집 모드: 드래그 가능한 행/열 헤더를 강조하고 체크 영역은 한 발 물러나게 처리 */
+.board-table-summary.reorder-mode .board-sortable-axis-label {
+  outline: 2px dashed #2563eb;
+  outline-offset: -3px;
+  background: #eff6ff;
+}
+
+.board-table-summary.reorder-mode .board-sortable-axis-label:hover {
+  background: #dbeafe;
+}
+
+.board-table-summary.reorder-mode .board-check-cell {
+  opacity: 0.35;
+}
+
+.app-shell[data-theme="dark"] .board-table-summary.reorder-mode .board-sortable-axis-label {
+  outline-color: #60a5fa;
+  background: #172554;
+}
+
+.app-shell[data-theme="dark"] .board-table-summary.reorder-mode .board-sortable-axis-label:hover {
+  background: #1e3a8a;
+}
+
 .board-drag-overlay {
   display: inline-flex;
   align-items: center;

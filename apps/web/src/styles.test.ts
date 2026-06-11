@@ -201,6 +201,21 @@ describe("matrix styles", () => {
     expect(editableColumnBlock).toContain("border-bottom: 1px solid #c6cfdd;");
   });
 
+  it("highlights draggable axis headers and dims check cells in reorder mode", () => {
+    const sortableHighlightBlock =
+      styles.match(/\.board-table-summary\.reorder-mode \.board-sortable-axis-label\s*{[^}]+}/)?.[0] ?? "";
+    const dimmedCellBlock = styles.match(/\.board-table-summary\.reorder-mode \.board-check-cell\s*{[^}]+}/)?.[0] ?? "";
+    const darkSortableHighlightBlock =
+      styles.match(
+        /\.app-shell\[data-theme="dark"\] \.board-table-summary\.reorder-mode \.board-sortable-axis-label\s*{[^}]+}/
+      )?.[0] ?? "";
+
+    expect(sortableHighlightBlock).toContain("outline: 2px dashed #2563eb;");
+    expect(sortableHighlightBlock).toContain("background: #eff6ff;");
+    expect(dimmedCellBlock).toContain("opacity: 0.35;");
+    expect(darkSortableHighlightBlock).toContain("outline-color: #60a5fa;");
+  });
+
   it("keeps the board workspace open and moves table creation to a floating action", () => {
     const canvasBlock = styles.match(/\.board-canvas\s*{[^}]+}/)?.[0] ?? "";
     const floatingActionsBlock = styles.match(/\.floating-board-actions\s*{[^}]+}/)?.[0] ?? "";
