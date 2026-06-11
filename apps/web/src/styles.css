@@ -311,6 +311,81 @@ body {
   background: #f3f5f8;
 }
 
+.profile-menu .profile-name-edit-button {
+  width: 26px;
+  min-height: 26px;
+  margin: 0 0 0 auto;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: #64748b;
+  background: transparent;
+}
+
+.profile-menu .profile-name-edit-button:hover:not(:disabled) {
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.profile-name-edit {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #e5eaf0;
+}
+
+.profile-name-edit input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid #b7c1cf;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.profile-menu .profile-name-edit button {
+  width: 28px;
+  min-height: 28px;
+  margin: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: #475569;
+}
+
+.profile-menu .profile-name-edit .profile-name-edit-save {
+  color: #1d4ed8;
+}
+
+.profile-name-edit-error {
+  margin: 4px 8px 0;
+  color: #b42318;
+  font-size: 12px;
+}
+
+.app-shell[data-theme="dark"] .profile-name-edit {
+  border-color: #334155;
+}
+
+.app-shell[data-theme="dark"] .profile-name-edit-error {
+  color: #fca5a5;
+}
+
+.app-shell[data-theme="dark"] .profile-menu .profile-name-edit-button:hover:not(:disabled) {
+  color: #93c5fd;
+  background: #172554;
+}
+
+.app-shell[data-theme="dark"] .profile-menu .profile-name-edit .profile-name-edit-save {
+  color: #93c5fd;
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -1960,10 +2035,8 @@ body {
 }
 
 .board-cell-mark-tooltip {
-  position: absolute;
-  top: calc(100% - 4px);
-  left: 50%;
-  z-index: 40;
+  position: fixed;
+  z-index: 60;
   display: grid;
   gap: 2px;
   width: max-content;

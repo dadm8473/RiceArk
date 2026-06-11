@@ -4235,7 +4235,7 @@ function BoardCheckCell({
   rowHeight: number;
   table: BoardTable;
 }) {
-  const [tooltipVisible, setTooltipVisible] = useState(false);
+  const [tooltipPosition, setTooltipPosition] = useState<{ x: number; y: number } | null>(null);
   const tooltipTimerRef = useRef<number | null>(null);
   const rowSeparator = getSeparatorBorder(row);
   const taskColor = getTaskColor(row, column);
@@ -4271,11 +4271,17 @@ function BoardCheckCell({
       onPointerEnter={(event) => {
         if (event.pointerType !== "mouse" || isMarkEditMode || isReorderMode || !hasTooltipContent) return;
         clearTooltipTimer();
-        tooltipTimerRef.current = window.setTimeout(() => setTooltipVisible(true), 1000);
+        const cellElement = event.currentTarget;
+        tooltipTimerRef.current = window.setTimeout(() => {
+          // 그리드(overflow: auto)와 표 영역이 셀 내부 absolute 툴팁을 잘라내므로
+          // 뷰포트 좌표를 잡아 body 포털 + fixed로 띄운다.
+          const rect = cellElement.getBoundingClientRect();
+          setTooltipPosition({ x: rect.left + rect.width / 2, y: rect.bottom - 2 });
+        }, 1000);
       }}
       onPointerLeave={() => {
         clearTooltipTimer();
-        setTooltipVisible(false);
+        setTooltipPosition(null);
       }}
     >
       {isDisabledCell ? (
@@ -4310,12 +4316,19 @@ function BoardCheckCell({
           <Clock aria-hidden="true" size={10} />
         </span>
       ) : null}
-      {tooltipVisible && hasTooltipContent ? (
-        <div className="board-cell-mark-tooltip" role="tooltip">
-          {markLabel ? <strong>{markLabel}</strong> : null}
-          {mark?.memo ? <span>{mark.memo}</span> : null}
-        </div>
-      ) : null}
+      {tooltipPosition && hasTooltipContent && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="board-cell-mark-tooltip"
+              role="tooltip"
+              style={{ left: `${tooltipPosition.x}px`, top: `${tooltipPosition.y}px` }}
+            >
+              {markLabel ? <strong>{markLabel}</strong> : null}
+              {mark?.memo ? <span>{mark.memo}</span> : null}
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }

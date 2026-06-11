@@ -210,8 +210,9 @@ describe("matrix styles", () => {
 
     expect(fixedMarkBlock).toContain("color: #d97706;");
     expect(reservedMarkBlock).toContain("color: #7c3aed;");
-    expect(tooltipBlock).toContain("position: absolute;");
+    expect(tooltipBlock).toContain("position: fixed;");
     expect(tooltipBlock).toContain("width: max-content;");
+    expect(tooltipBlock).toContain("transform: translateX(-50%);");
     expect(markEditHoverBlock).toContain("outline: 2px dashed #2563eb;");
     expect(styles).not.toContain(".board-check-memo-dot");
     expect(styles).toContain('.app-shell[data-theme="dark"] .board-cell-mark-tooltip');
