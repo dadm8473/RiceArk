@@ -1,5 +1,7 @@
 .superpowers/
 .worktrees/
+ref/
+.DS_Store
 
 # Local secrets
 .dev.vars

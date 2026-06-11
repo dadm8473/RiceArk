@@ -1,14 +1,17 @@
-import { ChevronDown, LogOut, UserCircle } from "lucide-react";
+import { ChevronDown, LogOut, Moon, Sun, UserCircle } from "lucide-react";
 import type { AuthUser } from "./useSession";
 
 export type AuthMenuStatus = "checking" | "anonymous" | "authenticated" | "error";
+export type AppTheme = "light" | "dark";
 
 interface AuthMenuProps {
   status: AuthMenuStatus;
   user?: AuthUser | null;
   menuOpen: boolean;
   logoutPending?: boolean;
+  theme?: AppTheme;
   onToggleMenu?: () => void;
+  onThemeToggle?: () => void;
   onLogout: () => void;
 }
 
@@ -16,7 +19,16 @@ function getAvatarInitial(user: AuthUser): string {
   return user.displayName.trim().charAt(0) || "U";
 }
 
-export function AuthMenu({ status, user, menuOpen, logoutPending = false, onToggleMenu, onLogout }: AuthMenuProps) {
+export function AuthMenu({
+  status,
+  user,
+  menuOpen,
+  logoutPending = false,
+  theme = "light",
+  onToggleMenu,
+  onThemeToggle,
+  onLogout
+}: AuthMenuProps) {
   if (status === "checking") {
     return <div className="auth-status auth-status-muted">로그인 확인 중...</div>;
   }
@@ -57,6 +69,10 @@ export function AuthMenu({ status, user, menuOpen, logoutPending = false, onTogg
             <UserCircle aria-hidden="true" size={16} />
             <span>{user.displayName}</span>
           </div>
+          <button role="menuitem" type="button" onClick={onThemeToggle}>
+            {theme === "dark" ? <Sun aria-hidden="true" size={16} /> : <Moon aria-hidden="true" size={16} />}
+            {theme === "dark" ? "라이트모드" : "다크모드(Beta)"}
+          </button>
           <button disabled={logoutPending} role="menuitem" type="button" onClick={onLogout}>
             <LogOut aria-hidden="true" size={16} />
             {logoutPending ? "로그아웃 중..." : "로그아웃"}

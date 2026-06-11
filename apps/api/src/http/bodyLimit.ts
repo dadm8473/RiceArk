@@ -1,7 +1,7 @@
 import type { Context, Next } from "hono";
 import { ApiError } from "./errors";
 
-export const MAX_API_BODY_BYTES = 16 * 1024;
+export const MAX_API_BODY_BYTES = 64 * 1024;
 
 const BODY_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 

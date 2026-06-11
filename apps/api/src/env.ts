@@ -5,6 +5,11 @@ export interface Env {
   COOKIE_DOMAIN: string;
   ENVIRONMENT: "local" | "test" | "production";
   LOSTARK_API_KEY?: string;
+  ADMIN_OAUTH_ALLOWLIST?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_API_TOKEN?: string;
+  CLOUDFLARE_D1_DATABASE_ID?: string;
+  CLOUDFLARE_WORKER_SCRIPT_NAME?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   DISCORD_CLIENT_ID?: string;

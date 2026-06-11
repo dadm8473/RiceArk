@@ -15,6 +15,14 @@ interface Candidate {
   combatPower: string | null;
 }
 
+export interface ManualCharacterDraft {
+  name: string;
+  serverName: string;
+  className: string;
+  itemLevel: string;
+  combatPower: string;
+}
+
 type CharacterImportMessageTone = "notice" | "error";
 
 interface CharacterImportMessage {
@@ -129,6 +137,71 @@ export function CharacterImportPanel({
   );
 }
 
+interface ManualCharacterCreatePanelProps {
+  manualCharacter: ManualCharacterDraft;
+  saving?: boolean;
+  onChange: (next: ManualCharacterDraft) => void;
+  onSave: () => void;
+}
+
+export function ManualCharacterCreatePanel({
+  manualCharacter,
+  saving = false,
+  onChange,
+  onSave
+}: ManualCharacterCreatePanelProps) {
+  const canSave = manualCharacter.name.trim().length > 0;
+  const update = (patch: Partial<ManualCharacterDraft>) => onChange({ ...manualCharacter, ...patch });
+
+  return (
+    <section className="tool-panel manual-character-panel">
+      <form
+        className="inline-form manual-character-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!saving && canSave) onSave();
+        }}
+      >
+        <strong className="manual-character-heading">직접 추가</strong>
+        <input
+          maxLength={20}
+          value={manualCharacter.name}
+          onChange={(event) => update({ name: event.currentTarget.value })}
+          placeholder="닉네임"
+        />
+        <input
+          maxLength={20}
+          value={manualCharacter.serverName}
+          onChange={(event) => update({ serverName: event.currentTarget.value })}
+          placeholder="서버"
+        />
+        <input
+          maxLength={20}
+          value={manualCharacter.className}
+          onChange={(event) => update({ className: event.currentTarget.value })}
+          placeholder="직업"
+        />
+        <input
+          maxLength={20}
+          value={manualCharacter.itemLevel}
+          onChange={(event) => update({ itemLevel: event.currentTarget.value })}
+          placeholder="아이템 레벨"
+        />
+        <input
+          maxLength={20}
+          value={manualCharacter.combatPower}
+          onChange={(event) => update({ combatPower: event.currentTarget.value })}
+          placeholder="전투력"
+        />
+        <button disabled={saving || !canSave} type="submit" title={canSave ? "수동 캐릭터 추가" : "닉네임을 입력해주세요"}>
+          <UserPlus size={16} />
+          {saving ? "추가 중..." : "직접 추가"}
+        </button>
+      </form>
+    </section>
+  );
+}
+
 interface CharacterImportProps {
   tableId?: string | undefined;
   onSaved?: () => void | Promise<void>;
@@ -141,6 +214,14 @@ export function CharacterImport({ tableId, onSaved }: CharacterImportProps = {})
   const [message, setMessage] = useState<CharacterImportMessage | null>(null);
   const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [manualCharacter, setManualCharacter] = useState<ManualCharacterDraft>({
+    name: "",
+    serverName: "",
+    className: "",
+    itemLevel: "",
+    combatPower: ""
+  });
+  const [manualSaving, setManualSaving] = useState(false);
 
   async function search() {
     const normalizedName = normalizeLostArkCharacterNameInput(name);
@@ -199,19 +280,55 @@ export function CharacterImport({ tableId, onSaved }: CharacterImportProps = {})
     }
   }
 
+  async function saveManual() {
+    const trimmedName = manualCharacter.name.trim();
+    if (!trimmedName) {
+      setMessage({ text: "직접 추가할 캐릭터의 닉네임을 입력해주세요.", tone: "error" });
+      return;
+    }
+    setManualSaving(true);
+    setMessage(null);
+    try {
+      await apiPost(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/characters/manual` : "/api/characters/manual", {
+        name: trimmedName,
+        serverName: manualCharacter.serverName.trim(),
+        className: manualCharacter.className.trim(),
+        itemLevel: manualCharacter.itemLevel.trim(),
+        combatPower: manualCharacter.combatPower.trim() || null
+      });
+      setManualCharacter({ name: "", serverName: "", className: "", itemLevel: "", combatPower: "" });
+      if (onSaved) {
+        await onSaved();
+      } else {
+        window.location.reload();
+      }
+    } catch {
+      setMessage({ text: "캐릭터를 직접 추가하지 못했습니다. 입력값을 확인하거나 잠시 후 다시 시도해주세요.", tone: "error" });
+      setManualSaving(false);
+    }
+  }
+
   return (
-    <CharacterImportPanel
-      candidates={candidates}
-      message={message ? message.text : null}
-      messageTone={message?.tone ?? "notice"}
-      name={name}
-      saving={saving}
-      searching={searching}
-      selected={selected}
-      onNameChange={setName}
-      onSave={() => void save()}
-      onSearch={() => void search()}
-      onToggle={(key, checked) => setSelected((current) => ({ ...current, [key]: checked }))}
-    />
+    <>
+      <CharacterImportPanel
+        candidates={candidates}
+        message={message ? message.text : null}
+        messageTone={message?.tone ?? "notice"}
+        name={name}
+        saving={saving}
+        searching={searching}
+        selected={selected}
+        onNameChange={setName}
+        onSave={() => void save()}
+        onSearch={() => void search()}
+        onToggle={(key, checked) => setSelected((current) => ({ ...current, [key]: checked }))}
+      />
+      <ManualCharacterCreatePanel
+        manualCharacter={manualCharacter}
+        saving={manualSaving}
+        onChange={setManualCharacter}
+        onSave={() => void saveManual()}
+      />
+    </>
   );
 }

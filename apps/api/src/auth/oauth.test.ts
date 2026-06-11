@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { extractOAuthState, normalizeProviderProfile } from "./oauth";
+import { createOAuthState, extractOAuthState, normalizeProviderProfile, verifyOAuthState } from "./oauth";
 
 describe("oauth helpers", () => {
   it("extracts the stored oauth state cookie", () => {
     expect(extractOAuthState("other=1; riceark_oauth_state=abc; next=2")).toBe("abc");
+  });
+
+  it("creates a signed oauth state that can be verified without a browser cookie", async () => {
+    const state = await createOAuthState("discord", "secret", new Date("2026-06-05T00:00:00.000Z"));
+
+    await expect(verifyOAuthState(state, "discord", "secret", new Date("2026-06-05T00:05:00.000Z"))).resolves.toBe(true);
+    await expect(verifyOAuthState(state, "google", "secret", new Date("2026-06-05T00:05:00.000Z"))).resolves.toBe(false);
+    await expect(verifyOAuthState(state, "discord", "wrong", new Date("2026-06-05T00:05:00.000Z"))).resolves.toBe(false);
+    await expect(verifyOAuthState(state, "discord", "secret", new Date("2026-06-05T00:11:00.000Z"))).resolves.toBe(false);
   });
 
   it("normalizes Google profile fields", () => {

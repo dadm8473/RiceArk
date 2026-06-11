@@ -8,12 +8,15 @@ import {
   type ResetRule
 } from "@riceark/core";
 import type { Env } from "../env";
-import { saveSelectedCharacters } from "./characters";
+import { createManualCharacter, saveSelectedCharacters, type CharacterSnapshot } from "./characters";
 import type { ChecklistOrientation } from "./settings";
 import { createUserTask } from "./tasks";
+import type { LostArkEventRewardFilter } from "../lostark/events";
 
 export const DEFAULT_SHEET_NAME = "기본";
 export const DEFAULT_TABLE_NAME = "숙제";
+const NEW_BOARD_TABLE_DEFAULT_X = 24;
+const NEW_BOARD_TABLE_DEFAULT_Y = 24;
 
 export interface BoardRoles {
   rowRole: BoardAxisRole;
@@ -26,9 +29,48 @@ export interface BoardPayload {
   settings: unknown;
   sheets: unknown[];
   tables: unknown[];
+  notes: unknown[];
   axisItems: unknown[];
   cellStates: unknown[];
   completions: unknown[];
+}
+
+export interface BoardShareStartResult {
+  shareId: string;
+}
+
+export interface BoardShareSummary {
+  sheetId: string;
+  sheetName: string;
+  shareId: string;
+  createdAt: string;
+}
+
+export interface BoardShareFavoriteSummary extends BoardShareSummary {
+  ownerDisplayName: string;
+}
+
+export interface SharedBoardPayload extends BoardPayload {
+  shareId: string;
+  readOnly: true;
+}
+
+export interface BoardVersionSummary {
+  manifestVersion: number;
+  sheets: Array<{ id: string; version: number }>;
+  periodFingerprint: string;
+}
+
+export interface SharedBoardVersionSummary {
+  shareId: string;
+  sheetId: string;
+  version: number;
+  periodFingerprint: string;
+}
+
+interface BoardPeriodFingerprintAxisItem {
+  kind: "character" | "task" | "custom";
+  task_reset_rule_json: string | null;
 }
 
 export interface BoardCompletionPatch {
@@ -57,6 +99,8 @@ export interface CreateBoardTableInput {
   defaultRowHeight?: number | undefined;
   defaultColumnWidth?: number | undefined;
   displaySettings?: BoardDisplaySettingsInput | null | undefined;
+  eventOptions?: BoardEventOptionsInput | null | undefined;
+  templateType?: BoardTableTemplateType | undefined;
 }
 
 export interface CreateBoardAxisItemInput {
@@ -78,12 +122,36 @@ export interface BoardTableLayoutPatch {
   height: number | null;
 }
 
+export interface CreateBoardNoteInput {
+  sheetId: string;
+  title: string;
+  body: string;
+  color?: string | undefined;
+}
+
+export interface UpdateBoardNoteInput {
+  title: string;
+  body: string;
+  color: string;
+  width: number;
+  height: number;
+  locked?: 0 | 1 | undefined;
+}
+
+export interface BoardNoteLayoutPatch {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface UpdateBoardTableSettingsInput {
   name: string;
   defaultRowHeight: number;
   defaultColumnWidth: number;
   locked?: 0 | 1 | undefined;
   displaySettings?: BoardDisplaySettingsInput | null | undefined;
+  eventOptions?: BoardEventOptionsInput | null | undefined;
 }
 
 export type BoardTableSettingsUpdateResult = "updated" | "not_found" | "locked";
@@ -93,13 +161,17 @@ export interface CurrentBoardTableSettings {
   default_row_height: number;
   default_column_width: number;
   display_options_json: string | null;
+  event_options_json: string | null;
   locked: number;
+  template_type: BoardTableTemplateType;
 }
 
 export interface BoardAxisItemTransposeSource {
   id: string;
   axis: BoardAxis;
   sort_order: number;
+  size_px: number | null;
+  cross_size_px: number | null;
 }
 
 export interface BoardAxisItemTransposePlanEntry {
@@ -108,11 +180,14 @@ export interface BoardAxisItemTransposePlanEntry {
   toAxis: BoardAxis;
   temporarySortOrder: number;
   finalSortOrder: number;
+  finalSizePx: number | null;
+  finalCrossSizePx: number | null;
 }
 
 export interface UpdateBoardAxisItemInput {
   label: string;
   taskColor?: string | null | undefined;
+  taskResetRule?: ResetRule | undefined;
   separator?: BoardAxisSeparatorInput | null | undefined;
   displaySettings?: BoardDisplaySettingsInput | null | undefined;
 }
@@ -131,6 +206,12 @@ export interface BoardDisplaySettingsInput {
   show_combat_power: 0 | 1;
 }
 
+export type BoardTableTemplateType = "custom" | "lostark_event";
+
+export interface BoardEventOptionsInput {
+  rewardFilters: LostArkEventRewardFilter[];
+}
+
 export interface BoardCharacterSelectionInput {
   name: string;
   serverName: string;
@@ -139,10 +220,14 @@ export interface BoardCharacterSelectionInput {
   combatPower: string | null;
 }
 
+export type BoardManualCharacterInput = Omit<CharacterSnapshot, "id">;
+
 export interface BoardTaskInput {
   name: string;
   scope: "character" | "roster";
   resetRule: ResetRule;
+  taskColor?: string | undefined;
+  createRequestId?: string | null | undefined;
 }
 
 export interface BoardAxisItemSizePatch {
@@ -178,6 +263,16 @@ export interface BoardAxisItemForCompletionMapping {
   kind: "character" | "task" | "custom";
   taskId: string | null;
   characterId: string | null;
+}
+
+interface BoardAxisItemSizeSeed {
+  size_px: number | null;
+  cross_size_px: number | null;
+}
+
+interface BoardLoadAxisItemRow extends Record<string, unknown> {
+  kind: "character" | "task" | "custom";
+  task_reset_rule_json: string | null;
 }
 
 export interface LegacyCompletionSource {
@@ -217,6 +312,7 @@ export interface DefaultAxisItemSeed {
 
 const DEFAULT_TASK_COLORS = ["#2563eb", "#13795b", "#b45309", "#7c3aed", "#be123c", "#0f766e"];
 const DEFAULT_MANUAL_TASK_RESET_RULE_JSON = '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}';
+const DEFAULT_EVENT_REWARD_FILTERS: LostArkEventRewardFilter[] = ["gold", "card", "coin", "silver", "cardXp"];
 const DEFAULT_BOARD_DISPLAY_SETTINGS = {
   show_display_name: 1,
   show_server_name: 0,
@@ -229,11 +325,25 @@ function serializeBoardDisplaySettings(settings: BoardDisplaySettingsInput | nul
   return settings ? JSON.stringify(settings) : null;
 }
 
+function serializeBoardEventOptions(templateType: BoardTableTemplateType, options: BoardEventOptionsInput | null | undefined): string | null {
+  if (templateType !== "lostark_event") return null;
+  return JSON.stringify({
+    rewardFilters: options?.rewardFilters === undefined ? DEFAULT_EVENT_REWARD_FILTERS : [...new Set(options.rewardFilters)]
+  });
+}
+
 function getNextBoardTableDisplayOptionsJson(
   current: Pick<CurrentBoardTableSettings, "display_options_json">,
   input: Pick<UpdateBoardTableSettingsInput, "displaySettings">
 ): string | null {
   return input.displaySettings === undefined ? current.display_options_json : serializeBoardDisplaySettings(input.displaySettings);
+}
+
+function getNextBoardTableEventOptionsJson(
+  current: Pick<CurrentBoardTableSettings, "event_options_json" | "template_type">,
+  input: Pick<UpdateBoardTableSettingsInput, "eventOptions">
+): string | null {
+  return input.eventOptions === undefined ? current.event_options_json : serializeBoardEventOptions(current.template_type, input.eventOptions);
 }
 
 export function canApplyBoardTableSettingsUpdate(
@@ -243,11 +353,13 @@ export function canApplyBoardTableSettingsUpdate(
   if (current.locked !== 1) return true;
 
   const displayOptionsJson = getNextBoardTableDisplayOptionsJson(current, input);
+  const eventOptionsJson = getNextBoardTableEventOptionsJson(current, input);
   return (
     input.name === current.name &&
     input.defaultRowHeight === current.default_row_height &&
     input.defaultColumnWidth === current.default_column_width &&
-    displayOptionsJson === current.display_options_json
+    displayOptionsJson === current.display_options_json &&
+    eventOptionsJson === current.event_options_json
   );
 }
 
@@ -263,6 +375,49 @@ function getAxisForRole(table: { row_role: BoardAxisRole; column_role: BoardAxis
   if (table.row_role === role) return "row";
   if (table.column_role === role) return "column";
   return role === "task" ? "row" : "column";
+}
+
+async function readExistingAxisForKind(
+  env: Env,
+  userId: string,
+  tableId: string,
+  kind: "character" | "task"
+): Promise<BoardAxis | null> {
+  const axisItems = await env.DB.prepare(
+    "SELECT axis, kind FROM board_axis_items WHERE user_id = ? AND table_id = ? AND visible = 1"
+  )
+    .bind(userId, tableId)
+    .all<{ axis: BoardAxis; kind: "character" | "task" | "custom" }>();
+  const axes = new Set(axisItems.results.filter((item) => item.kind === kind).map((item) => item.axis));
+
+  if (axes.size !== 1) return null;
+  return axes.has("column") ? "column" : "row";
+}
+
+async function repairBoardTableRolesFromExistingAxes(
+  env: Env,
+  userId: string,
+  tableId: string,
+  table: { row_role: BoardAxisRole; column_role: BoardAxisRole },
+  axes: { characterAxis: BoardAxis | null; taskAxis: BoardAxis | null }
+): Promise<{ row_role: BoardAxisRole; column_role: BoardAxisRole }> {
+  if (!axes.characterAxis || !axes.taskAxis || axes.characterAxis === axes.taskAxis) return table;
+
+  const roles =
+    axes.taskAxis === "row"
+      ? { row_role: "task" as const, column_role: "character" as const, task_axis: "rows" as const }
+      : { row_role: "character" as const, column_role: "task" as const, task_axis: "columns" as const };
+  if (table.row_role === roles.row_role && table.column_role === roles.column_role) return table;
+
+  await env.DB.prepare(
+    `UPDATE board_tables
+     SET row_role = ?, column_role = ?, task_axis = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ?`
+  )
+    .bind(roles.row_role, roles.column_role, roles.task_axis, tableId, userId)
+    .run();
+
+  return roles;
 }
 
 export function boardRolesForTableOrientation(orientation: BoardOrientation): BoardRoles {
@@ -351,16 +506,29 @@ export function buildBoardAxisItemTransposePlan(
     row: 0,
     column: 0
   };
+  const slotsByAxis: Record<BoardAxis, BoardAxisItemTransposeSource[]> = {
+    row: axisItems.filter((item) => item.axis === "row").sort((a, b) => a.sort_order - b.sort_order),
+    column: axisItems.filter((item) => item.axis === "column").sort((a, b) => a.sort_order - b.sort_order)
+  };
+
+  const readDestinationSlot = (axis: BoardAxis, index: number) => {
+    const slots = slotsByAxis[axis];
+    return slots[index] ?? slots.at(-1) ?? null;
+  };
 
   return axisItems.map((item) => {
     const isRow = item.axis === "row";
+    const sourceIndex = slotsByAxis[item.axis].findIndex((slot) => slot.id === item.id);
+    const destinationSlot = readDestinationSlot(isRow ? "column" : "row", sourceIndex);
     nextTemporaryIndex[item.axis] += 1;
     return {
       id: item.id,
       fromAxis: item.axis,
       toAxis: isRow ? "column" : "row",
       temporarySortOrder: (isRow ? -1000000 : -2000000) - nextTemporaryIndex[item.axis] * 10,
-      finalSortOrder: item.sort_order
+      finalSortOrder: item.sort_order,
+      finalSizePx: destinationSlot?.size_px ?? null,
+      finalCrossSizePx: destinationSlot?.cross_size_px ?? null
     };
   });
 }
@@ -432,6 +600,19 @@ export function findBoardCompletionPatchesOutsideCurrentPeriod(
     if (!target) return false;
     return !currentTargetPeriodKeys(target, now).includes(patch.periodKey);
   });
+}
+
+export function getCurrentBoardCompletionPeriodKeys(
+  axisItems: Array<Pick<BoardAxisItemForCompletionMapping, "kind"> & { task_reset_rule_json?: string | null }>,
+  now: Date = new Date()
+): string[] {
+  const keys = new Set<string>();
+  for (const item of axisItems) {
+    if (item.kind !== "task") continue;
+    const rule = parseResetRule(item.task_reset_rule_json);
+    if (rule) keys.add(getPeriodKey(rule, now));
+  }
+  return [...keys];
 }
 
 export function findUnauthorizedBoardCellStatePatches(
@@ -575,6 +756,36 @@ function axisItemKey(row: { axis: string; kind: string; task_id: string | null; 
   return JSON.stringify([row.axis, row.kind, row.task_id ?? row.character_id]);
 }
 
+async function readBoardAxisItemSizeSeed(env: Env, userId: string, tableId: string, axis: BoardAxis): Promise<BoardAxisItemSizeSeed> {
+  const seed = await env.DB.prepare(
+    `SELECT size_px, cross_size_px
+     FROM board_axis_items
+     WHERE user_id = ? AND table_id = ? AND axis = ? AND visible = 1
+       AND (size_px IS NOT NULL OR cross_size_px IS NOT NULL)
+     ORDER BY sort_order DESC, label DESC
+     LIMIT 1`
+  )
+    .bind(userId, tableId, axis)
+    .first<BoardAxisItemSizeSeed>();
+
+  return seed ?? { size_px: null, cross_size_px: null };
+}
+
+async function readBoardAxisItemByCreateRequestId(
+  env: Env,
+  userId: string,
+  tableId: string,
+  createRequestId: string
+): Promise<{ id: string } | null> {
+  return env.DB.prepare(
+    `SELECT id
+     FROM board_axis_items
+     WHERE user_id = ? AND table_id = ? AND create_request_id = ?`
+  )
+    .bind(userId, tableId, createRequestId)
+    .first<{ id: string }>();
+}
+
 async function readChecklistOrientation(env: Env, userId: string): Promise<ChecklistOrientation> {
   const settings = await env.DB.prepare("SELECT checklist_orientation FROM user_settings WHERE user_id = ?")
     .bind(userId)
@@ -582,11 +793,11 @@ async function readChecklistOrientation(env: Env, userId: string): Promise<Check
   return settings?.checklist_orientation === "tasks_columns" ? "tasks_columns" : "tasks_rows";
 }
 
-async function getOrCreateDefaultSheet(env: Env, userId: string): Promise<{ id: string }> {
+async function getOrCreateDefaultSheet(env: Env, userId: string): Promise<{ id: string; created: boolean }> {
   const existing = await env.DB.prepare("SELECT id FROM sheets WHERE user_id = ? AND is_default = 1 ORDER BY sort_order LIMIT 1")
     .bind(userId)
     .first<{ id: string }>();
-  if (existing) return existing;
+  if (existing) return { id: existing.id, created: false };
 
   const id = crypto.randomUUID();
   await env.DB.prepare(
@@ -602,15 +813,16 @@ async function getOrCreateDefaultSheet(env: Env, userId: string): Promise<{ id: 
     .bind(userId, DEFAULT_SHEET_NAME)
     .first<{ id: string }>();
   if (!sheet) throw new Error("Failed to create default sheet");
-  return sheet;
+  return { id: sheet.id, created: true };
 }
 
 async function getOrCreateDefaultTable(
   env: Env,
   userId: string,
   sheetId: string,
-  orientation: ChecklistOrientation
-): Promise<{ id: string; orientation: ChecklistOrientation; created: boolean }> {
+  orientation: ChecklistOrientation,
+  canCreate: boolean
+): Promise<{ id: string; orientation: ChecklistOrientation; created: boolean } | null> {
   const existing = await env.DB.prepare(
     "SELECT id, row_role, column_role FROM board_tables WHERE user_id = ? AND sheet_id = ? ORDER BY sort_order LIMIT 1"
   )
@@ -626,6 +838,8 @@ async function getOrCreateDefaultTable(
       created: false
     };
   }
+
+  if (!canCreate) return null;
 
   const roles = defaultBoardRolesForOrientation(orientation);
   const id = crypto.randomUUID();
@@ -688,10 +902,18 @@ async function loadDefaultBoardCharacters(env: Env, userId: string): Promise<Def
   }));
 }
 
+async function hasAnyBoardTable(env: Env, userId: string): Promise<boolean> {
+  const table = await env.DB.prepare("SELECT id FROM board_tables WHERE user_id = ? LIMIT 1").bind(userId).first();
+  return Boolean(table);
+}
+
 export async function ensureDefaultBoard(env: Env, userId: string): Promise<void> {
+  if (await hasAnyBoardTable(env, userId)) return;
+
   const orientation = await readChecklistOrientation(env, userId);
   const sheet = await getOrCreateDefaultSheet(env, userId);
-  const table = await getOrCreateDefaultTable(env, userId, sheet.id, orientation);
+  const table = await getOrCreateDefaultTable(env, userId, sheet.id, orientation, sheet.created);
+  if (!table) return;
   const [tasks, characters, existingAxisItems] = await Promise.all([
     loadDefaultBoardTasks(env, userId),
     loadDefaultBoardCharacters(env, userId),
@@ -789,9 +1011,10 @@ async function syncLegacyCompletionsToBoard(env: Env, userId: string, tableId: s
 export async function loadBoard(env: Env, userId: string): Promise<BoardPayload> {
   await ensureDefaultBoard(env, userId);
 
-  const [sheets, tables, axisItems, cellStates, completions, settings] = await Promise.all([
+  const [sheets, tables, notes, axisItems, cellStates, settings] = await Promise.all([
     env.DB.prepare("SELECT * FROM sheets WHERE user_id = ? ORDER BY sort_order, name").bind(userId).all(),
     env.DB.prepare("SELECT * FROM board_tables WHERE user_id = ? ORDER BY sort_order, name").bind(userId).all(),
+    env.DB.prepare("SELECT * FROM board_notes WHERE user_id = ? ORDER BY sort_order, title").bind(userId).all(),
     env.DB.prepare(
       `SELECT board_axis_items.*,
               characters.name AS character_name,
@@ -799,7 +1022,8 @@ export async function loadBoard(env: Env, userId: string): Promise<BoardPayload>
               characters.server_name AS character_server_name,
               characters.class_name AS character_class_name,
               characters.item_level AS character_item_level,
-              characters.combat_power AS character_combat_power
+              characters.combat_power AS character_combat_power,
+              characters.source AS character_source
        FROM board_axis_items
        LEFT JOIN characters
          ON characters.id = board_axis_items.character_id
@@ -809,13 +1033,8 @@ export async function loadBoard(env: Env, userId: string): Promise<BoardPayload>
        ORDER BY board_axis_items.table_id, board_axis_items.axis, board_axis_items.sort_order, board_axis_items.label`
     )
       .bind(userId)
-      .all(),
+      .all<BoardLoadAxisItemRow>(),
     env.DB.prepare("SELECT * FROM board_cell_states WHERE user_id = ? ORDER BY table_id, row_item_id, column_item_id")
-      .bind(userId)
-      .all(),
-    env.DB.prepare(
-      "SELECT table_id, row_item_id, column_item_id, period_key, completed FROM board_cell_completions WHERE user_id = ?"
-    )
       .bind(userId)
       .all(),
     env.DB.prepare(
@@ -830,15 +1049,354 @@ export async function loadBoard(env: Env, userId: string): Promise<BoardPayload>
       .bind(userId)
       .first()
   ]);
+  const periodKeys = getCurrentBoardCompletionPeriodKeys(axisItems.results);
+  const completions =
+    periodKeys.length > 0
+      ? await env.DB.prepare(
+          `SELECT table_id, row_item_id, column_item_id, period_key, completed
+           FROM board_cell_completions
+           WHERE user_id = ? AND period_key IN (${placeholders(periodKeys)})`
+        )
+          .bind(userId, ...periodKeys)
+          .all()
+      : { results: [] };
 
   return {
     userId,
     settings: settings ?? DEFAULT_BOARD_DISPLAY_SETTINGS,
     sheets: sheets.results,
     tables: tables.results,
+    notes: notes.results,
     axisItems: axisItems.results,
     cellStates: cellStates.results,
     completions: completions.results
+  };
+}
+
+const BOARD_SHARE_ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+export function generateBoardShareId(length = 22): string {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => BOARD_SHARE_ID_ALPHABET[byte & 63]).join("");
+}
+
+function bumpBoardManifestVersion(env: Env, userId: string) {
+  return env.DB.prepare(
+    `INSERT INTO board_manifest_versions (user_id, version, updated_at)
+     VALUES (?, 1, CURRENT_TIMESTAMP)
+     ON CONFLICT(user_id) DO UPDATE
+     SET version = version + 1,
+         updated_at = CURRENT_TIMESTAMP`
+  ).bind(userId);
+}
+
+function bumpBoardSheetVersion(env: Env, userId: string, sheetId: string) {
+  return env.DB.prepare(
+    `UPDATE sheets
+     SET content_version = content_version + 1,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ?`
+  ).bind(sheetId, userId);
+}
+
+function bumpBoardSheetVersionsForTables(env: Env, userId: string, tableIds: string[]) {
+  const ids = unique(tableIds);
+  return env.DB.prepare(
+    `UPDATE sheets
+     SET content_version = content_version + 1,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE user_id = ?
+       AND id IN (
+         SELECT DISTINCT sheet_id
+         FROM board_tables
+         WHERE user_id = ?
+           AND id IN (${placeholders(ids)})
+       )`
+  ).bind(userId, userId, ...ids);
+}
+
+export async function startBoardSheetShare(env: Env, userId: string, sheetId: string): Promise<BoardShareStartResult | "not_found"> {
+  const sheet = await env.DB.prepare("SELECT id FROM sheets WHERE id = ? AND user_id = ?")
+    .bind(sheetId, userId)
+    .first<{ id: string }>();
+  if (!sheet) return "not_found";
+
+  const shareId = generateBoardShareId();
+  const id = crypto.randomUUID();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM board_shares WHERE owner_user_id = ? AND sheet_id = ?").bind(userId, sheetId),
+    env.DB.prepare(
+      `INSERT INTO board_shares (id, owner_user_id, sheet_id, share_id)
+       VALUES (?, ?, ?, ?)`
+    ).bind(id, userId, sheetId, shareId),
+    bumpBoardSheetVersion(env, userId, sheetId),
+    bumpBoardManifestVersion(env, userId)
+  ]);
+
+  return { shareId };
+}
+
+export async function stopBoardSheetShare(env: Env, userId: string, sheetId: string): Promise<boolean> {
+  const share = await env.DB.prepare("SELECT share_id FROM board_shares WHERE owner_user_id = ? AND sheet_id = ?")
+    .bind(userId, sheetId)
+    .first<{ share_id: string }>();
+  if (!share) return false;
+
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM board_shares WHERE owner_user_id = ? AND sheet_id = ?").bind(userId, sheetId),
+    bumpBoardSheetVersion(env, userId, sheetId),
+    bumpBoardManifestVersion(env, userId)
+  ]);
+  return true;
+}
+
+export async function listBoardShares(env: Env, userId: string): Promise<BoardShareSummary[]> {
+  const rows = await env.DB.prepare(
+    `SELECT board_shares.sheet_id,
+            sheets.name AS sheet_name,
+            board_shares.share_id,
+            board_shares.created_at
+     FROM board_shares
+     JOIN sheets
+       ON sheets.id = board_shares.sheet_id
+      AND sheets.user_id = board_shares.owner_user_id
+     WHERE board_shares.owner_user_id = ?
+     ORDER BY sheets.sort_order, sheets.name`
+  )
+    .bind(userId)
+    .all<{ sheet_id: string; sheet_name: string; share_id: string; created_at: string }>();
+
+  return rows.results.map((row) => ({
+    sheetId: row.sheet_id,
+    sheetName: row.sheet_name,
+    shareId: row.share_id,
+    createdAt: row.created_at
+  }));
+}
+
+export async function addBoardShareFavorite(env: Env, userId: string, shareId: string): Promise<{ shareId: string } | "not_found"> {
+  const share = await env.DB.prepare("SELECT share_id FROM board_shares WHERE share_id = ?")
+    .bind(shareId)
+    .first<{ share_id: string }>();
+  if (!share) return "not_found";
+
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO board_share_favorites (user_id, share_id)
+     VALUES (?, ?)`
+  )
+    .bind(userId, shareId)
+    .run();
+
+  return { shareId };
+}
+
+export async function deleteBoardShareFavorite(env: Env, userId: string, shareId: string): Promise<boolean> {
+  const result = await env.DB.prepare("DELETE FROM board_share_favorites WHERE user_id = ? AND share_id = ?").bind(userId, shareId).run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+export async function listBoardShareFavorites(env: Env, userId: string): Promise<BoardShareFavoriteSummary[]> {
+  const rows = await env.DB.prepare(
+    `SELECT board_share_favorites.share_id,
+            board_shares.sheet_id,
+            sheets.name AS sheet_name,
+            users.display_name AS owner_display_name,
+            board_share_favorites.created_at
+     FROM board_share_favorites
+     JOIN board_shares
+       ON board_shares.share_id = board_share_favorites.share_id
+     JOIN sheets
+       ON sheets.id = board_shares.sheet_id
+      AND sheets.user_id = board_shares.owner_user_id
+     JOIN users
+       ON users.id = board_shares.owner_user_id
+     WHERE board_share_favorites.user_id = ?
+     ORDER BY board_share_favorites.created_at DESC`
+  )
+    .bind(userId)
+    .all<{
+      share_id: string;
+      sheet_id: string;
+      sheet_name: string;
+      owner_display_name: string;
+      created_at: string;
+    }>();
+
+  return rows.results.map((row) => ({
+    shareId: row.share_id,
+    sheetId: row.sheet_id,
+    sheetName: row.sheet_name,
+    ownerDisplayName: row.owner_display_name,
+    createdAt: row.created_at
+  }));
+}
+
+export async function loadSharedBoard(env: Env, shareId: string, now = new Date()): Promise<SharedBoardPayload | null> {
+  const share = await env.DB.prepare(
+    `SELECT owner_user_id, sheet_id
+     FROM board_shares
+     WHERE share_id = ?`
+  )
+    .bind(shareId)
+    .first<{ owner_user_id: string; sheet_id: string }>();
+  if (!share) return null;
+
+  const [sheets, tables, notes, settings] = await Promise.all([
+    env.DB.prepare("SELECT * FROM sheets WHERE id = ? AND user_id = ?")
+      .bind(share.sheet_id, share.owner_user_id)
+      .all(),
+    env.DB.prepare("SELECT * FROM board_tables WHERE user_id = ? AND sheet_id = ? ORDER BY sort_order, name")
+      .bind(share.owner_user_id, share.sheet_id)
+      .all(),
+    env.DB.prepare("SELECT * FROM board_notes WHERE user_id = ? AND sheet_id = ? ORDER BY sort_order, title")
+      .bind(share.owner_user_id, share.sheet_id)
+      .all(),
+    env.DB.prepare(
+      `SELECT show_display_name,
+              show_server_name,
+              show_class_name,
+              show_item_level,
+              show_combat_power
+       FROM user_settings
+       WHERE user_id = ?`
+    )
+      .bind(share.owner_user_id)
+      .first()
+  ]);
+
+  const tableIds = tables.results.map((table) => String((table as { id: string }).id));
+  const axisItems =
+    tableIds.length > 0
+      ? await env.DB.prepare(
+          `SELECT board_axis_items.*,
+                  characters.name AS character_name,
+                  characters.display_name AS character_display_name,
+                  characters.server_name AS character_server_name,
+                  characters.class_name AS character_class_name,
+                  characters.item_level AS character_item_level,
+                  characters.combat_power AS character_combat_power,
+                  characters.source AS character_source
+           FROM board_axis_items
+           LEFT JOIN characters
+             ON characters.id = board_axis_items.character_id
+            AND characters.user_id = board_axis_items.user_id
+            AND characters.deleted_at IS NULL
+           WHERE board_axis_items.user_id = ?
+             AND board_axis_items.table_id IN (${placeholders(tableIds)})
+           ORDER BY board_axis_items.table_id, board_axis_items.axis, board_axis_items.sort_order, board_axis_items.label`
+        )
+          .bind(share.owner_user_id, ...tableIds)
+          .all<BoardLoadAxisItemRow>()
+      : { results: [] as BoardLoadAxisItemRow[] };
+  const cellStates =
+    tableIds.length > 0
+      ? await env.DB.prepare(
+          `SELECT *
+           FROM board_cell_states
+           WHERE user_id = ?
+             AND table_id IN (${placeholders(tableIds)})
+           ORDER BY table_id, row_item_id, column_item_id`
+        )
+          .bind(share.owner_user_id, ...tableIds)
+          .all()
+      : { results: [] };
+  const periodKeys = getCurrentBoardCompletionPeriodKeys(axisItems.results, now);
+  const completions =
+    periodKeys.length > 0 && tableIds.length > 0
+      ? await env.DB.prepare(
+          `SELECT table_id, row_item_id, column_item_id, period_key, completed
+           FROM board_cell_completions
+           WHERE user_id = ?
+             AND table_id IN (${placeholders(tableIds)})
+             AND period_key IN (${placeholders(periodKeys)})`
+        )
+          .bind(share.owner_user_id, ...tableIds, ...periodKeys)
+          .all()
+      : { results: [] };
+
+  return {
+    shareId,
+    readOnly: true,
+    userId: share.owner_user_id,
+    settings: settings ?? DEFAULT_BOARD_DISPLAY_SETTINGS,
+    sheets: sheets.results,
+    tables: tables.results,
+    notes: notes.results,
+    axisItems: axisItems.results,
+    cellStates: cellStates.results,
+    completions: completions.results
+  };
+}
+
+function buildBoardPeriodFingerprint(axisItems: BoardPeriodFingerprintAxisItem[], now: Date): string {
+  const periodKeys = getCurrentBoardCompletionPeriodKeys(axisItems, now);
+  return periodKeys.join("|");
+}
+
+export async function loadBoardVersionSummary(env: Env, userId: string, now = new Date()): Promise<BoardVersionSummary> {
+  const [manifest, sheets, axisItems] = await Promise.all([
+    env.DB.prepare("SELECT version FROM board_manifest_versions WHERE user_id = ?")
+      .bind(userId)
+      .first<{ version: number }>(),
+    env.DB.prepare("SELECT id, content_version FROM sheets WHERE user_id = ? ORDER BY sort_order, name")
+      .bind(userId)
+      .all<{ id: string; content_version: number }>(),
+    env.DB.prepare(
+      `SELECT board_axis_items.kind, board_axis_items.task_reset_rule_json
+       FROM board_axis_items
+       JOIN board_tables
+         ON board_tables.id = board_axis_items.table_id
+        AND board_tables.user_id = board_axis_items.user_id
+       WHERE board_axis_items.user_id = ?`
+    )
+      .bind(userId)
+      .all<BoardPeriodFingerprintAxisItem>()
+  ]);
+
+  return {
+    manifestVersion: manifest?.version ?? 0,
+    sheets: sheets.results.map((sheet) => ({ id: sheet.id, version: sheet.content_version })),
+    periodFingerprint: buildBoardPeriodFingerprint(axisItems.results, now)
+  };
+}
+
+export async function loadSharedBoardVersionSummary(
+  env: Env,
+  shareId: string,
+  now = new Date()
+): Promise<SharedBoardVersionSummary | null> {
+  const share = await env.DB.prepare(
+    `SELECT board_shares.owner_user_id,
+            board_shares.sheet_id,
+            sheets.content_version
+     FROM board_shares
+     JOIN sheets
+       ON sheets.id = board_shares.sheet_id
+      AND sheets.user_id = board_shares.owner_user_id
+     WHERE board_shares.share_id = ?`
+  )
+    .bind(shareId)
+    .first<{ owner_user_id: string; sheet_id: string; content_version: number }>();
+  if (!share) return null;
+
+  const axisItems = await env.DB.prepare(
+    `SELECT board_axis_items.kind, board_axis_items.task_reset_rule_json
+     FROM board_axis_items
+     JOIN board_tables
+       ON board_tables.id = board_axis_items.table_id
+      AND board_tables.user_id = board_axis_items.user_id
+     WHERE board_axis_items.user_id = ?
+       AND board_tables.sheet_id = ?`
+  )
+    .bind(share.owner_user_id, share.sheet_id)
+    .all<BoardPeriodFingerprintAxisItem>();
+
+  return {
+    shareId,
+    sheetId: share.sheet_id,
+    version: share.content_version,
+    periodFingerprint: buildBoardPeriodFingerprint(axisItems.results, now)
   };
 }
 
@@ -871,6 +1429,37 @@ export async function createBoardSheet(
 }
 
 export type DeleteBoardSheetResult = "deleted" | "last_sheet" | "not_found";
+
+export type UpdateBoardSheetResult = "updated" | "name_conflict" | "not_found";
+
+export async function updateBoardSheet(
+  env: Env,
+  userId: string,
+  sheetId: string,
+  input: CreateBoardSheetInput
+): Promise<UpdateBoardSheetResult> {
+  await ensureDefaultBoard(env, userId);
+
+  const sheet = await env.DB.prepare("SELECT id FROM sheets WHERE id = ? AND user_id = ?")
+    .bind(sheetId, userId)
+    .first<{ id: string }>();
+  if (!sheet) return "not_found";
+
+  const existing = await env.DB.prepare("SELECT id FROM sheets WHERE user_id = ? AND name = ? AND id <> ?")
+    .bind(userId, input.name, sheetId)
+    .first<{ id: string }>();
+  if (existing) return "name_conflict";
+
+  await env.DB.prepare(
+    `UPDATE sheets
+     SET name = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ?`
+  )
+    .bind(input.name, sheetId, userId)
+    .run();
+
+  return "updated";
+}
 
 export async function deleteBoardSheet(env: Env, userId: string, sheetId: string): Promise<DeleteBoardSheetResult> {
   await ensureDefaultBoard(env, userId);
@@ -915,6 +1504,7 @@ export async function deleteBoardSheet(env: Env, userId: string, sheetId: string
     ),
     env.DB.prepare(`DELETE FROM board_cell_states WHERE user_id = ? AND table_id IN (${tableIdsForSheet})`).bind(userId, userId, sheetId),
     env.DB.prepare(`DELETE FROM board_axis_items WHERE user_id = ? AND table_id IN (${tableIdsForSheet})`).bind(userId, userId, sheetId),
+    env.DB.prepare("DELETE FROM board_notes WHERE user_id = ? AND sheet_id = ?").bind(userId, sheetId),
     env.DB.prepare("DELETE FROM board_tables WHERE user_id = ? AND sheet_id = ?").bind(userId, sheetId),
     env.DB.prepare("DELETE FROM sheets WHERE id = ? AND user_id = ?").bind(sheetId, userId)
   );
@@ -942,10 +1532,10 @@ export async function createBoardTable(
     .first<{ maxSortOrder: number | null; tableCount: number }>();
   const id = crypto.randomUUID();
   const sortOrder = (placement?.maxSortOrder ?? -10) + 10;
-  const y = (placement?.tableCount ?? 0) * 220;
   const roles = boardRolesForTableOrientation(input.orientation);
   const defaultRowHeight = input.defaultRowHeight ?? 40;
   const defaultColumnWidth = input.defaultColumnWidth ?? 132;
+  const templateType = input.templateType ?? "custom";
 
   await env.DB.prepare(
     `INSERT INTO board_tables (
@@ -961,9 +1551,11 @@ export async function createBoardTable(
        task_axis,
        default_row_height,
        default_column_width,
-       display_options_json
+       display_options_json,
+       template_type,
+       event_options_json
      )
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       id,
@@ -971,17 +1563,110 @@ export async function createBoardTable(
       input.sheetId,
       input.name,
       sortOrder,
-      y,
+      NEW_BOARD_TABLE_DEFAULT_X,
+      NEW_BOARD_TABLE_DEFAULT_Y,
       roles.rowRole,
       roles.columnRole,
       roles.taskAxis,
       defaultRowHeight,
       defaultColumnWidth,
-      serializeBoardDisplaySettings(input.displaySettings)
+      serializeBoardDisplaySettings(input.displaySettings),
+      templateType,
+      serializeBoardEventOptions(templateType, input.eventOptions)
     )
     .run();
 
   return { id };
+}
+
+export async function createBoardNote(env: Env, userId: string, input: CreateBoardNoteInput): Promise<{ id: string } | null> {
+  await ensureDefaultBoard(env, userId);
+
+  const sheet = await env.DB.prepare("SELECT id FROM sheets WHERE id = ? AND user_id = ?")
+    .bind(input.sheetId, userId)
+    .first<{ id: string }>();
+  if (!sheet) return null;
+
+  const placement = await env.DB.prepare(
+    "SELECT COALESCE(MAX(sort_order), -10) AS maxSortOrder, COUNT(*) AS noteCount FROM board_notes WHERE user_id = ? AND sheet_id = ?"
+  )
+    .bind(userId, input.sheetId)
+    .first<{ maxSortOrder: number | null; noteCount: number }>();
+  const id = crypto.randomUUID();
+  const sortOrder = (placement?.maxSortOrder ?? -10) + 10;
+  const y = (placement?.noteCount ?? 0) * 180;
+
+  await env.DB.prepare(
+    `INSERT INTO board_notes (
+       id,
+       user_id,
+       sheet_id,
+       title,
+       body,
+       color,
+       sort_order,
+       x,
+       y,
+       width,
+       height
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 220, 160)`
+  )
+    .bind(id, userId, input.sheetId, input.title, input.body, input.color ?? "#fef3c7", sortOrder, y)
+    .run();
+
+  return { id };
+}
+
+export type BoardNoteUpdateResult = "updated" | "not_found";
+
+export async function updateBoardNote(
+  env: Env,
+  userId: string,
+  noteId: string,
+  input: UpdateBoardNoteInput
+): Promise<BoardNoteUpdateResult> {
+  const result = await env.DB.prepare(
+    `UPDATE board_notes
+     SET title = ?,
+         body = ?,
+         color = ?,
+         width = ?,
+         height = ?,
+         locked = COALESCE(?, locked),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ?`
+  )
+    .bind(input.title, input.body, input.color, input.width, input.height, input.locked ?? null, noteId, userId)
+    .run();
+
+  return (result.meta.changes ?? 0) > 0 ? "updated" : "not_found";
+}
+
+export async function updateBoardNoteLayout(
+  env: Env,
+  userId: string,
+  noteId: string,
+  patch: BoardNoteLayoutPatch
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE board_notes
+     SET x = ?,
+         y = ?,
+         width = ?,
+         height = ?,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND user_id = ?`
+  )
+    .bind(patch.x, patch.y, patch.width, patch.height, noteId, userId)
+    .run();
+
+  return (result.meta.changes ?? 0) > 0;
+}
+
+export async function deleteBoardNote(env: Env, userId: string, noteId: string): Promise<boolean> {
+  const result = await env.DB.prepare("DELETE FROM board_notes WHERE id = ? AND user_id = ?").bind(noteId, userId).run();
+  return (result.meta.changes ?? 0) > 0;
 }
 
 export async function updateBoardTableSettings(
@@ -991,7 +1676,7 @@ export async function updateBoardTableSettings(
   input: UpdateBoardTableSettingsInput
 ): Promise<BoardTableSettingsUpdateResult> {
   const current = await env.DB.prepare(
-    `SELECT name, default_row_height, default_column_width, display_options_json, locked
+    `SELECT name, default_row_height, default_column_width, display_options_json, event_options_json, template_type, locked
      FROM board_tables
      WHERE id = ? AND user_id = ?`
   )
@@ -1000,6 +1685,7 @@ export async function updateBoardTableSettings(
   if (!current) return "not_found";
 
   const displayOptionsJson = getNextBoardTableDisplayOptionsJson(current, input);
+  const eventOptionsJson = getNextBoardTableEventOptionsJson(current, input);
   const nextLocked = input.locked ?? (current.locked === 1 ? 1 : 0);
 
   if (!canApplyBoardTableSettingsUpdate(current, input)) {
@@ -1012,6 +1698,7 @@ export async function updateBoardTableSettings(
          default_row_height = ?,
          default_column_width = ?,
          display_options_json = ?,
+         event_options_json = ?,
          locked = ?,
          updated_at = CURRENT_TIMESTAMP
      WHERE id = ? AND user_id = ?`
@@ -1021,6 +1708,7 @@ export async function updateBoardTableSettings(
       input.defaultRowHeight,
       input.defaultColumnWidth,
       displayOptionsJson,
+      eventOptionsJson,
       nextLocked,
       tableId,
       userId
@@ -1060,7 +1748,14 @@ export async function importBoardCharactersForTable(
   if (table.locked === 1) return false;
 
   await saveSelectedCharacters(env, userId, characters);
-  const axis = getAxisForRole(table, "character");
+  const existingCharacterAxis = await readExistingAxisForKind(env, userId, tableId, "character");
+  const existingTaskAxis = await readExistingAxisForKind(env, userId, tableId, "task");
+  const tableRoles = await repairBoardTableRolesFromExistingAxes(env, userId, tableId, table, {
+    characterAxis: existingCharacterAxis,
+    taskAxis: existingTaskAxis
+  });
+  const axis = existingCharacterAxis ?? getAxisForRole(tableRoles, "character");
+  const sizeSeed = await readBoardAxisItemSizeSeed(env, userId, tableId, axis);
   const maxSort = await env.DB.prepare(
     "SELECT COALESCE(MAX(sort_order), -10) AS maxSortOrder FROM board_axis_items WHERE user_id = ? AND table_id = ? AND axis = ?"
   )
@@ -1091,9 +1786,13 @@ export async function importBoardCharactersForTable(
       statements.push(
         env.DB.prepare(
           `UPDATE board_axis_items
-           SET visible = 1, label = ?, updated_at = CURRENT_TIMESTAMP
+           SET visible = 1,
+               label = ?,
+               size_px = ?,
+               cross_size_px = ?,
+               updated_at = CURRENT_TIMESTAMP
            WHERE id = ? AND user_id = ?`
-        ).bind(saved.name, existing.id, userId)
+        ).bind(saved.name, sizeSeed.size_px, sizeSeed.cross_size_px, existing.id, userId)
       );
       continue;
     }
@@ -1102,16 +1801,103 @@ export async function importBoardCharactersForTable(
       env.DB.prepare(
         `INSERT INTO board_axis_items (
            id, user_id, table_id, axis, kind, label, character_id, task_id, task_scope, task_reset_type,
-           task_reset_rule_json, task_color, sort_order
+           task_reset_rule_json, task_color, sort_order, size_px, cross_size_px
          )
-         VALUES (?, ?, ?, ?, 'character', ?, ?, NULL, NULL, NULL, NULL, NULL, ?)`
-      ).bind(crypto.randomUUID(), userId, tableId, axis, saved.name, saved.id, sortOrder)
+         VALUES (?, ?, ?, ?, 'character', ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)`
+      ).bind(crypto.randomUUID(), userId, tableId, axis, saved.name, saved.id, sortOrder, sizeSeed.size_px, sizeSeed.cross_size_px)
     );
     sortOrder += 10;
   }
 
   if (statements.length > 0) await env.DB.batch(statements);
   return true;
+}
+
+export async function createManualBoardCharacterForTable(
+  env: Env,
+  userId: string,
+  tableId: string,
+  input: BoardManualCharacterInput
+): Promise<{ id: string } | null> {
+  await ensureDefaultBoard(env, userId);
+
+  const table = await env.DB.prepare("SELECT id, row_role, column_role, locked FROM board_tables WHERE id = ? AND user_id = ?")
+    .bind(tableId, userId)
+    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole; locked: number }>();
+  if (!table) return null;
+  if (table.locked === 1) return null;
+
+  const existingCharacterAxis = await readExistingAxisForKind(env, userId, tableId, "character");
+  const existingTaskAxis = await readExistingAxisForKind(env, userId, tableId, "task");
+  const tableRoles = await repairBoardTableRolesFromExistingAxes(env, userId, tableId, table, {
+    characterAxis: existingCharacterAxis,
+    taskAxis: existingTaskAxis
+  });
+  const axis = existingCharacterAxis ?? getAxisForRole(tableRoles, "character");
+  const character = await createManualCharacter(env, userId, input);
+  const sizeSeed = await readBoardAxisItemSizeSeed(env, userId, tableId, axis);
+  const existing = await env.DB.prepare(
+    `SELECT id
+     FROM board_axis_items
+     WHERE user_id = ? AND table_id = ? AND axis = ? AND kind = 'character' AND character_id = ?`
+  )
+    .bind(userId, tableId, axis, character.id)
+    .first<{ id: string }>();
+
+  if (existing) {
+    await env.DB.prepare(
+      `UPDATE board_axis_items
+       SET visible = 1,
+           label = ?,
+           size_px = ?,
+           cross_size_px = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`
+    )
+      .bind(input.name, sizeSeed.size_px, sizeSeed.cross_size_px, existing.id, userId)
+      .run();
+    return existing;
+  }
+
+  const maxSort = await env.DB.prepare(
+    "SELECT COALESCE(MAX(sort_order), -10) AS maxSortOrder FROM board_axis_items WHERE user_id = ? AND table_id = ? AND axis = ?"
+  )
+    .bind(userId, tableId, axis)
+    .first<{ maxSortOrder: number | null }>();
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO board_axis_items (
+       id,
+       user_id,
+       table_id,
+       axis,
+       kind,
+       label,
+       character_id,
+       task_id,
+       task_scope,
+       task_reset_type,
+       task_reset_rule_json,
+       task_color,
+       sort_order,
+       size_px,
+       cross_size_px
+     )
+     VALUES (?, ?, ?, ?, 'character', ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)`
+  )
+    .bind(
+      id,
+      userId,
+      tableId,
+      axis,
+      input.name,
+      character.id,
+      (maxSort?.maxSortOrder ?? -10) + 10,
+      sizeSeed.size_px,
+      sizeSeed.cross_size_px
+    )
+    .run();
+  return { id };
 }
 
 export async function createBoardTaskForTable(
@@ -1128,12 +1914,26 @@ export async function createBoardTaskForTable(
   if (!table) return null;
   if (table.locked === 1) return null;
 
+  const createRequestId = input.createRequestId ?? null;
+  if (createRequestId) {
+    const existing = await readBoardAxisItemByCreateRequestId(env, userId, tableId, createRequestId);
+    if (existing) return existing;
+  }
+
+  const existingTaskAxis = await readExistingAxisForKind(env, userId, tableId, "task");
+  const existingCharacterAxis = await readExistingAxisForKind(env, userId, tableId, "character");
+  const tableRoles = await repairBoardTableRolesFromExistingAxes(env, userId, tableId, table, {
+    characterAxis: existingCharacterAxis,
+    taskAxis: existingTaskAxis
+  });
+  const axis = existingTaskAxis ?? getAxisForRole(tableRoles, "task");
   const taskId = await createUserTask(env, userId, {
     name: input.name,
     scope: input.scope,
-    resetRule: input.resetRule
+    resetRule: input.resetRule,
+    createRequestId
   });
-  const axis = getAxisForRole(table, "task");
+  const sizeSeed = await readBoardAxisItemSizeSeed(env, userId, tableId, axis);
   const stats = await env.DB.prepare(
     `SELECT COALESCE(MAX(sort_order), -10) AS maxSortOrder,
             SUM(CASE WHEN kind = 'task' THEN 1 ELSE 0 END) AS taskCount
@@ -1144,7 +1944,7 @@ export async function createBoardTaskForTable(
     .first<{ maxSortOrder: number | null; taskCount: number | null }>();
   const id = crypto.randomUUID();
   const sortOrder = (stats?.maxSortOrder ?? -10) + 10;
-  const color = DEFAULT_TASK_COLORS[(stats?.taskCount ?? 0) % DEFAULT_TASK_COLORS.length]!;
+  const color = input.taskColor ?? DEFAULT_TASK_COLORS[(stats?.taskCount ?? 0) % DEFAULT_TASK_COLORS.length]!;
 
   await env.DB.prepare(
     `INSERT INTO board_axis_items (
@@ -1160,9 +1960,12 @@ export async function createBoardTaskForTable(
        task_reset_type,
        task_reset_rule_json,
        task_color,
-       sort_order
+       sort_order,
+       size_px,
+       cross_size_px,
+       create_request_id
      )
-     VALUES (?, ?, ?, ?, 'task', ?, NULL, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, 'task', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       id,
@@ -1175,9 +1978,24 @@ export async function createBoardTaskForTable(
       input.resetRule.type,
       JSON.stringify(input.resetRule),
       color,
-      sortOrder
+      sortOrder,
+      sizeSeed.size_px,
+      sizeSeed.cross_size_px,
+      createRequestId
     )
-    .run();
+    .run()
+    .catch(async (error) => {
+      if (createRequestId) {
+        const existing = await readBoardAxisItemByCreateRequestId(env, userId, tableId, createRequestId);
+        if (existing) return;
+      }
+      throw error;
+    });
+
+  if (createRequestId) {
+    const created = await readBoardAxisItemByCreateRequestId(env, userId, tableId, createRequestId);
+    if (created) return created;
+  }
 
   return { id };
 }
@@ -1204,6 +2022,7 @@ export async function createBoardAxisItem(
     .bind(userId, input.tableId, input.axis)
     .first<{ maxSortOrder: number | null; taskCount: number | null }>();
   const axisRole = input.axis === "row" ? table.row_role : table.column_role;
+  const sizeSeed = await readBoardAxisItemSizeSeed(env, userId, input.tableId, input.axis);
   const draft = buildManualBoardAxisItemDraft({
     axis: input.axis,
     axisRole,
@@ -1227,9 +2046,11 @@ export async function createBoardAxisItem(
        task_reset_type,
        task_reset_rule_json,
        task_color,
-       sort_order
+       sort_order,
+       size_px,
+       cross_size_px
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       id,
@@ -1244,7 +2065,9 @@ export async function createBoardAxisItem(
       draft.taskResetType,
       draft.taskResetRuleJson,
       draft.taskColor,
-      sortOrder
+      sortOrder,
+      sizeSeed.size_px,
+      sizeSeed.cross_size_px
     )
     .run();
 
@@ -1263,27 +2086,30 @@ export async function reorderBoardAxisItems(
   if (table.locked === 1) return false;
 
   const existing = await env.DB.prepare(
-    `SELECT id
+    `SELECT id, visible
      FROM board_axis_items
      WHERE user_id = ? AND table_id = ? AND axis = ?
      ORDER BY sort_order, label`
   )
     .bind(userId, input.tableId, input.axis)
-    .all<{ id: string }>();
-  const existingIds = existing.results.map((item) => item.id);
-  if (existingIds.length !== input.axisItemIds.length) return false;
+    .all<{ id: string; visible: number }>();
+  const visibleIds = existing.results.filter((item) => item.visible === 1).map((item) => item.id);
+  if (visibleIds.length !== input.axisItemIds.length) return false;
 
-  const existingSet = new Set(existingIds);
-  if (input.axisItemIds.some((id) => !existingSet.has(id))) return false;
+  const visibleSet = new Set(visibleIds);
+  if (input.axisItemIds.some((id) => !visibleSet.has(id))) return false;
 
-  const temporaryUpdates = input.axisItemIds.map((id, index) =>
+  const hiddenIds = existing.results.filter((item) => item.visible !== 1).map((item) => item.id);
+  const orderedIds = [...input.axisItemIds, ...hiddenIds];
+
+  const temporaryUpdates = orderedIds.map((id, index) =>
     env.DB.prepare(
       `UPDATE board_axis_items
        SET sort_order = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ? AND user_id = ? AND table_id = ? AND axis = ?`
     ).bind(-((index + 1) * 10), id, userId, input.tableId, input.axis)
   );
-  const finalUpdates = input.axisItemIds.map((id, index) =>
+  const finalUpdates = orderedIds.map((id, index) =>
     env.DB.prepare(
       `UPDATE board_axis_items
        SET sort_order = ?, updated_at = CURRENT_TIMESTAMP
@@ -1323,7 +2149,7 @@ export async function transposeBoardTable(env: Env, userId: string, tableId: str
   if (table.locked === 1) return false;
 
   const axisItems = await env.DB.prepare(
-    "SELECT id, axis, sort_order FROM board_axis_items WHERE user_id = ? AND table_id = ? ORDER BY axis, sort_order, label"
+    "SELECT id, axis, sort_order, size_px, cross_size_px FROM board_axis_items WHERE user_id = ? AND table_id = ? ORDER BY axis, sort_order, label"
   )
     .bind(userId, tableId)
     .all<BoardAxisItemTransposeSource>();
@@ -1357,9 +2183,12 @@ export async function transposeBoardTable(env: Env, userId: string, tableId: str
     ...plan.map((item) =>
       env.DB.prepare(
         `UPDATE board_axis_items
-         SET sort_order = ?, updated_at = CURRENT_TIMESTAMP
+         SET sort_order = ?,
+             size_px = ?,
+             cross_size_px = ?,
+             updated_at = CURRENT_TIMESTAMP
          WHERE id = ? AND user_id = ? AND table_id = ?`
-      ).bind(item.finalSortOrder, item.id, userId, tableId)
+      ).bind(item.finalSortOrder, item.finalSizePx, item.finalCrossSizePx, item.id, userId, tableId)
     ),
     env.DB.prepare(
       `UPDATE board_cell_states
@@ -1395,6 +2224,8 @@ export async function updateBoardAxisItem(
     `UPDATE board_axis_items
      SET label = ?,
          task_color = CASE WHEN ? = 1 AND kind = 'task' THEN ? ELSE task_color END,
+         task_reset_type = CASE WHEN ? = 1 AND kind = 'task' THEN ? ELSE task_reset_type END,
+         task_reset_rule_json = CASE WHEN ? = 1 AND kind = 'task' THEN ? ELSE task_reset_rule_json END,
          separator_json = CASE WHEN ? = 1 THEN ? ELSE separator_json END,
          display_options_json = CASE WHEN ? = 1 THEN ? ELSE display_options_json END,
          updated_at = CURRENT_TIMESTAMP
@@ -1411,6 +2242,10 @@ export async function updateBoardAxisItem(
       input.label,
       input.taskColor !== undefined ? 1 : 0,
       input.taskColor ?? null,
+      input.taskResetRule !== undefined ? 1 : 0,
+      input.taskResetRule?.type ?? null,
+      input.taskResetRule !== undefined ? 1 : 0,
+      input.taskResetRule === undefined ? null : JSON.stringify(input.taskResetRule),
       input.separator !== undefined ? 1 : 0,
       separatorJson,
       input.displaySettings !== undefined ? 1 : 0,
@@ -1473,7 +2308,7 @@ export async function saveBoardCompletionPatches(
   );
 
   if (statements.length > 0) {
-    await env.DB.batch(statements);
+    await env.DB.batch([...statements, bumpBoardSheetVersionsForTables(env, userId, merged.map((patch) => patch.tableId))]);
   }
   return true;
 }
@@ -1531,7 +2366,7 @@ export async function saveBoardCellStatePatches(
   });
 
   if (statements.length > 0) {
-    await env.DB.batch(statements);
+    await env.DB.batch([...statements, bumpBoardSheetVersionsForTables(env, userId, merged.map((patch) => patch.tableId))]);
   }
   return true;
 }

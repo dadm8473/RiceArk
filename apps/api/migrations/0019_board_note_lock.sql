@@ -1,0 +1,2 @@
+ALTER TABLE board_notes
+  ADD COLUMN locked INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0, 1));

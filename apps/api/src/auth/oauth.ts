@@ -1,5 +1,10 @@
 import type { OAuthProvider, OAuthProviderConfig } from "./providers";
 
+const encoder = new TextEncoder();
+const OAUTH_STATE_VERSION = "v1";
+const OAUTH_STATE_MAX_AGE_MS = 10 * 60 * 1000;
+const OAUTH_STATE_CLOCK_SKEW_MS = 60 * 1000;
+
 export interface ProviderProfile {
   provider: OAuthProvider;
   providerUserId: string;
@@ -20,6 +25,69 @@ export function buildAuthorizationUrl(config: OAuthProviderConfig, redirectUri: 
   url.searchParams.set("scope", config.scope);
   url.searchParams.set("state", state);
   return url.toString();
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function createRandomStateNonce(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return base64UrlEncode(bytes);
+}
+
+async function signOAuthStatePayload(payload: string, secret: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
+  return base64UrlEncode(new Uint8Array(signature));
+}
+
+function timingSafeEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    diff |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return diff === 0;
+}
+
+export async function createOAuthState(provider: OAuthProvider, secret: string, now = new Date()): Promise<string> {
+  const payload = [
+    OAUTH_STATE_VERSION,
+    provider,
+    now.getTime().toString(36),
+    createRandomStateNonce()
+  ].join(".");
+  const signature = await signOAuthStatePayload(payload, secret);
+  return `${payload}.${signature}`;
+}
+
+export async function verifyOAuthState(
+  state: string,
+  provider: OAuthProvider,
+  secret: string,
+  now = new Date()
+): Promise<boolean> {
+  const parts = state.split(".");
+  if (parts.length !== 5) return false;
+  const [version, stateProvider, issuedAt, nonce, signature] = parts;
+  if (version !== OAUTH_STATE_VERSION || stateProvider !== provider || !issuedAt || !nonce || !signature) return false;
+
+  const issuedAtMs = Number.parseInt(issuedAt, 36);
+  if (!Number.isFinite(issuedAtMs)) return false;
+  const ageMs = now.getTime() - issuedAtMs;
+  if (ageMs > OAUTH_STATE_MAX_AGE_MS || ageMs < -OAUTH_STATE_CLOCK_SKEW_MS) return false;
+
+  const payload = [version, stateProvider, issuedAt, nonce].join(".");
+  const expectedSignature = await signOAuthStatePayload(payload, secret);
+  return timingSafeEqual(signature, expectedSignature);
 }
 
 export function extractOAuthState(cookieHeader: string | null): string | null {

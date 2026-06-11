@@ -22,7 +22,7 @@ export function useBoardCompletionQueue() {
         window.clearTimeout(timer.current);
       }
       timer.current = window.setTimeout(() => {
-        void flush();
+        void flush().catch(() => window.location.reload());
       }, 800);
     }
 

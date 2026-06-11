@@ -39,4 +39,19 @@ describe("AuthMenu", () => {
 
     expect(html).toContain("로그아웃");
   });
+
+  it("shows a theme toggle in the profile menu", () => {
+    const html = renderToStaticMarkup(
+      createElement(AuthMenu, {
+        menuOpen: true,
+        status: "authenticated",
+        theme: "light",
+        user: { id: "user-1", displayName: "쌀먹도사", avatarUrl: null },
+        onLogout: vi.fn(),
+        onThemeToggle: vi.fn()
+      })
+    );
+
+    expect(html).toContain("다크모드(Beta)");
+  });
 });

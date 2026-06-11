@@ -27,6 +27,22 @@ export interface BoardTable {
   default_column_width: number;
   locked: number;
   display_options_json?: string | null | undefined;
+  event_options_json?: string | null | undefined;
+  template_type?: "custom" | "lostark_event" | string | null | undefined;
+}
+
+export interface BoardNote {
+  id: string;
+  sheet_id: string;
+  title: string;
+  body: string;
+  color: string;
+  sort_order: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  locked: number;
 }
 
 export interface BoardAxisItem {
@@ -53,6 +69,7 @@ export interface BoardAxisItem {
   character_class_name?: string | null | undefined;
   character_item_level?: string | null | undefined;
   character_combat_power?: string | null | undefined;
+  character_source?: "lostark" | "manual" | string | null | undefined;
 }
 
 export interface BoardCellState {
@@ -72,6 +89,8 @@ export interface BoardCellCompletion {
 
 export interface BoardPayload {
   userId: string;
+  readOnly?: boolean | undefined;
+  shareId?: string | undefined;
   settings: {
     show_display_name: number;
     show_server_name: number;
@@ -81,6 +100,7 @@ export interface BoardPayload {
   };
   sheets: BoardSheet[];
   tables: BoardTable[];
+  notes: BoardNote[];
   axisItems: BoardAxisItem[];
   cellStates: BoardCellState[];
   completions: BoardCellCompletion[];

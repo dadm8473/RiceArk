@@ -4,12 +4,15 @@ import {
   buildAuthorizationUrl,
   buildRedirectUri,
   clearOAuthStateCookie,
+  createOAuthState,
   extractOAuthState,
-  normalizeProviderProfile
+  normalizeProviderProfile,
+  verifyOAuthState
 } from "../auth/oauth";
 import { getOAuthProvider, isSupportedOAuthProvider } from "../auth/providers";
 import { requireUser } from "../auth/requireUser";
 import { createSession, createSessionToken, deleteSession } from "../auth/sessions";
+import { isAdminUser } from "../auth/admin";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
 
@@ -22,7 +25,12 @@ function buildAuthErrorRedirect(appOrigin: string, providerName: string): string
   return url.toString();
 }
 
-authRoutes.get("/auth/:provider/start", (c) => {
+function requireSessionSecret(env: Env): string {
+  if (!env.SESSION_SECRET) throw new Error("SESSION_SECRET is required");
+  return env.SESSION_SECRET;
+}
+
+authRoutes.get("/auth/:provider/start", async (c) => {
   const providerName = c.req.param("provider");
   const provider = getOAuthProvider(c.env, providerName);
   if (!provider) {
@@ -35,7 +43,7 @@ authRoutes.get("/auth/:provider/start", (c) => {
     throw new ApiError(404, "unknown_provider", "Unknown OAuth provider");
   }
 
-  const state = crypto.randomUUID();
+  const state = await createOAuthState(provider.id, requireSessionSecret(c.env));
   const redirectUri = buildRedirectUri(c.env.APP_ORIGIN, provider.id);
   const location = buildAuthorizationUrl(provider, redirectUri, state);
   const stateCookie = [
@@ -71,7 +79,9 @@ authRoutes.get("/auth/:provider/callback", async (c) => {
 
   const code = c.req.query("code");
   const state = c.req.query("state");
-  if (!code || !state || extractOAuthState(c.req.header("cookie") ?? null) !== state) {
+  const hasValidSignedState = state ? await verifyOAuthState(state, provider.id, requireSessionSecret(c.env)) : false;
+  const hasValidLegacyCookieState = state ? extractOAuthState(c.req.header("cookie") ?? null) === state : false;
+  if (!code || !state || (!hasValidSignedState && !hasValidLegacyCookieState)) {
     throw new ApiError(400, "invalid_oauth_state", "Invalid OAuth state");
   }
 
@@ -132,7 +142,8 @@ authRoutes.get("/auth/:provider/callback", async (c) => {
 
 authRoutes.get("/session", async (c) => {
   const user = await requireUser(c);
-  return c.json({ user });
+  const isAdmin = await isAdminUser(c.env, user.id);
+  return c.json({ user: { ...user, isAdmin } });
 });
 
 authRoutes.post("/auth/logout", async (c) => {

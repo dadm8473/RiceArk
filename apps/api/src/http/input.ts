@@ -5,9 +5,13 @@ const DISALLOWED_MULTI_LINE_CONTROL = /[\u0000-\u0009\u000B\u000C\u000E-\u001F\u
 const DISALLOWED_FORMAT_OR_PRIVATE = /[\p{Cf}\p{Cs}\p{Co}\p{Cn}]/u;
 const DISALLOWED_EMOJI = /\p{Extended_Pictographic}/u;
 const DISALLOWED_COMBINING_MARK = /\p{M}/u;
+const ALLOWED_EMOJI_BASE = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}]/u;
+const ALLOWED_EMOJI_COMPONENT = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\uFE0E\uFE0F\u20E3]/gu;
+const EMOJI_COMPONENT_WITHOUT_BASE = /[\u{1F3FB}-\u{1F3FF}\uFE0E\uFE0F\u20E3]/u;
 
 export interface SafeTextOptions {
   allowEmpty?: boolean;
+  allowEmoji?: boolean;
   maxBytes?: number;
   maxChars: number;
   multiline?: boolean;
@@ -54,12 +58,18 @@ export function safeText(options: SafeTextOptions) {
       const hasControl = options.multiline
         ? DISALLOWED_MULTI_LINE_CONTROL.test(value)
         : DISALLOWED_SINGLE_LINE_CONTROL.test(value);
-      if (
-        hasControl ||
-        DISALLOWED_FORMAT_OR_PRIVATE.test(value) ||
-        DISALLOWED_EMOJI.test(value) ||
-        DISALLOWED_COMBINING_MARK.test(value)
-      ) {
+      const unsupportedText = options.allowEmoji ? value.replace(ALLOWED_EMOJI_COMPONENT, "") : value;
+      const hasOrphanEmojiComponent =
+        options.allowEmoji && EMOJI_COMPONENT_WITHOUT_BASE.test(value) && !ALLOWED_EMOJI_BASE.test(value);
+
+      if (hasControl || hasOrphanEmojiComponent || DISALLOWED_FORMAT_OR_PRIVATE.test(unsupportedText) || DISALLOWED_COMBINING_MARK.test(unsupportedText)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Text contains unsupported characters"
+        });
+      }
+
+      if (!options.allowEmoji && DISALLOWED_EMOJI.test(value)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "Text contains unsupported characters"

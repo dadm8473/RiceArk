@@ -23,7 +23,7 @@ describe("api shell", () => {
   });
 
   it("rejects oversized request bodies before route handling", async () => {
-    const body = JSON.stringify({ name: "a".repeat(17_000), resetType: "daily" });
+    const body = JSON.stringify({ name: "a".repeat(70_000), resetType: "daily" });
     const res = await app.request(
       "/api/tasks",
       {
@@ -38,5 +38,20 @@ describe("api shell", () => {
     expect(await res.json()).toEqual({
       error: { code: "payload_too_large", message: "Request body is too large" }
     });
+  });
+
+  it("allows moderate request bodies used by large character imports", async () => {
+    const body = JSON.stringify({ name: "a".repeat(20_000), resetType: "daily" });
+    const res = await app.request(
+      "/api/missing",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": String(body.length) },
+        body
+      },
+      env
+    );
+
+    expect(res.status).not.toBe(413);
   });
 });

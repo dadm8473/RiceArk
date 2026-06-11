@@ -24,14 +24,20 @@ export const taskOrderSchema = z
     path: ["taskIds"]
   });
 
-const safeTaskNameSchema = safeText({ maxChars: 40, maxBytes: 160 });
+const safeTaskNameSchema = safeText({ allowEmoji: true, maxChars: 40, maxBytes: 160 });
+const taskColorSchema = z
+  .string()
+  .regex(/^#[0-9A-Fa-f]{6}$/)
+  .transform((value) => value.toLowerCase());
 
 export const createTaskSchema = z.object({
   name: safeTaskNameSchema,
   scope: z.literal("character").optional().default("character"),
   resetType: z.enum(["daily", "weekly", "biweekly", "custom", "none"]),
   anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  intervalDays: z.number().int().min(1).max(365).optional()
+  intervalDays: z.number().int().min(1).max(365).optional(),
+  color: taskColorSchema.optional(),
+  requestId: resourceIdSchema.optional()
 }).strict();
 
 export const updateTaskSchema = z.object({
@@ -64,7 +70,12 @@ taskRoutes.post(
     const user = await requireUser(c);
     const input = c.req.valid("json");
     const task = buildTaskDefinition(input);
-    const id = await createUserTask(c.env, user.id, { name: task.name, scope: task.scope, resetRule: task.resetRule });
+    const id = await createUserTask(c.env, user.id, {
+      name: task.name,
+      scope: task.scope,
+      resetRule: task.resetRule,
+      createRequestId: input.requestId
+    });
     return c.json({ id }, 201);
   }
 );

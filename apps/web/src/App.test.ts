@@ -1,16 +1,25 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { App, getAuthErrorMessage } from "./App";
+import { App, getAuthErrorMessage, getUrlWithoutSharedRiceBinId } from "./App";
 
 const hooks = vi.hoisted(() => ({
   useBoard: vi.fn(),
-  useDashboard: vi.fn(),
   useSession: vi.fn()
 }));
 
 vi.mock("./features/board/BoardOverview", () => ({
   BoardOverview: () => "board overview"
+}));
+
+vi.mock("./features/shared-rice-bin/SharedRiceBinPanel", () => ({
+  SharedRiceBinPanel: () => "shared rice bin panel",
+  extractSharedRiceBinId: () => null
+}));
+
+vi.mock("./features/admin/AdminDashboard", () => ({
+  AdminDashboard: () => "admin dashboard"
 }));
 
 vi.mock("./features/dashboard/ChecklistMatrix", () => ({
@@ -21,30 +30,9 @@ vi.mock("./features/board/useBoard", () => ({
   useBoard: hooks.useBoard
 }));
 
-vi.mock("./features/dashboard/useDashboard", () => ({
-  useDashboard: hooks.useDashboard
-}));
-
 vi.mock("./features/auth/useSession", () => ({
   useSession: hooks.useSession
 }));
-
-const dashboard = {
-  characters: [],
-  tasks: [],
-  completions: [],
-  settings: {
-    density: "default",
-    row_height: 40,
-    column_width: 132,
-    checklist_orientation: "tasks_rows",
-    show_display_name: 1,
-    show_server_name: 0,
-    show_class_name: 0,
-    show_item_level: 1,
-    show_combat_power: 0
-  }
-};
 
 const board = {
   userId: "user-1",
@@ -57,6 +45,7 @@ const board = {
   },
   sheets: [],
   tables: [],
+  notes: [],
   axisItems: [],
   cellStates: [],
   completions: []
@@ -74,9 +63,15 @@ describe("getAuthErrorMessage", () => {
   });
 });
 
+describe("getUrlWithoutSharedRiceBinId", () => {
+  it("removes shared rice bin ids from query and path links while preserving the rest of the URL", () => {
+    expect(getUrlWithoutSharedRiceBinId("https://riceark.pages.dev/?share=AbCdEfGhIjKlMnOpQrStUv&foo=1#memo")).toBe("/?foo=1#memo");
+    expect(getUrlWithoutSharedRiceBinId("https://riceark.pages.dev/shared/AbCdEfGhIjKlMnOpQrStUv?foo=1")).toBe("/?foo=1");
+  });
+});
+
 describe("App", () => {
   beforeEach(() => {
-    hooks.useDashboard.mockReturnValue({ data: dashboard, error: null });
     hooks.useBoard.mockReturnValue({ data: board, error: null, reload: vi.fn() });
     hooks.useSession.mockReturnValue({ status: "anonymous", user: null, error: null });
   });
@@ -86,5 +81,91 @@ describe("App", () => {
 
     expect(html).toContain("board overview");
     expect(html).not.toContain("legacy checklist matrix");
+  });
+
+  it("does not load the legacy dashboard payload for the board-only main screen", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf-8");
+
+    expect(source).not.toContain("useDashboard");
+    expect(source).not.toContain("/api/dashboard");
+  });
+
+  it("renders the RiceArk icon in the top-left brand", () => {
+    const html = renderToStaticMarkup(createElement(App));
+
+    expect(html).toContain('class="brand-mark"');
+    expect(html).toContain('src="/icons/icon-192.png"');
+    expect(html).toContain('alt=""');
+    expect(html.indexOf('class="brand-mark"')).toBeLessThan(html.indexOf("RiceArk"));
+  });
+
+  it("renders a shared rice bin entry beside the brand", () => {
+    const html = renderToStaticMarkup(createElement(App));
+
+    expect(html).toContain("공유 쌀통");
+    expect(html.indexOf("RiceArk")).toBeLessThan(html.indexOf("공유 쌀통"));
+  });
+
+  it("renders the auction distribution calculator next to the main rice bin entries", () => {
+    const html = renderToStaticMarkup(createElement(App));
+
+    expect(html).toContain("분배금 계산기");
+    expect(html.indexOf("공유 쌀통")).toBeLessThan(html.indexOf("분배금 계산기"));
+  });
+
+  it("shows the operations dashboard entry only to admin users", () => {
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-admin", displayName: "수빈", avatarUrl: null, isAdmin: true },
+      error: null
+    });
+    const adminHtml = renderToStaticMarkup(createElement(App));
+
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-user", displayName: "쌀먹", avatarUrl: null, isAdmin: false },
+      error: null
+    });
+    const userHtml = renderToStaticMarkup(createElement(App));
+
+    expect(adminHtml).toContain("운영 현황");
+    expect(adminHtml.indexOf("분배금 계산기")).toBeLessThan(adminHtml.indexOf("운영 현황"));
+    expect(userHtml).not.toContain("운영 현황");
+  });
+
+  it("renders a support Discord link before the profile or login controls", () => {
+    const html = renderToStaticMarkup(createElement(App));
+
+    expect(html).toContain("문의하기");
+    expect(html).toContain('href="https://discord.gg/yanCxtrBTc"');
+    expect(html).toContain('target="_blank"');
+    expect(html.indexOf("문의하기")).toBeLessThan(html.indexOf("Discord로 로그인"));
+  });
+
+  it("passes an enabled flag to the board hook so anonymous shared lookup does not load a private board", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("useBoard({ enabled: isBoardEnabled })");
+  });
+
+  it("clears shared rice bin link state when the user switches back to their own rice bin", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("const handleOwnBoardSelected = () =>");
+    expect(source).toMatch(/handleOwnBoardSelected[\s\S]{0,220}setActiveView\("board"\)[\s\S]{0,220}clearSharedRiceBinEntryState\(\)/);
+    expect(source).toContain('onClick={handleOwnBoardSelected}');
+  });
+});
+
+describe("app metadata", () => {
+  it("links the web icon assets from the document head", () => {
+    const html = readFileSync(new URL("../index.html", import.meta.url), "utf-8");
+
+    expect(html).toContain('rel="icon"');
+    expect(html).toContain('href="/icons/favicon-32.png"');
+    expect(html).toContain('rel="apple-touch-icon"');
+    expect(html).toContain('href="/icons/icon-192.png"');
+    expect(html).toContain('rel="manifest"');
+    expect(html).toContain('href="/site.webmanifest"');
   });
 });

@@ -18,6 +18,11 @@ describe("createTaskSchema", () => {
       scope: "character",
       resetType: "daily"
     });
+    expect(createTaskSchema.parse({ name: "쿠르잔 전선🔥", resetType: "daily" })).toMatchObject({
+      name: "쿠르잔 전선🔥",
+      scope: "character",
+      resetType: "daily"
+    });
     expect(createTaskSchema.parse({ name: "메모", resetType: "none" })).toMatchObject({
       name: "메모",
       scope: "character",
@@ -25,12 +30,26 @@ describe("createTaskSchema", () => {
     });
   });
 
+  it("accepts a bounded create request id for idempotent task creation", () => {
+    expect(createTaskSchema.parse({ name: "쿠르잔 전선", resetType: "daily", requestId: "task-create-1" })).toMatchObject({
+      requestId: "task-create-1"
+    });
+    expect(createTaskSchema.safeParse({ name: "쿠르잔 전선", resetType: "daily", requestId: "task🙂" }).success).toBe(false);
+  });
+
+  it("accepts normalized task colors for board task creation", () => {
+    expect(createTaskSchema.parse({ name: "쿠르잔 전선", resetType: "daily", color: "#BE123C" })).toMatchObject({
+      color: "#be123c"
+    });
+    expect(createTaskSchema.safeParse({ name: "쿠르잔 전선", resetType: "daily", color: "red" }).success).toBe(false);
+    expect(createTaskSchema.safeParse({ name: "쿠르잔 전선", resetType: "daily", color: "#12345g" }).success).toBe(false);
+  });
+
   it("rejects roster as a special task scope", () => {
     expect(createTaskSchema.safeParse({ name: "세르카", scope: "roster", resetType: "daily" }).success).toBe(false);
   });
 
   it("rejects unsafe task names", () => {
-    expect(createTaskSchema.safeParse({ name: "쿠르잔🙂", resetType: "daily" }).success).toBe(false);
     expect(createTaskSchema.safeParse({ name: "쿠르잔\u200B전선", resetType: "daily" }).success).toBe(false);
     expect(createTaskSchema.safeParse({ name: "쿠르잔\u0301전선", resetType: "daily" }).success).toBe(false);
   });
@@ -40,6 +59,10 @@ describe("updateTaskSchema", () => {
   it("accepts editable task name and reset type", () => {
     expect(updateTaskSchema.parse({ name: "에브니 큐브", resetType: "weekly" })).toMatchObject({
       name: "에브니 큐브",
+      resetType: "weekly"
+    });
+    expect(updateTaskSchema.parse({ name: "에브니 큐브🙂", resetType: "weekly" })).toMatchObject({
+      name: "에브니 큐브🙂",
       resetType: "weekly"
     });
     expect(updateTaskSchema.parse({ name: "메모", resetType: "none" })).toMatchObject({

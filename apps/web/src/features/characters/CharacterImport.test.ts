@@ -1,7 +1,13 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { CHARACTER_SEARCH_NAME_ERROR, CharacterCandidateList, CharacterImportPanel, getCharacterSearchNameError } from "./CharacterImport";
+import {
+  CHARACTER_SEARCH_NAME_ERROR,
+  CharacterCandidateList,
+  CharacterImportPanel,
+  ManualCharacterCreatePanel,
+  getCharacterSearchNameError
+} from "./CharacterImport";
 
 describe("CharacterCandidateList", () => {
   it("renders column headers and combat power as a plain value", () => {
@@ -177,6 +183,33 @@ describe("CharacterImportPanel", () => {
 
     expect(html).not.toContain("축약 이름");
     expect(html).not.toContain("냠1");
+  });
+});
+
+describe("ManualCharacterCreatePanel", () => {
+  it("renders nickname as required and other character details as optional", () => {
+    const html = renderToStaticMarkup(
+      createElement(ManualCharacterCreatePanel, {
+        manualCharacter: {
+          name: "",
+          serverName: "",
+          className: "",
+          itemLevel: "",
+          combatPower: ""
+        },
+        saving: false,
+        onChange: vi.fn(),
+        onSave: vi.fn()
+      })
+    );
+
+    expect(html).toContain("직접 추가");
+    expect(html).toContain("닉네임");
+    expect(html).toContain("서버");
+    expect(html).toContain("직업");
+    expect(html).toContain("아이템 레벨");
+    expect(html).toContain("전투력");
+    expect(html).toContain("disabled");
   });
 });
 

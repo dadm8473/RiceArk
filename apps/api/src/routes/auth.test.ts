@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import app from "../index";
+import { createOAuthState } from "../auth/oauth";
 
 const env = {
   APP_ORIGIN: "http://127.0.0.1:5173",
@@ -12,7 +13,27 @@ const env = {
   SESSION_SECRET: "test-secret"
 };
 
+function createCallbackDb() {
+  return {
+    prepare(sql: string) {
+      return {
+        bind() {
+          return {
+            first: async () => (sql.includes("SELECT user_id") ? null : null),
+            run: async () => ({ success: true })
+          };
+        }
+      };
+    },
+    batch: async () => []
+  };
+}
+
 describe("auth routes", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("redirects to Google OAuth", async () => {
     const res = await app.request("/api/auth/google/start", {}, env);
     expect(res.status).toBe(302);
@@ -37,5 +58,36 @@ describe("auth routes", () => {
 
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("http://127.0.0.1:5173/?authError=oauth_unavailable&provider=discord");
+  });
+
+  it("accepts a signed Discord OAuth callback state without the temporary state cookie", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const href = String(url);
+        if (href.includes("/oauth2/token")) {
+          return Response.json({ access_token: "discord-access-token" });
+        }
+        if (href.includes("/users/@me")) {
+          return Response.json({
+            id: "discord-user",
+            username: "rice",
+            global_name: "쌀먹",
+            email: "user@example.com",
+            avatar: null
+          });
+        }
+        return new Response(null, { status: 404 });
+      })
+    );
+    const state = await createOAuthState("discord", env.SESSION_SECRET);
+    const res = await app.request(
+      `/api/auth/discord/callback?code=mobile-code&state=${encodeURIComponent(state)}`,
+      {},
+      { ...env, DB: createCallbackDb() }
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("http://127.0.0.1:5173");
   });
 });

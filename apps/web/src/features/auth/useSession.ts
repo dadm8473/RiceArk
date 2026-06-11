@@ -5,6 +5,7 @@ export interface AuthUser {
   id: string;
   displayName: string;
   avatarUrl: string | null;
+  isAdmin?: boolean;
 }
 
 type SessionPayload = {

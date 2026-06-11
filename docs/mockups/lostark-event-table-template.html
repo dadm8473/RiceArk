@@ -1,0 +1,1035 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RiceArk Event Table Template Mockup</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f6fa;
+        --paper: #ffffff;
+        --line: #c8d2e0;
+        --line-soft: #e4e9f1;
+        --text: #111827;
+        --muted: #526173;
+        --blue: #2563eb;
+        --green: #13795b;
+        --red: #be123c;
+        --amber: #b45309;
+        --violet: #7c3aed;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--text);
+        background: var(--bg);
+        font-family:
+          Inter,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      .page {
+        display: grid;
+        gap: 16px;
+        padding: 18px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 12px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .brand-mark {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        border: 1px solid #d4af37;
+        border-radius: 999px;
+        color: #d4af37;
+        background: #000000;
+        font-weight: 900;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 18px;
+      }
+
+      .subtle {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(340px, 420px) minmax(680px, 1fr);
+        gap: 16px;
+        align-items: start;
+      }
+
+      .panel,
+      .board-table {
+        border: 1px solid var(--line);
+        background: var(--paper);
+      }
+
+      .panel {
+        display: grid;
+        gap: 14px;
+        padding: 14px;
+      }
+
+      .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .template-card {
+        display: grid;
+        gap: 8px;
+        border: 1px solid #8fb1f5;
+        padding: 10px;
+        background: #eef4ff;
+      }
+
+      .template-card strong {
+        font-size: 14px;
+      }
+
+      .field {
+        display: grid;
+        gap: 5px;
+        color: #334155;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .field input[type="text"] {
+        width: 100%;
+        height: 34px;
+        border: 1px solid #8a96a8;
+        padding: 0 8px;
+      }
+
+      .field input[type="number"] {
+        width: 100%;
+        height: 32px;
+        border: 1px solid #8a96a8;
+        padding: 0 8px;
+      }
+
+      .check-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+      }
+
+      .check-row {
+        display: flex;
+        align-items: center;
+        min-height: 32px;
+        gap: 6px;
+        border: 1px solid var(--line-soft);
+        padding: 0 8px;
+        background: #f8fafc;
+        color: #1f2937;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .check-row input {
+        width: 16px;
+        height: 16px;
+      }
+
+      .reward-list {
+        display: grid;
+        gap: 6px;
+      }
+
+      .reward-row {
+        display: grid;
+        grid-template-columns: 20px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 7px;
+        min-height: 34px;
+        border: 1px solid var(--line-soft);
+        padding: 0 8px;
+        background: #ffffff;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .reward-row small {
+        color: var(--muted);
+        font-weight: 700;
+      }
+
+      .mode-list {
+        display: grid;
+        gap: 6px;
+      }
+
+      .mode-row {
+        display: grid;
+        grid-template-columns: 20px minmax(0, 1fr);
+        gap: 6px;
+        min-height: 42px;
+        border: 1px solid var(--line-soft);
+        padding: 7px 8px;
+        background: #ffffff;
+        color: #1f2937;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .mode-row input {
+        width: 16px;
+        height: 16px;
+        margin-top: 1px;
+      }
+
+      .mode-row small {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-weight: 700;
+      }
+
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 6px;
+      }
+
+      .inline-add {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 6px;
+      }
+
+      .roster-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .roster-chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        border: 1px solid #cbd5e1;
+        padding: 0 8px;
+        background: #ffffff;
+        color: #334155;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .layout-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 34px;
+        border: 1px solid #8a96a8;
+        padding: 0 12px;
+        color: var(--text);
+        background: #ffffff;
+        font-weight: 800;
+      }
+
+      .button.primary {
+        border-color: var(--blue);
+        color: #ffffff;
+        background: var(--blue);
+      }
+
+      .board-area {
+        display: grid;
+        gap: 12px;
+      }
+
+      .tabbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-bottom: 1px solid var(--line);
+        padding: 6px 0;
+      }
+
+      .tab {
+        border: 0;
+        border-bottom: 2px solid transparent;
+        padding: 7px 8px;
+        background: transparent;
+        font-weight: 800;
+      }
+
+      .tab.active {
+        border-color: var(--blue);
+        color: var(--blue);
+      }
+
+      .canvas {
+        min-height: 440px;
+        overflow: auto;
+      }
+
+      .board-table {
+        width: 880px;
+        padding: 10px;
+      }
+
+      .table-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 8px;
+      }
+
+      .table-title {
+        min-width: 0;
+        max-width: 260px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 16px;
+        font-weight: 900;
+      }
+
+      .toolbar-spacer {
+        flex: 1;
+      }
+
+      .mini-button {
+        min-height: 28px;
+        border: 1px solid #9aa6b8;
+        padding: 0 8px;
+        background: #ffffff;
+        color: #334155;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .event-grid {
+        display: grid;
+        grid-template-columns: var(--task-width, 150px) var(--info-width, 1fr) repeat(var(--roster-count, 2), var(--roster-width, 86px));
+        grid-auto-rows: minmax(var(--row-height, 46px), auto);
+        border-top: 1px solid var(--line);
+        border-left: 1px solid var(--line);
+      }
+
+      .cell {
+        min-height: var(--row-height, 46px);
+        border-right: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        padding: 8px;
+      }
+
+      .head {
+        min-height: 34px;
+        background: #eaf0f7;
+        color: #334155;
+        font-size: 12px;
+        font-weight: 900;
+        text-align: center;
+      }
+
+      .task-cell {
+        display: grid;
+        grid-template-columns: 10px minmax(0, 1fr);
+        align-items: center;
+        gap: 7px;
+        font-weight: 900;
+      }
+
+      .swatch {
+        width: 10px;
+        height: 10px;
+        border: 1px solid #ffffff;
+        box-shadow: 0 0 0 1px #94a3b8;
+      }
+
+      .info-cell {
+        display: grid;
+        gap: 6px;
+        min-width: 0;
+      }
+
+      .primary-line {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        font-size: 13px;
+        font-weight: 900;
+      }
+
+      .meta-line {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 20px;
+        border: 1px solid #cbd5e1;
+        padding: 0 6px;
+        background: #f8fafc;
+        color: #334155;
+        font-size: 11px;
+        font-weight: 900;
+      }
+
+      .badge.good {
+        border-color: #9bd1bd;
+        color: var(--green);
+        background: #edfdf5;
+      }
+
+      .badge.off {
+        border-color: #d6dce5;
+        color: #64748b;
+        background: #f1f5f9;
+      }
+
+      .badge.warn {
+        border-color: #f0c78a;
+        color: var(--amber);
+        background: #fff7ed;
+      }
+
+      .complete {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .roster-head {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .complete input {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--blue);
+      }
+
+      .disabled-row {
+        color: #64748b;
+        background: #f8fafc;
+      }
+
+      .disabled-row .task-cell,
+      .disabled-row .info-cell {
+        opacity: 0.68;
+      }
+
+      .event-detail-list {
+        display: grid;
+        gap: 6px;
+      }
+
+      .event-detail {
+        display: grid;
+        gap: 4px;
+        border: 1px solid var(--line-soft);
+        padding: 6px;
+        background: #ffffff;
+      }
+
+      .event-detail strong {
+        font-size: 12px;
+      }
+
+      .event-detail small,
+      .continent-tag {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .reward-chip-line {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+
+      .reward-chip {
+        display: inline-flex;
+        min-height: 19px;
+        align-items: center;
+        border: 1px solid #cbd5e1;
+        padding: 0 5px;
+        background: #ffffff;
+        color: #334155;
+        font-size: 11px;
+        font-weight: 900;
+      }
+
+      @media (max-width: 980px) {
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+
+        .board-table {
+          width: 860px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">R</span>
+          <div>
+            <h1>카게/필보/모험섬 표 목업</h1>
+            <p class="subtle">표 추가 템플릿에서 생성되는 원정대 이벤트 표 예시</p>
+          </div>
+        </div>
+        <p class="subtle">목업 현재 시각: 17:38 KST · 지난 시간 숨김</p>
+      </header>
+
+      <section class="workspace">
+        <aside class="panel">
+          <div class="panel-header">
+            <h2>표 추가</h2>
+            <button class="mini-button" type="button">X</button>
+          </div>
+
+          <div class="template-card">
+            <strong>카게/필보/모험섬 표</strong>
+            <p class="subtle">한 표 안에서 원정대/계정별 완료 열을 추가해 같이 관리합니다.</p>
+          </div>
+
+          <label class="field">
+            표 이름
+            <input type="text" value="본계정 이벤트" />
+          </label>
+
+          <div class="field">
+            포함할 컨텐츠
+            <div class="check-grid">
+              <label class="check-row"><input type="checkbox" checked /> 카오스 게이트</label>
+              <label class="check-row"><input type="checkbox" checked /> 필드 보스</label>
+              <label class="check-row"><input type="checkbox" checked /> 모험섬</label>
+            </div>
+          </div>
+
+          <div class="field">
+            모험섬 날짜 유형
+            <div class="mode-list">
+              <label class="mode-row">
+                <input type="radio" name="adventureDayMode" value="withNine" checked />
+                <span>
+                  9시 보상 있는 날
+                  <small>9/11/13 중 1회, 19/21/23 중 1회 획득 가능</small>
+                </span>
+              </label>
+              <label class="mode-row">
+                <input type="radio" name="adventureDayMode" value="withoutNine" />
+                <span>
+                  9시 보상 없는 날
+                  <small>11/13/19/21/23 전체에서 하루 1회 획득 가능</small>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <div class="field">
+            완료 열
+            <div class="roster-list" id="rosterList"></div>
+            <div class="inline-add">
+              <input id="rosterNameInput" type="text" value="부계정2" />
+              <button class="button" id="addRosterButton" type="button">원정대 추가</button>
+            </div>
+          </div>
+
+          <div class="field">
+            모험섬 관심 보상
+            <div class="reward-list" id="rewardFilters">
+              <label class="reward-row">
+                <input type="checkbox" value="gold" checked />
+                <span>쌀(골드)</span>
+                <small>보상 기준 필터</small>
+              </label>
+              <label class="reward-row">
+                <input type="checkbox" value="card" checked />
+                <span>카드 팩</span>
+                <small>보상 기준 필터</small>
+              </label>
+              <label class="reward-row">
+                <input type="checkbox" value="coin" checked />
+                <span>해적 주화 / 대양 주화</span>
+                <small>장난감 성</small>
+              </label>
+              <label class="reward-row">
+                <input type="checkbox" value="silver" />
+                <span>실링</span>
+                <small>남은 시간 없음</small>
+              </label>
+              <label class="reward-row">
+                <input type="checkbox" value="leaf" />
+                <span>카드 경험치</span>
+                <small>보상 기준 필터</small>
+              </label>
+            </div>
+          </div>
+
+          <div class="field">
+            표 크기
+            <div class="layout-grid">
+              <label class="field">숙제 열 너비<input id="taskWidthInput" type="number" min="96" max="260" value="150" /></label>
+              <label class="field">정보 열 너비<input id="infoWidthInput" type="number" min="220" max="620" value="420" /></label>
+              <label class="field">완료 열 너비<input id="rosterWidthInput" type="number" min="56" max="160" value="86" /></label>
+              <label class="field">행 높이<input id="rowHeightInput" type="number" min="34" max="120" value="54" /></label>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="button" type="button" id="goldOnlyButton">쌀섬만 보기</button>
+            <button class="button" type="button" id="allRewardsButton">전체 보상</button>
+            <button class="button primary" type="button">표 추가</button>
+          </div>
+        </aside>
+
+        <section class="board-area">
+          <nav class="tabbar">
+            <button class="tab active" type="button">숙제</button>
+            <button class="tab" type="button">낙원</button>
+            <button class="tab" type="button">이벤트</button>
+            <button class="tab" type="button">설정</button>
+          </nav>
+
+          <div class="canvas">
+            <article class="board-table">
+              <div class="table-toolbar">
+                <strong class="table-title">본계정 이벤트</strong>
+                <button class="mini-button" type="button">잠금</button>
+                <button class="mini-button" type="button">순서</button>
+                <span class="toolbar-spacer"></span>
+                <button class="mini-button" type="button">설정</button>
+              </div>
+
+              <div class="event-grid" id="eventGrid" aria-label="이벤트 표 미리보기"></div>
+            </article>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script>
+      const MOCK_NOW_MINUTES = 17 * 60 + 38;
+      const adventureIslandContinents = {
+        "고요한 안식의 섬": "로웬",
+        "기회의 섬": "아르데타인",
+        "라일라이 아일랜드": "파푸니카",
+        "메데이아": "슈샤이어",
+        "몬테섬": "베른 남부",
+        "볼라르 섬": "베른 북부",
+        "블루홀 섬": "베른 남부",
+        "수라도": "로웬",
+        "스노우팡 아일랜드": "슈샤이어",
+        "우거진 갈대의 섬": "아르데타인",
+        "잔혹한 장난감 성": "슈샤이어",
+        "죽음의 협곡": "아르데타인",
+        "쿵덕쿵 아일랜드": "베른 북부",
+        "포르페": "애니츠",
+        "하모니 섬": "로헨델",
+        "환영 나비 섬": "파푸니카"
+      };
+
+      function getAdventureIslandContinent(name) {
+        return adventureIslandContinents[name] ?? "가까운 대륙 확인 필요";
+      }
+
+      const adventureDayModes = {
+        withNine: {
+          label: "9시 보상 있는 날",
+          rule: "9/11/13 중 1회, 19/21/23 중 1회 획득 가능",
+          islands: [
+            {
+              name: "우거진 갈대의 섬",
+              continent: getAdventureIslandContinent("우거진 갈대의 섬"),
+              sessions: [
+                {
+                  claim: "1회차",
+                  slot: "9시 보상",
+                  times: ["09:00", "11:00", "13:00"],
+                  rewards: [
+                    { key: "card", label: "카드 팩" },
+                    { key: "leaf", label: "카드 경험치" }
+                  ]
+                }
+              ]
+            },
+            {
+              name: "블루홀 섬",
+              continent: getAdventureIslandContinent("블루홀 섬"),
+              sessions: [
+                {
+                  claim: "2회차",
+                  slot: "저녁 보상",
+                  times: ["19:00", "21:00", "23:00"],
+                  rewards: [{ key: "gold", label: "쌀(골드)" }]
+                }
+              ]
+            },
+            {
+              name: "잔혹한 장난감 성",
+              continent: getAdventureIslandContinent("잔혹한 장난감 성"),
+              sessions: [
+                {
+                  claim: "2회차",
+                  slot: "저녁 보상",
+                  times: ["19:00", "21:00", "23:00"],
+                  rewards: [{ key: "coin", label: "해적 주화" }]
+                }
+              ]
+            },
+            {
+              name: "라일라이 아일랜드",
+              continent: getAdventureIslandContinent("라일라이 아일랜드"),
+              sessions: [
+                {
+                  claim: "1회차",
+                  slot: "9시 보상",
+                  times: ["09:00", "11:00", "13:00"],
+                  rewards: [{ key: "silver", label: "실링" }]
+                }
+              ]
+            }
+          ]
+        },
+        withoutNine: {
+          label: "9시 보상 없는 날",
+          rule: "11/13/19/21/23 전체에서 하루 1회 획득 가능",
+          islands: [
+            {
+              name: "블루홀 섬",
+              continent: getAdventureIslandContinent("블루홀 섬"),
+              sessions: [
+                {
+                  claim: "일일 1회",
+                  slot: "일일 보상",
+                  times: ["11:00", "13:00", "19:00", "21:00", "23:00"],
+                  rewards: [{ key: "gold", label: "쌀(골드)" }]
+                }
+              ]
+            },
+            {
+              name: "죽음의 협곡",
+              continent: getAdventureIslandContinent("죽음의 협곡"),
+              sessions: [
+                {
+                  claim: "일일 1회",
+                  slot: "일일 보상",
+                  times: ["11:00", "13:00", "19:00", "21:00", "23:00"],
+                  rewards: [{ key: "card", label: "카드 팩" }]
+                }
+              ]
+            },
+            {
+              name: "잔혹한 장난감 성",
+              continent: getAdventureIslandContinent("잔혹한 장난감 성"),
+              sessions: [
+                {
+                  claim: "일일 1회",
+                  slot: "일일 보상",
+                  times: ["11:00", "13:00", "19:00", "21:00", "23:00"],
+                  rewards: [{ key: "coin", label: "해적 주화" }]
+                }
+              ]
+            },
+            {
+              name: "스노우팡 아일랜드",
+              continent: getAdventureIslandContinent("스노우팡 아일랜드"),
+              sessions: [
+                {
+                  claim: "일일 1회",
+                  slot: "일일 보상",
+                  times: ["11:00", "13:00", "19:00", "21:00", "23:00"],
+                  rewards: [{ key: "silver", label: "실링" }]
+                }
+              ]
+            }
+          ]
+        }
+      };
+
+      const events = [
+        {
+          key: "chaos",
+          label: "카게",
+          color: "#2563eb",
+          enabled: true,
+          badge: "오늘 가능",
+          next: "다음 21:50",
+          remain: "4시간 12분 남음",
+          meta: "카오스게이트 · 쿠르잔 북부 · 아비도스 주둔지"
+        },
+        {
+          key: "fieldBoss",
+          label: "필보",
+          color: "#be123c",
+          enabled: false,
+          badge: "오늘 없음",
+          next: "다음 내일 07:00",
+          remain: "",
+          meta: "세베크 아툰 · 아비도스 주둔지"
+        }
+      ];
+
+      const rosters = ["본계정", "부계정"];
+      const filters = document.querySelectorAll('#rewardFilters input[type="checkbox"]');
+      const dayModeInputs = document.querySelectorAll('input[name="adventureDayMode"]');
+      const eventGrid = document.querySelector("#eventGrid");
+      const rosterList = document.querySelector("#rosterList");
+      const rosterNameInput = document.querySelector("#rosterNameInput");
+      const addRosterButton = document.querySelector("#addRosterButton");
+      const taskWidthInput = document.querySelector("#taskWidthInput");
+      const infoWidthInput = document.querySelector("#infoWidthInput");
+      const rosterWidthInput = document.querySelector("#rosterWidthInput");
+      const rowHeightInput = document.querySelector("#rowHeightInput");
+
+      function getSelectedRewards() {
+        return Array.from(filters)
+          .filter((input) => input.checked)
+          .map((input) => input.value);
+      }
+
+      function getAdventureDayMode() {
+        const selected = document.querySelector('input[name="adventureDayMode"]:checked')?.value ?? "withNine";
+        return adventureDayModes[selected] ?? adventureDayModes.withNine;
+      }
+
+      function toMinutes(time) {
+        const [hour, minute] = time.split(":").map(Number);
+        return hour * 60 + minute;
+      }
+
+      function getFutureTimes(times) {
+        return times.filter((time) => toMinutes(time) > MOCK_NOW_MINUTES);
+      }
+
+      function getMatchedSessions(options = { futureOnly: true }) {
+        const selected = getSelectedRewards();
+        const dayMode = getAdventureDayMode();
+        return dayMode.islands.flatMap((island) =>
+          island.sessions
+            .filter((session) => session.rewards.some((reward) => selected.includes(reward.key)))
+            .map((session) => ({
+              island,
+              session,
+              rewards: session.rewards.filter((reward) => selected.includes(reward.key)),
+              futureTimes: getFutureTimes(session.times)
+            }))
+            .filter((entry) => (options.futureOnly ? entry.futureTimes.length > 0 : true))
+        );
+      }
+
+      function getNextFutureTime(sessions) {
+        return sessions
+          .flatMap((entry) => entry.futureTimes)
+          .sort((a, b) => toMinutes(a) - toMinutes(b))[0];
+      }
+
+      function formatRemainUntil(time) {
+        const diff = toMinutes(time) - MOCK_NOW_MINUTES;
+        const hours = Math.floor(diff / 60);
+        const minutes = diff % 60;
+        if (hours <= 0) return `${minutes}분 남음`;
+        return `${hours}시간 ${minutes}분 남음`;
+      }
+
+      function buildAdventureInfo() {
+        const dayMode = getAdventureDayMode();
+        const matched = getMatchedSessions({ futureOnly: true });
+        const matchedAllDay = getMatchedSessions({ futureOnly: false });
+        if (matched.length === 0) {
+          const allDayRewards = [...new Set(matchedAllDay.flatMap((entry) => entry.rewards.map((reward) => reward.label)))];
+          return `
+            <div class="primary-line">
+              <span class="badge off">${matchedAllDay.length > 0 ? "오늘 남은 시간 없음" : "오늘 없음"}</span>
+              <span>${allDayRewards.length > 0 ? `${allDayRewards.join(" / ")} 종료` : "선택한 관심 보상 없음"}</span>
+            </div>
+            <div class="meta-line">${dayMode.label} · ${dayMode.rule}</div>
+            <div class="meta-line">지난 시간은 표시하지 않습니다.</div>
+          `;
+        }
+
+        const rewardLabels = [...new Set(matched.flatMap((entry) => entry.rewards.map((reward) => reward.label)))];
+        const claimLabels = [...new Set(matched.map((entry) => entry.session.claim))];
+        const endedLabels = [
+          ...new Set(
+            matchedAllDay
+              .filter((entry) => entry.futureTimes.length === 0)
+              .flatMap((entry) => entry.rewards.map((reward) => `${entry.session.claim} ${reward.label}`))
+          )
+        ];
+        const nextTime = getNextFutureTime(matched);
+        const details = matched
+          .map((entry) => {
+            return `
+              <article class="event-detail">
+                <strong>${entry.session.claim} · ${entry.session.slot} · ${entry.island.name} · ${entry.rewards.map((reward) => reward.label).join(", ")}</strong>
+                <small>${entry.futureTimes.join(", ")} · 가까운 대륙: ${entry.island.continent}</small>
+              </article>
+            `;
+          })
+          .join("");
+
+        return `
+          <div class="primary-line">
+            <span class="badge good">${rewardLabels.join(" / ")}</span>
+            <span class="badge">${claimLabels.join(" / ")}</span>
+            <span>다음 ${nextTime}</span>
+            <span class="badge warn">${formatRemainUntil(nextTime)}</span>
+          </div>
+          <div class="meta-line">${dayMode.label} · ${dayMode.rule}</div>
+          ${endedLabels.length > 0 ? `<div class="meta-line">${endedLabels.join(" / ")} 시간은 종료되어 숨김</div>` : ""}
+          <div class="event-detail-list">${details}</div>
+        `;
+      }
+
+      function renderRosters() {
+        rosterList.innerHTML = rosters.map((name) => `<span class="roster-chip">${name}</span>`).join("");
+      }
+
+      function renderEventGrid() {
+        eventGrid.style.setProperty("--roster-count", String(rosters.length));
+        eventGrid.style.setProperty("--task-width", `${taskWidthInput.value}px`);
+        eventGrid.style.setProperty("--info-width", `${infoWidthInput.value}px`);
+        eventGrid.style.setProperty("--roster-width", `${rosterWidthInput.value}px`);
+        eventGrid.style.setProperty("--row-height", `${rowHeightInput.value}px`);
+
+        const header = `
+          <div class="cell head"></div>
+          <div class="cell head">오늘 정보</div>
+          ${rosters.map((name) => `<div class="cell head roster-head">${name}</div>`).join("")}
+        `;
+
+        const regularRows = events
+          .map((event) => {
+            const stateClass = event.enabled ? "" : " disabled-row";
+            return `
+              <div class="cell task-cell${stateClass}">
+                <span class="swatch" style="background: ${event.color}"></span>
+                <span>${event.label}</span>
+              </div>
+              <div class="cell info-cell${stateClass}">
+                <div class="primary-line">
+                  <span class="badge ${event.enabled ? "good" : "off"}">${event.badge}</span>
+                  <span>${event.next}</span>
+                  ${event.remain ? `<span class="badge warn">${event.remain}</span>` : ""}
+                </div>
+                <div class="meta-line">${event.meta}</div>
+              </div>
+              ${rosters.map(() => `<label class="cell complete${stateClass}"><input type="checkbox" ${event.enabled ? "" : "disabled"} /></label>`).join("")}
+            `;
+          })
+          .join("");
+
+        const adventureRow = `
+          <div class="cell task-cell">
+            <span class="swatch" style="background: #7c3aed"></span>
+            <span>모험섬</span>
+          </div>
+          <div class="cell info-cell">${buildAdventureInfo()}</div>
+          ${rosters.map(() => `<label class="cell complete"><input type="checkbox" /></label>`).join("")}
+        `;
+
+        eventGrid.innerHTML = `${header}${regularRows}${adventureRow}`;
+      }
+
+      function render() {
+        renderRosters();
+        renderEventGrid();
+      }
+
+      filters.forEach((input) => {
+        input.addEventListener("change", renderEventGrid);
+      });
+
+      dayModeInputs.forEach((input) => {
+        input.addEventListener("change", renderEventGrid);
+      });
+
+      for (const input of [taskWidthInput, infoWidthInput, rosterWidthInput, rowHeightInput]) {
+        input.addEventListener("input", renderEventGrid);
+      }
+
+      addRosterButton.addEventListener("click", () => {
+        const nextName = rosterNameInput.value.trim();
+        if (!nextName) return;
+        rosters.push(nextName.slice(0, 12));
+        rosterNameInput.value = "";
+        render();
+      });
+
+      document.querySelector("#goldOnlyButton").addEventListener("click", () => {
+        filters.forEach((input) => {
+          input.checked = input.value === "gold";
+        });
+        renderEventGrid();
+      });
+
+      document.querySelector("#allRewardsButton").addEventListener("click", () => {
+        filters.forEach((input) => {
+          input.checked = true;
+        });
+        renderEventGrid();
+      });
+
+      render();
+    </script>
+  </body>
+</html>
