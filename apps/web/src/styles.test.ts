@@ -201,19 +201,19 @@ describe("matrix styles", () => {
     expect(editableColumnBlock).toContain("border-bottom: 1px solid #c6cfdd;");
   });
 
-  it("draws cell mark corner icons, memo dots, and the hover tooltip", () => {
+  it("draws cell mark corner icons and a content-sized hover tooltip", () => {
     const fixedMarkBlock = styles.match(/\.board-check-mark\.fixed\s*{[^}]+}/)?.[0] ?? "";
     const reservedMarkBlock = styles.match(/\.board-check-mark\.reserved\s*{[^}]+}/)?.[0] ?? "";
-    const memoDotBlock = styles.match(/\.board-check-memo-dot\s*{[^}]+}/)?.[0] ?? "";
     const tooltipBlock = styles.match(/\.board-cell-mark-tooltip\s*{[^}]+}/)?.[0] ?? "";
     const markEditHoverBlock =
       styles.match(/\.board-table-summary\.mark-edit-mode \.board-check-cell:hover\s*{[^}]+}/)?.[0] ?? "";
 
     expect(fixedMarkBlock).toContain("color: #d97706;");
     expect(reservedMarkBlock).toContain("color: #7c3aed;");
-    expect(memoDotBlock).toContain("border-radius: 999px;");
     expect(tooltipBlock).toContain("position: absolute;");
+    expect(tooltipBlock).toContain("width: max-content;");
     expect(markEditHoverBlock).toContain("outline: 2px dashed #2563eb;");
+    expect(styles).not.toContain(".board-check-memo-dot");
     expect(styles).toContain('.app-shell[data-theme="dark"] .board-cell-mark-tooltip');
     expect(styles).toContain('.app-shell[data-theme="dark"] .board-cell-mark-option.active');
   });

@@ -1080,7 +1080,7 @@ describe("BoardOverview", () => {
     expect(html).not.toContain('aria-label="쿠르잔 전선 / 냠수나이스1" class="board-check"');
   });
 
-  it("renders fixed and reserved corner marks with a memo dot on marked cells", () => {
+  it("renders fixed and reserved corner marks on marked cells", () => {
     const secondCharacter: BoardAxisItem = {
       ...board.axisItems[1]!,
       id: "column-character-2",
@@ -1120,7 +1120,7 @@ describe("BoardOverview", () => {
 
     expect(html).toContain('class="board-check-mark fixed"');
     expect(html).toContain('class="board-check-mark reserved"');
-    expect(html).toContain('class="board-check-memo-dot"');
+    expect(html).not.toContain("board-check-memo-dot");
   });
 
   it("treats reserved marks from a past period as plain cells", () => {

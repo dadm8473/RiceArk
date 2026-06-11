@@ -4310,7 +4310,6 @@ function BoardCheckCell({
           <Clock aria-hidden="true" size={10} />
         </span>
       ) : null}
-      {mark?.memo ? <span aria-hidden="true" className="board-check-memo-dot" /> : null}
       {tooltipVisible && hasTooltipContent ? (
         <div className="board-cell-mark-tooltip" role="tooltip">
           {markLabel ? <strong>{markLabel}</strong> : null}

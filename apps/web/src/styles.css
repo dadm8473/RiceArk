@@ -1959,17 +1959,6 @@ body {
   color: #7c3aed;
 }
 
-.board-check-memo-dot {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 4px;
-  height: 4px;
-  border-radius: 999px;
-  background: #f97316;
-  pointer-events: none;
-}
-
 .board-cell-mark-tooltip {
   position: absolute;
   top: calc(100% - 4px);
@@ -1977,6 +1966,7 @@ body {
   z-index: 40;
   display: grid;
   gap: 2px;
+  width: max-content;
   max-width: 200px;
   padding: 6px 9px;
   border: 1px solid #8f99aa;
