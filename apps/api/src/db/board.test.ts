@@ -19,7 +19,9 @@ import {
   deleteBoardShareFavorite,
   ensureDefaultBoard,
   getCurrentBoardCompletionPeriodKeys,
+  findBoardCellStatePatchesOutsideCurrentPeriod,
   findUnauthorizedBoardCellStatePatches,
+  resolveExpiredBoardCellStateRows,
   findUnauthorizedBoardCompletionPatches,
   findBoardCompletionPatchesOutsideCurrentPeriod,
   listBoardShareFavorites,
@@ -450,7 +452,8 @@ describe("board db defaults", () => {
           tableId: "table-1",
           rowItemId: "row-task-1",
           columnItemId: "column-character-1",
-          checkboxVisible: false
+          markType: "disabled",
+          memo: null
         }
       ])
     ).resolves.toBe(true);
@@ -737,13 +740,15 @@ describe("board db defaults", () => {
           tableId: "table-1",
           rowItemId: "row-1",
           columnItemId: "column-1",
-          checkboxVisible: false
+          markType: "disabled",
+          memo: null
         },
         {
           tableId: "table-1",
           rowItemId: "row-1",
           columnItemId: "column-1",
-          checkboxVisible: true
+          markType: "fixed",
+          memo: "고정파티"
         }
       ])
     ).toEqual([
@@ -751,7 +756,8 @@ describe("board db defaults", () => {
         tableId: "table-1",
         rowItemId: "row-1",
         columnItemId: "column-1",
-        checkboxVisible: true
+        markType: "fixed",
+        memo: "고정파티"
       }
     ]);
   });
@@ -1789,13 +1795,15 @@ describe("board db defaults", () => {
             tableId: "table-1",
             rowItemId: "row-1",
             columnItemId: "column-1",
-            checkboxVisible: false
+            markType: "disabled",
+            memo: null
           },
           {
             tableId: "table-1",
             rowItemId: "row-from-other-table",
             columnItemId: "column-1",
-            checkboxVisible: true
+            markType: "default",
+            memo: null
           }
         ],
         [
@@ -1811,8 +1819,72 @@ describe("board db defaults", () => {
         tableId: "table-1",
         rowItemId: "row-from-other-table",
         columnItemId: "column-1",
-        checkboxVisible: true
+        markType: "default",
+        memo: null
       }
+    ]);
+  });
+
+  it("rejects reserved cell marks whose period key is not current", () => {
+    const target = {
+      tableId: "table-1",
+      rowItemId: "row-task-1",
+      columnItemId: "column-character-1",
+      rowKind: "task" as const,
+      columnKind: "character" as const,
+      rowTaskResetRuleJson: JSON.stringify({ type: "daily", hour: 6, timezone: "Asia/Seoul" }),
+      columnTaskResetRuleJson: null
+    };
+    const now = new Date("2026-06-11T12:00:00+09:00");
+    const base = { tableId: "table-1", rowItemId: "row-task-1", columnItemId: "column-character-1" };
+
+    expect(
+      findBoardCellStatePatchesOutsideCurrentPeriod(
+        [{ ...base, markType: "reserved", memo: "약속", periodKey: "daily:2026-06-11" }],
+        [target],
+        now
+      )
+    ).toEqual([]);
+    expect(
+      findBoardCellStatePatchesOutsideCurrentPeriod(
+        [{ ...base, markType: "reserved", memo: "약속", periodKey: "daily:2026-06-10" }],
+        [target],
+        now
+      )
+    ).toHaveLength(1);
+    expect(
+      findBoardCellStatePatchesOutsideCurrentPeriod([{ ...base, markType: "fixed", memo: "고정" }], [target], now)
+    ).toEqual([]);
+  });
+
+  it("drops expired reserved cell marks while keeping fixed and disabled marks", () => {
+    const axisItems = [
+      {
+        id: "row-task-1",
+        kind: "task",
+        task_reset_rule_json: JSON.stringify({ type: "daily", hour: 6, timezone: "Asia/Seoul" })
+      },
+      { id: "column-character-1", kind: "character", task_reset_rule_json: null }
+    ];
+    const now = new Date("2026-06-11T12:00:00+09:00");
+    const base = { row_item_id: "row-task-1", column_item_id: "column-character-1" };
+
+    expect(
+      resolveExpiredBoardCellStateRows(
+        [
+          { ...base, mark_type: "reserved", mark_period_key: "daily:2026-06-11" },
+          { ...base, mark_type: "reserved", mark_period_key: "daily:2026-06-10" },
+          { ...base, mark_type: "reserved", mark_period_key: null },
+          { ...base, mark_type: "fixed", mark_period_key: null },
+          { ...base, mark_type: "disabled", mark_period_key: null }
+        ],
+        axisItems,
+        now
+      )
+    ).toEqual([
+      { ...base, mark_type: "reserved", mark_period_key: "daily:2026-06-11" },
+      { ...base, mark_type: "fixed", mark_period_key: null },
+      { ...base, mark_type: "disabled", mark_period_key: null }
     ]);
   });
 });

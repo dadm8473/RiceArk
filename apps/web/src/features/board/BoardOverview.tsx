@@ -17,7 +17,7 @@ import {
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Bell, Check, Columns3, Lock, Minus, Pencil, Plus, RefreshCw, Rows3, Save, Settings, Shuffle, StickyNote, Trash2, Unlock, UserPlus, X } from "lucide-react";
+import { Bell, Check, Clock, Columns3, Lock, Minus, Pencil, Pin, Plus, RefreshCw, Rows3, Save, Settings, Shuffle, StickyNote, Trash2, Unlock, UserPlus, X } from "lucide-react";
 import {
   useEffect,
   useMemo,
@@ -34,7 +34,7 @@ import { apiDelete, apiGet, apiPatch, apiPost } from "../../api/client";
 import { CharacterImport } from "../characters/CharacterImport";
 import { TaskForm } from "../tasks/TaskForm";
 import { BoardNoteMarkdown } from "./BoardNoteMarkdown";
-import { applyBoardCellStatePatch, type BoardCellStatePatch } from "./cellStates";
+import { applyBoardCellStatePatch, resolveBoardCellMark, type BoardCellMark, type BoardCellStatePatch } from "./cellStates";
 import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
 import { normalizeBoundedIntegerDraft } from "./numberInput";
 import {
@@ -49,7 +49,7 @@ import {
   type BoardTableLayoutPatch,
   type BoardTableLayoutPointerStart
 } from "./tableLayout";
-import type { BoardAxis, BoardAxisItem, BoardNote, BoardOrientation, BoardPayload, BoardSheet, BoardTable } from "./types";
+import type { BoardAxis, BoardAxisItem, BoardCellState, BoardNote, BoardOrientation, BoardPayload, BoardSheet, BoardTable } from "./types";
 import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
 
 interface Props {
@@ -61,7 +61,6 @@ interface Props {
 type BoardDisplaySettings = BoardPayload["settings"];
 type BoardDisplaySettingKey = keyof BoardDisplaySettings;
 type BoardTaskResetType = Exclude<NonNullable<BoardAxisItem["task_reset_type"]>, "custom">;
-type BoardTaskCheckboxVisibilityMode = "all_visible" | "all_hidden" | "custom";
 type BoardTableTemplate = "custom" | "lostark_event";
 type LostArkEventRewardFilter = "gold" | "card" | "coin" | "silver" | "cardXp";
 
@@ -142,13 +141,6 @@ interface NoteResizeSession {
     pointerY: number;
   };
   patch: BoardNoteLayoutPatch | null;
-}
-
-export interface BoardTaskCheckboxTarget {
-  characterItem: BoardAxisItem;
-  rowItemId: string;
-  columnItemId: string;
-  visible: boolean;
 }
 
 interface BoardEventOptions {
@@ -247,11 +239,13 @@ const BOARD_TASK_RESET_OPTIONS: Array<{ value: BoardTaskResetType; label: string
   { value: "biweekly", label: "격주" },
   { value: "none", label: "초기화 안함" }
 ];
-const BOARD_TASK_CHECKBOX_VISIBILITY_OPTIONS: Array<{ value: BoardTaskCheckboxVisibilityMode; label: string }> = [
-  { value: "all_visible", label: "모든 캐릭터에 표시" },
-  { value: "all_hidden", label: "모든 캐릭터에서 숨김" },
-  { value: "custom", label: "직접 선택" }
+const BOARD_CELL_MARK_OPTIONS: Array<{ value: "default" | "fixed" | "reserved" | "disabled"; label: string; description: string }> = [
+  { value: "default", label: "기본", description: "일반 체크박스로 사용합니다." },
+  { value: "fixed", label: "고정", description: "고정파티 표시와 메모를 계속 유지합니다." },
+  { value: "reserved", label: "예약", description: "이번 주기에만 표시되고 초기화 시 사라집니다." },
+  { value: "disabled", label: "비활성화", description: "이 칸의 체크박스를 숨깁니다." }
 ];
+const BOARD_CELL_MARK_LABELS: Record<string, string> = { fixed: "고정", reserved: "예약" };
 const LOST_ARK_EVENT_TABLE_DEFAULT_REWARD_FILTERS: LostArkEventRewardFilter[] = ["gold", "card", "coin", "silver", "cardXp"];
 const LOST_ARK_EVENT_TABLE_DEFAULT_COMPLETION_COLUMN = "완료";
 const LOST_ARK_EVENT_TABLE_ROW_HEADER_WIDTH = 420;
@@ -582,75 +576,6 @@ function getMissingBoardAxisPrompt(table: BoardTable, axis: BoardAxis): string {
   if (role === "character") return "캐릭터를 추가해주세요";
   if (role === "task") return "숙제를 추가해주세요";
   return axis === "row" ? "행을 추가해주세요" : "열을 추가해주세요";
-}
-
-export function getBoardTaskCheckboxTargets(
-  taskItem: BoardAxisItem,
-  axisItems: BoardAxisItem[],
-  cellStates: BoardPayload["cellStates"]
-): BoardTaskCheckboxTarget[] {
-  if (taskItem.kind !== "task" || taskItem.visible !== 1) return [];
-
-  const characterAxis: BoardAxis = taskItem.axis === "row" ? "column" : "row";
-  const hiddenCells = new Set(
-    cellStates
-      .filter((cell) => cell.table_id === taskItem.table_id && cell.checkbox_visible === 0)
-      .map((cell) => cellKey(cell.row_item_id, cell.column_item_id))
-  );
-
-  return axisItems
-    .filter(
-      (item) =>
-        item.table_id === taskItem.table_id &&
-        item.axis === characterAxis &&
-        item.kind === "character" &&
-        item.visible === 1
-    )
-    .sort(sortBoardAxisItems)
-    .map((characterItem) => {
-      const rowItemId = taskItem.axis === "row" ? taskItem.id : characterItem.id;
-      const columnItemId = taskItem.axis === "row" ? characterItem.id : taskItem.id;
-      return {
-        characterItem,
-        rowItemId,
-        columnItemId,
-        visible: !hiddenCells.has(cellKey(rowItemId, columnItemId))
-      };
-    });
-}
-
-export function getBoardTaskCheckboxVisibilityMode(targets: BoardTaskCheckboxTarget[]): BoardTaskCheckboxVisibilityMode {
-  if (targets.length === 0) return "all_visible";
-
-  const visibleCount = targets.filter((target) => target.visible).length;
-  if (visibleCount === 0) return "all_hidden";
-  if (visibleCount === targets.length) return "all_visible";
-  return "custom";
-}
-
-export function buildBoardTaskCheckboxVisibilityPatches(
-  taskItem: BoardAxisItem,
-  axisItems: BoardAxisItem[],
-  input: {
-    mode: BoardTaskCheckboxVisibilityMode;
-    visibleCharacterItemIds?: Iterable<string> | undefined;
-  }
-): BoardCellStatePatch[] {
-  const visibleCharacterItemIds = new Set(input.visibleCharacterItemIds ?? []);
-  return getBoardTaskCheckboxTargets(taskItem, axisItems, []).map((target) => {
-    const checkboxVisible =
-      input.mode === "all_visible"
-        ? true
-        : input.mode === "all_hidden"
-          ? false
-          : visibleCharacterItemIds.has(target.characterItem.id);
-    return {
-      tableId: taskItem.table_id,
-      rowItemId: target.rowItemId,
-      columnItemId: target.columnItemId,
-      checkboxVisible
-    };
-  });
 }
 
 function getTaskColor(row: BoardAxisItem, column: BoardAxisItem): string | null {
@@ -1090,6 +1015,10 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
   const [boardItemZDepths, setBoardItemZDepths] = useState<Record<string, number>>({});
   const [reorderTableId, setReorderTableId] = useState<string | null>(null);
   const [activeSortableId, setActiveSortableId] = useState<string | null>(null);
+  const [markEditTableId, setMarkEditTableId] = useState<string | null>(null);
+  const [editingCellMark, setEditingCellMark] = useState<{ table: BoardTable; row: BoardAxisItem; column: BoardAxisItem } | null>(
+    null
+  );
   const [boardZoom, setBoardZoom] = useState(() =>
     typeof window === "undefined" ? BOARD_ZOOM_DEFAULT : getStoredBoardZoom(window.localStorage)
   );
@@ -1677,6 +1606,10 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
       setReorderTableId(null);
       setActiveSortableId(null);
     }
+    if (markEditTableId === tableId) {
+      setMarkEditTableId(null);
+      setEditingCellMark(null);
+    }
     setEditingTable(null);
   }
 
@@ -1701,6 +1634,10 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
         setReorderTableId(null);
         setActiveSortableId(null);
       }
+      if (nextLocked === 1 && markEditTableId === table.id) {
+        setMarkEditTableId(null);
+        setEditingCellMark(null);
+      }
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "표 잠금 상태를 저장하지 못했습니다.");
       await refreshBoard();
@@ -1710,7 +1647,17 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
   function toggleTableReorderMode(table: BoardTable) {
     if (isBoardTableLocked(table)) return;
     setActiveSortableId(null);
+    setMarkEditTableId(null);
+    setEditingCellMark(null);
     setReorderTableId((current) => (current === table.id ? null : table.id));
+  }
+
+  function toggleTableMarkEditMode(table: BoardTable) {
+    if (isBoardTableLocked(table)) return;
+    setReorderTableId(null);
+    setActiveSortableId(null);
+    setEditingCellMark(null);
+    setMarkEditTableId((current) => (current === table.id ? null : table.id));
   }
 
   function bringCreatedBoardItemToFront(itemId: string) {
@@ -1960,16 +1907,19 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
               const isLostArkEventTable = table.template_type === "lostark_event";
               const interactionsLocked = isReadOnly || tableLocked;
               const isReorderMode = !isReadOnly && reorderTableId === table.id && !tableLocked;
+              const isMarkEditMode = !isReadOnly && markEditTableId === table.id && !tableLocked;
               const tableGrid = (
                 <BoardTableGrid
                   axisItems={axisItems}
                   cellStates={cellStates}
                   completions={completions}
                   eventNotificationSettings={getEventNotificationSettings(table.id)}
+                  isMarkEditMode={isMarkEditMode}
                   isReorderMode={isReorderMode}
                   readOnly={isReadOnly}
                   table={table}
-                  onAxisItemEdit={interactionsLocked || isReorderMode ? undefined : setEditingAxisItem}
+                  onAxisItemEdit={interactionsLocked || isReorderMode || isMarkEditMode ? undefined : setEditingAxisItem}
+                  onCellMarkEdit={isMarkEditMode ? (row, column) => setEditingCellMark({ table, row, column }) : undefined}
                   onEventNotificationDelivered={handleEventNotificationDelivered}
                   onToggle={handleCompletionToggle}
                   settings={board.settings}
@@ -1978,7 +1928,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
               return (
                 <article
                   key={table.id}
-                  className={`board-table-summary${openTableMenuId === table.id ? " menu-open" : ""}${movingTableId === table.id ? " moving" : ""}${tableLocked ? " locked" : ""}${isReadOnly ? " readonly" : ""}${isReorderMode ? " reorder-mode" : ""}`}
+                  className={`board-table-summary${openTableMenuId === table.id ? " menu-open" : ""}${movingTableId === table.id ? " moving" : ""}${tableLocked ? " locked" : ""}${isReadOnly ? " readonly" : ""}${isReorderMode ? " reorder-mode" : ""}${isMarkEditMode ? " mark-edit-mode" : ""}`}
                   style={getBoardTableZStyle(table, boardItemZDepths[table.id])}
                   onPointerDown={(event) => handleBoardTablePointerDown(table.id, event)}
                 >
@@ -2067,6 +2017,22 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
                           aria-label={`${table.name} 순서 변경 완료`}
                           title="순서 변경 완료"
                           onClick={() => toggleTableReorderMode(table)}
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            bringTableToFront(table.id);
+                          }}
+                        >
+                          <Check aria-hidden="true" size={14} />
+                          완료
+                        </button>
+                      ) : null}
+                      {isMarkEditMode ? (
+                        <button
+                          className="board-table-reorder-done-button"
+                          type="button"
+                          aria-label={`${table.name} 고정/예약 편집 완료`}
+                          title="고정/예약 편집 완료"
+                          onClick={() => toggleTableMarkEditMode(table)}
                           onPointerDown={(event) => {
                             event.stopPropagation();
                             bringTableToFront(table.id);
@@ -2165,6 +2131,26 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
                         >
                           <Shuffle aria-hidden="true" size={14} />
                           {isReorderMode ? "완료" : "순서"}
+                        </button>
+                        <button
+                          className={isMarkEditMode ? "active" : undefined}
+                          type="button"
+                          aria-label={`${table.name} 고정/예약 편집 모드 ${isMarkEditMode ? "끄기" : "켜기"}`}
+                          title={
+                            tableLocked
+                              ? "잠금을 해제한 뒤 고정/예약을 설정할 수 있습니다."
+                              : isMarkEditMode
+                                ? "고정/예약 편집 완료"
+                                : "체크박스 고정/예약/비활성화 설정"
+                          }
+                          disabled={tableLocked}
+                          onClick={() => {
+                            setOpenTableMenuId(null);
+                            toggleTableMarkEditMode(table);
+                          }}
+                        >
+                          <Pin aria-hidden="true" size={14} />
+                          {isMarkEditMode ? "완료" : "고정/예약"}
                         </button>
                         <button
                           type="button"
@@ -2497,17 +2483,32 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
       ) : null}
       {!isReadOnly && editingAxisItem ? (
         <BoardAxisItemEditModal
-          axisItems={axisItems}
-          cellStates={cellStates}
           item={editingAxisItem}
           settings={board.settings}
           table={tables.find((table) => table.id === editingAxisItem.table_id) ?? null}
           onClose={() => setEditingAxisItem(null)}
           onCharacterRefresh={handleBoardCharacterRefresh}
           onCharacterSave={handleBoardCharacterSave}
-          onCellStatesSave={handleCellStatesSave}
           onDelete={handleAxisItemDelete}
           onSave={handleAxisItemSave}
+        />
+      ) : null}
+      {!isReadOnly && editingCellMark ? (
+        <BoardCellMarkEditModal
+          column={editingCellMark.column}
+          row={editingCellMark.row}
+          table={editingCellMark.table}
+          cellState={cellStates.find(
+            (cell) =>
+              cell.table_id === editingCellMark.table.id &&
+              cell.row_item_id === editingCellMark.row.id &&
+              cell.column_item_id === editingCellMark.column.id
+          )}
+          onClose={() => setEditingCellMark(null)}
+          onSave={async (patch) => {
+            await handleCellStatesSave([patch]);
+            setEditingCellMark(null);
+          }}
         />
       ) : null}
       {!isReadOnly && editingTable ? (
@@ -3450,10 +3451,12 @@ export function BoardTableGrid({
   cellStates,
   completions,
   eventNotificationSettings,
+  isMarkEditMode = false,
   isReorderMode = false,
   readOnly = false,
   table,
   onAxisItemEdit,
+  onCellMarkEdit,
   onEventNotificationDelivered,
   onToggle,
   settings
@@ -3462,10 +3465,12 @@ export function BoardTableGrid({
   cellStates: BoardPayload["cellStates"];
   completions: BoardPayload["completions"];
   eventNotificationSettings?: BoardEventNotificationSettings | undefined;
+  isMarkEditMode?: boolean | undefined;
   isReorderMode?: boolean | undefined;
   readOnly?: boolean | undefined;
   table: BoardTable;
   onAxisItemEdit?: ((item: BoardAxisItem) => void) | undefined;
+  onCellMarkEdit?: ((row: BoardAxisItem, column: BoardAxisItem) => void) | undefined;
   onEventNotificationDelivered?: ((tableId: string) => void) | undefined;
   onToggle: (patch: BoardCompletionPatch) => void;
   settings: BoardDisplaySettings;
@@ -3485,10 +3490,10 @@ export function BoardTableGrid({
   const columns = axisItems
     .filter((item) => item.table_id === table.id && item.axis === "column" && item.visible === 1)
     .sort((left, right) => left.sort_order - right.sort_order || left.label.localeCompare(right.label));
-  const hiddenCells = new Set(
+  const cellMarksByKey = new Map(
     cellStates
-      .filter((cell) => cell.table_id === table.id && cell.checkbox_visible === 0)
-      .map((cell) => cellKey(cell.row_item_id, cell.column_item_id))
+      .filter((cell) => cell.table_id === table.id)
+      .map((cell) => [cellKey(cell.row_item_id, cell.column_item_id), cell])
   );
   const completedCells = new Set(
     completions
@@ -3601,9 +3606,11 @@ export function BoardTableGrid({
         table,
         settings,
         isReorderMode,
+        isMarkEditMode,
         completedCells,
-        hiddenCells,
+        cellMarksByKey,
         onAxisItemEdit,
+        onCellMarkEdit,
         onToggle,
         readOnly,
         eventOptions.rewardFilters,
@@ -3686,9 +3693,11 @@ function renderBoardRows(
   table: BoardTable,
   settings: BoardDisplaySettings,
   isReorderMode: boolean,
+  isMarkEditMode: boolean,
   completedCells: Set<string>,
-  hiddenCells: Set<string>,
+  cellMarksByKey: Map<string, BoardCellState>,
   onAxisItemEdit: ((item: BoardAxisItem) => void) | undefined,
+  onCellMarkEdit: ((row: BoardAxisItem, column: BoardAxisItem) => void) | undefined,
   onToggle: (patch: BoardCompletionPatch) => void,
   readOnly: boolean,
   rewardFilters: LostArkEventRewardFilter[] = LOST_ARK_EVENT_TABLE_DEFAULT_REWARD_FILTERS,
@@ -3699,15 +3708,17 @@ function renderBoardRows(
   const renderedRows = rows.map((row) => (
     <BoardGridRow
       key={row.id}
+      cellMarksByKey={cellMarksByKey}
       columns={columns}
       completedCells={completedCells}
       eventError={eventError}
       eventNow={eventNow}
       rewardFilters={rewardFilters}
       eventSummary={eventSummary}
-      hiddenCells={hiddenCells}
+      isMarkEditMode={isMarkEditMode}
       isReorderMode={isReorderMode}
       onAxisItemEdit={isReorderMode ? undefined : onAxisItemEdit}
+      onCellMarkEdit={onCellMarkEdit}
       onToggle={onToggle}
       readOnly={readOnly}
       row={row}
@@ -4126,14 +4137,16 @@ function SortableBoardAxisLabel({
 }
 
 function BoardGridRow({
+  cellMarksByKey,
   columns,
   completedCells,
   eventError,
   eventNow,
   eventSummary,
-  hiddenCells,
+  isMarkEditMode,
   isReorderMode,
   onAxisItemEdit,
+  onCellMarkEdit,
   onToggle,
   readOnly,
   rewardFilters,
@@ -4142,14 +4155,16 @@ function BoardGridRow({
   settings,
   table
 }: {
+  cellMarksByKey: Map<string, BoardCellState>;
   columns: BoardAxisItem[];
   completedCells: Set<string>;
   eventError?: string | null | undefined;
   eventNow?: Date | undefined;
   eventSummary?: LostArkEventTodaySummary | null | undefined;
-  hiddenCells: Set<string>;
+  isMarkEditMode?: boolean | undefined;
   isReorderMode?: boolean | undefined;
   onAxisItemEdit?: ((item: BoardAxisItem) => void) | undefined;
+  onCellMarkEdit?: ((row: BoardAxisItem, column: BoardAxisItem) => void) | undefined;
   onToggle: (patch: BoardCompletionPatch) => void;
   readOnly: boolean;
   rewardFilters: LostArkEventRewardFilter[];
@@ -4172,68 +4187,257 @@ function BoardGridRow({
         settings={settings}
         table={table}
       />
-      {columns.map((column) => {
-        const rowSeparator = getSeparatorBorder(row);
-        const key = cellKey(row.id, column.id);
-        const taskColor = getTaskColor(row, column);
-        const colorStyle = taskColor ? ({ "--task-color": taskColor } as CSSProperties) : undefined;
-        const columnSeparator = getSeparatorBorder(column);
-        const periodKey = getBoardCellPeriodKey(row, column);
-        const completedKey = periodKey ? cellPeriodKey(row.id, column.id, periodKey) : null;
-        const isHidden = hiddenCells.has(key);
-        const isScheduleUnavailable = table.template_type === "lostark_event" && !getBoardScheduleRowAvailable(row.label, eventSummary);
-        const cellStyle: CSSProperties = {
-          minHeight: `${rowHeight}px`,
-          ...(rowSeparator ? { borderBottom: rowSeparator } : {}),
-          ...(columnSeparator ? { borderRight: columnSeparator } : {})
-        };
-
-        return (
-          <div key={column.id} className="board-check-cell" style={cellStyle}>
-            {isHidden ? (
-              <span className="board-check-placeholder" aria-label={`${row.label} / ${column.label} 숨김`} />
-            ) : (
-            <input
-              aria-label={`${row.label} / ${column.label}`}
-              checked={completedKey ? completedCells.has(completedKey) : false}
-              className="board-check"
-              disabled={readOnly || !periodKey || isReorderMode || isScheduleUnavailable}
-              onChange={(event) => {
-                if (!periodKey) return;
-                  onToggle({
-                    tableId: table.id,
-                    rowItemId: row.id,
-                    columnItemId: column.id,
-                    periodKey,
-                    completed: event.currentTarget.checked
-                  });
-                }}
-                style={colorStyle}
-                type="checkbox"
-              />
-            )}
-          </div>
-        );
-      })}
+      {columns.map((column) => (
+        <BoardCheckCell
+          key={column.id}
+          cellState={cellMarksByKey.get(cellKey(row.id, column.id))}
+          column={column}
+          completedCells={completedCells}
+          eventSummary={eventSummary}
+          isMarkEditMode={isMarkEditMode === true}
+          isReorderMode={isReorderMode === true}
+          onCellMarkEdit={onCellMarkEdit}
+          onToggle={onToggle}
+          readOnly={readOnly}
+          row={row}
+          rowHeight={rowHeight}
+          table={table}
+        />
+      ))}
     </>
   );
 }
 
+function BoardCheckCell({
+  cellState,
+  column,
+  completedCells,
+  eventSummary,
+  isMarkEditMode,
+  isReorderMode,
+  onCellMarkEdit,
+  onToggle,
+  readOnly,
+  row,
+  rowHeight,
+  table
+}: {
+  cellState: BoardCellState | undefined;
+  column: BoardAxisItem;
+  completedCells: Set<string>;
+  eventSummary?: LostArkEventTodaySummary | null | undefined;
+  isMarkEditMode: boolean;
+  isReorderMode: boolean;
+  onCellMarkEdit?: ((row: BoardAxisItem, column: BoardAxisItem) => void) | undefined;
+  onToggle: (patch: BoardCompletionPatch) => void;
+  readOnly: boolean;
+  row: BoardAxisItem;
+  rowHeight: number;
+  table: BoardTable;
+}) {
+  const [tooltipVisible, setTooltipVisible] = useState(false);
+  const tooltipTimerRef = useRef<number | null>(null);
+  const rowSeparator = getSeparatorBorder(row);
+  const taskColor = getTaskColor(row, column);
+  const colorStyle = taskColor ? ({ "--task-color": taskColor } as CSSProperties) : undefined;
+  const columnSeparator = getSeparatorBorder(column);
+  const periodKey = getBoardCellPeriodKey(row, column);
+  const completedKey = periodKey ? cellPeriodKey(row.id, column.id, periodKey) : null;
+  const mark = resolveBoardCellMark(cellState, periodKey);
+  const isDisabledCell = mark?.type === "disabled";
+  const isScheduleUnavailable = table.template_type === "lostark_event" && !getBoardScheduleRowAvailable(row.label, eventSummary);
+  const markLabel = mark && mark.type !== "disabled" ? BOARD_CELL_MARK_LABELS[mark.type] : null;
+  const hasTooltipContent = Boolean(markLabel || mark?.memo);
+  const cellStyle: CSSProperties = {
+    minHeight: `${rowHeight}px`,
+    ...(rowSeparator ? { borderBottom: rowSeparator } : {}),
+    ...(columnSeparator ? { borderRight: columnSeparator } : {})
+  };
+
+  function clearTooltipTimer() {
+    if (tooltipTimerRef.current !== null) {
+      window.clearTimeout(tooltipTimerRef.current);
+      tooltipTimerRef.current = null;
+    }
+  }
+
+  useEffect(() => clearTooltipTimer, []);
+
+  return (
+    <div
+      className={`board-check-cell${isMarkEditMode ? " mark-editable" : ""}`}
+      style={cellStyle}
+      onClick={isMarkEditMode && onCellMarkEdit ? () => onCellMarkEdit(row, column) : undefined}
+      onPointerEnter={(event) => {
+        if (event.pointerType !== "mouse" || isMarkEditMode || isReorderMode || !hasTooltipContent) return;
+        clearTooltipTimer();
+        tooltipTimerRef.current = window.setTimeout(() => setTooltipVisible(true), 1000);
+      }}
+      onPointerLeave={() => {
+        clearTooltipTimer();
+        setTooltipVisible(false);
+      }}
+    >
+      {isDisabledCell ? (
+        <span className="board-check-placeholder" aria-label={`${row.label} / ${column.label} 비활성화`} />
+      ) : (
+        <input
+          aria-label={`${row.label} / ${column.label}`}
+          checked={completedKey ? completedCells.has(completedKey) : false}
+          className="board-check"
+          disabled={readOnly || !periodKey || isReorderMode || isMarkEditMode || isScheduleUnavailable}
+          onChange={(event) => {
+            if (!periodKey) return;
+            onToggle({
+              tableId: table.id,
+              rowItemId: row.id,
+              columnItemId: column.id,
+              periodKey,
+              completed: event.currentTarget.checked
+            });
+          }}
+          style={colorStyle}
+          type="checkbox"
+        />
+      )}
+      {mark?.type === "fixed" ? (
+        <span aria-label={`${row.label} / ${column.label} 고정`} className="board-check-mark fixed" title="고정">
+          <Pin aria-hidden="true" size={10} />
+        </span>
+      ) : null}
+      {mark?.type === "reserved" ? (
+        <span aria-label={`${row.label} / ${column.label} 예약`} className="board-check-mark reserved" title="예약">
+          <Clock aria-hidden="true" size={10} />
+        </span>
+      ) : null}
+      {mark?.memo ? <span aria-hidden="true" className="board-check-memo-dot" /> : null}
+      {tooltipVisible && hasTooltipContent ? (
+        <div className="board-cell-mark-tooltip" role="tooltip">
+          {markLabel ? <strong>{markLabel}</strong> : null}
+          {mark?.memo ? <span>{mark.memo}</span> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function BoardCellMarkEditModal({
+  cellState,
+  column,
+  onClose,
+  onSave,
+  row,
+  table
+}: {
+  cellState: BoardCellState | undefined;
+  column: BoardAxisItem;
+  row: BoardAxisItem;
+  table: BoardTable;
+  onClose: () => void;
+  onSave: (patch: BoardCellStatePatch) => Promise<void>;
+}) {
+  const periodKey = getBoardCellPeriodKey(row, column);
+  const currentMark = resolveBoardCellMark(cellState, periodKey);
+  const reservedUnavailable = !periodKey || periodKey === "none:permanent";
+  const [markType, setMarkType] = useState<BoardCellStatePatch["markType"]>(currentMark?.type ?? "default");
+  const [memo, setMemo] = useState(currentMark?.memo ?? "");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const memoEnabled = markType === "fixed" || markType === "reserved";
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPending(true);
+    setError(null);
+    try {
+      await onSave({
+        tableId: table.id,
+        rowItemId: row.id,
+        columnItemId: column.id,
+        markType,
+        memo: memoEnabled ? (memo.trim() ? memo.trim() : null) : null,
+        ...(markType === "reserved" && periodKey ? { periodKey } : {})
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "체크마크 설정을 저장하지 못했습니다.");
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="tool-modal edit-modal cell-mark-edit-modal" aria-modal="true" role="dialog" aria-label="체크마크 설정">
+        <header className="tool-modal-header">
+          <h2>체크마크 설정</h2>
+          <button className="modal-close-button" type="button" aria-label="닫기" onClick={onClose}>
+            <X aria-hidden="true" size={18} />
+          </button>
+        </header>
+        <form className="tool-modal-body edit-form" onSubmit={submit}>
+          <p className="cell-mark-target">
+            {row.label} / {column.label}
+          </p>
+          <div className="board-cell-mark-options" role="radiogroup" aria-label="체크마크 타입">
+            {BOARD_CELL_MARK_OPTIONS.map((option) => {
+              const reservedDisabled = option.value === "reserved" && reservedUnavailable;
+              return (
+                <button
+                  key={option.value}
+                  className={`board-cell-mark-option${markType === option.value ? " active" : ""}`}
+                  type="button"
+                  role="radio"
+                  aria-checked={markType === option.value}
+                  disabled={reservedDisabled}
+                  title={reservedDisabled ? "초기화되지 않는 숙제에는 예약을 설정할 수 없습니다." : option.description}
+                  onClick={() => setMarkType(option.value)}
+                >
+                  {option.value === "fixed" ? <Pin aria-hidden="true" size={13} /> : null}
+                  {option.value === "reserved" ? <Clock aria-hidden="true" size={13} /> : null}
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="cell-mark-description">
+            {BOARD_CELL_MARK_OPTIONS.find((option) => option.value === markType)?.description}
+          </p>
+          {reservedUnavailable ? <p className="compact-notice">초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.</p> : null}
+          {memoEnabled ? (
+            <label>
+              메모
+              <input
+                maxLength={120}
+                placeholder="예: 고정파티 수요일 21시"
+                value={memo}
+                onChange={(event) => setMemo(event.currentTarget.value)}
+              />
+            </label>
+          ) : null}
+          {error ? <p className="error-text">{error}</p> : null}
+          <div className="edit-actions">
+            <button className="secondary-button" disabled={pending} type="button" onClick={onClose}>
+              취소
+            </button>
+            <button className="primary-button" disabled={pending} type="submit">
+              {pending ? "저장 중" : "저장"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 export function BoardAxisItemEditModal({
-  axisItems = [],
-  cellStates = [],
   item,
   onClose,
   onCharacterRefresh,
   onCharacterSave,
-  onCellStatesSave,
   onDelete,
   onSave,
   settings,
   table
 }: {
-  axisItems?: BoardAxisItem[] | undefined;
-  cellStates?: BoardPayload["cellStates"] | undefined;
   item: BoardAxisItem;
   settings: BoardDisplaySettings;
   table: BoardTable | null;
@@ -4243,7 +4447,6 @@ export function BoardAxisItemEditModal({
     input: BoardCharacterSaveInput
   ) => Promise<void>;
   onCharacterRefresh?: ((characterId: string) => Promise<BoardCharacterRefreshResult>) | undefined;
-  onCellStatesSave?: ((patches: BoardCellStatePatch[]) => Promise<void>) | undefined;
   onDelete: (axisItemId: string) => Promise<void>;
   onSave: (
     axisItemId: string,
@@ -4292,13 +4495,6 @@ export function BoardAxisItemEditModal({
   const isCharacterItem = item.kind === "character";
   const isManualCharacterItem = isCharacterItem && item.character_source === "manual";
   const isImportedCharacterItem = isCharacterItem && Boolean(item.character_id) && !isManualCharacterItem;
-  const taskCheckboxTargets = isTaskItem ? getBoardTaskCheckboxTargets(item, axisItems, cellStates) : [];
-  const [taskCheckboxVisibilityMode, setTaskCheckboxVisibilityMode] = useState<BoardTaskCheckboxVisibilityMode>(() =>
-    getBoardTaskCheckboxVisibilityMode(taskCheckboxTargets)
-  );
-  const [taskCheckboxVisibleCharacterIds, setTaskCheckboxVisibleCharacterIds] = useState<Set<string>>(
-    () => new Set(taskCheckboxTargets.filter((target) => target.visible).map((target) => target.characterItem.id))
-  );
   const normalizedCharacterDisplayName = characterDisplayName.trim();
   const normalizedCharacterName = characterName.trim();
   const normalizedCharacterServerName = characterServerName.trim();
@@ -4320,30 +4516,6 @@ export function BoardAxisItemEditModal({
     (isTaskItem && taskResetType !== initialTaskResetType) ||
     JSON.stringify(separator) !== JSON.stringify(initialSeparator) ||
     (isCharacterItem && JSON.stringify(displaySettings) !== JSON.stringify(initialDisplaySettings));
-
-  function handleTaskCheckboxVisibilityModeChange(nextMode: BoardTaskCheckboxVisibilityMode) {
-    setTaskCheckboxVisibilityMode(nextMode);
-    if (nextMode === "all_visible") {
-      setTaskCheckboxVisibleCharacterIds(new Set(taskCheckboxTargets.map((target) => target.characterItem.id)));
-      return;
-    }
-    if (nextMode === "all_hidden") {
-      setTaskCheckboxVisibleCharacterIds(new Set());
-    }
-  }
-
-  function handleTaskCheckboxCharacterToggle(characterItemId: string, checked: boolean) {
-    setTaskCheckboxVisibilityMode("custom");
-    setTaskCheckboxVisibleCharacterIds((current) => {
-      const next = new Set(current);
-      if (checked) {
-        next.add(characterItemId);
-      } else {
-        next.delete(characterItemId);
-      }
-      return next;
-    });
-  }
 
   useEffect(() => {
     if (!refreshCooldown.isBlocked) return;
@@ -4379,14 +4551,6 @@ export function BoardAxisItemEditModal({
           itemLevel: normalizedCharacterItemLevel || null,
           combatPower: normalizedCharacterCombatPower ? normalizedCharacterCombatPower : null
         });
-      }
-      if (isTaskItem && onCellStatesSave) {
-        await onCellStatesSave(
-          buildBoardTaskCheckboxVisibilityPatches(item, axisItems, {
-            mode: taskCheckboxVisibilityMode,
-            visibleCharacterItemIds: taskCheckboxVisibleCharacterIds
-          })
-        );
       }
       const savedLabel = isManualCharacterItem ? normalizedCharacterName : isImportedCharacterItem ? item.label : normalizedLabel;
       await onSave(
@@ -4556,45 +4720,6 @@ export function BoardAxisItemEditModal({
                 />
               </label>
             </div>
-          ) : null}
-          {isTaskItem ? (
-            <fieldset className="visibility-fieldset task-checkbox-visibility">
-              <legend>체크박스 표시 대상</legend>
-              <label>
-                표시 방식
-                <select
-                  aria-label={`${item.label} 체크박스 표시 대상`}
-                  value={taskCheckboxVisibilityMode}
-                  onChange={(event) => handleTaskCheckboxVisibilityModeChange(event.currentTarget.value as BoardTaskCheckboxVisibilityMode)}
-                >
-                  {BOARD_TASK_CHECKBOX_VISIBILITY_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {taskCheckboxTargets.length === 0 ? <p className="compact-notice">이 표에는 연결된 캐릭터가 없습니다.</p> : null}
-              {taskCheckboxVisibilityMode === "custom" && taskCheckboxTargets.length > 0 ? (
-                <div className="checkbox-target-list">
-                  {taskCheckboxTargets.map((target) => {
-                    const characterSettings = table ? getEffectiveBoardDisplaySettings(target.characterItem, table, settings) : settings;
-                    return (
-                      <label key={target.characterItem.id} className="checkbox-target-row">
-                        <input
-                          checked={taskCheckboxVisibleCharacterIds.has(target.characterItem.id)}
-                          type="checkbox"
-                          onChange={(event) =>
-                            handleTaskCheckboxCharacterToggle(target.characterItem.id, event.currentTarget.checked)
-                          }
-                        />
-                        <span>{getBoardCharacterLabel(target.characterItem, characterSettings)}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </fieldset>
           ) : null}
           {isTaskItem ? (
             <div className="compact-edit-grid task-axis-style-grid">

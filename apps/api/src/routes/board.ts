@@ -227,12 +227,22 @@ export const boardCompletionPatchSchema = z.object({
     .max(200)
 }).strict();
 
+export const boardCellMarkTypeSchema = z.enum(["default", "fixed", "reserved", "disabled"]);
+
 export const boardCellStatePatchSchema = z.object({
   tableId: resourceIdSchema,
   rowItemId: resourceIdSchema,
   columnItemId: resourceIdSchema,
-  checkboxVisible: z.boolean()
-}).strict();
+  markType: boardCellMarkTypeSchema,
+  memo: safeText({ maxChars: 120, allowEmpty: true }).nullable(),
+  periodKey: periodKeySchema.optional()
+}).strict()
+  .refine((patch) => (patch.markType === "reserved" ? patch.periodKey !== undefined : patch.periodKey === undefined), {
+    message: "예약 타입에만 periodKey가 필요합니다."
+  })
+  .refine((patch) => patch.markType === "fixed" || patch.markType === "reserved" || patch.memo === null || patch.memo === "", {
+    message: "메모는 고정/예약 타입에만 남길 수 있습니다."
+  });
 
 export const boardCellStatePatchBatchSchema = z.object({
   patches: z.array(boardCellStatePatchSchema).max(200)

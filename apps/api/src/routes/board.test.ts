@@ -169,24 +169,52 @@ describe("board route schemas", () => {
     ).toBe(false);
   });
 
-  it("accepts board cell visibility patches", () => {
+  it("accepts every board cell mark type", () => {
+    const base = { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1" };
+
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "default", memo: null }).success).toBe(true);
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "fixed", memo: "고정파티 21시" }).success).toBe(true);
     expect(
       boardCellStatePatchSchema.safeParse({
-        tableId: "table-1",
-        rowItemId: "row-1",
-        columnItemId: "column-1",
-        checkboxVisible: false
+        ...base,
+        markType: "reserved",
+        memo: "이번주만 트라이",
+        periodKey: "weekly:2026-06-10"
       }).success
     ).toBe(true);
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "disabled", memo: null }).success).toBe(true);
   });
 
-  it("rejects unsafe board cell visibility patches", () => {
+  it("requires a period key only for reserved cell marks", () => {
+    const base = { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1" };
+
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "reserved", memo: null }).success).toBe(false);
+    expect(
+      boardCellStatePatchSchema.safeParse({ ...base, markType: "fixed", memo: null, periodKey: "weekly:2026-06-10" }).success
+    ).toBe(false);
+    expect(
+      boardCellStatePatchSchema.safeParse({ ...base, markType: "default", memo: null, periodKey: "weekly:2026-06-10" }).success
+    ).toBe(false);
+  });
+
+  it("allows memos only on fixed and reserved cell marks", () => {
+    const base = { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1" };
+
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "default", memo: "메모" }).success).toBe(false);
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "disabled", memo: "메모" }).success).toBe(false);
+    expect(
+      boardCellStatePatchSchema.safeParse({ ...base, markType: "fixed", memo: "가".repeat(121) }).success
+    ).toBe(false);
+  });
+
+  it("rejects unsafe board cell mark patches", () => {
     expect(
       boardCellStatePatchSchema.safeParse({
         tableId: "table🙂",
         rowItemId: "row-1",
         columnItemId: "column-1",
-        checkboxVisible: false
+        markType: "default",
+        memo: null
       }).success
     ).toBe(false);
     expect(
@@ -194,12 +222,13 @@ describe("board route schemas", () => {
         tableId: "table-1",
         rowItemId: "row-1",
         columnItemId: "column-1",
-        checkboxVisible: "no"
+        markType: "hidden",
+        memo: null
       }).success
     ).toBe(false);
   });
 
-  it("accepts small board cell visibility batches", () => {
+  it("accepts small board cell mark batches", () => {
     expect(
       boardCellStatePatchBatchSchema.safeParse({
         patches: [
@@ -207,27 +236,30 @@ describe("board route schemas", () => {
             tableId: "table-1",
             rowItemId: "row-1",
             columnItemId: "column-1",
-            checkboxVisible: false
+            markType: "disabled",
+            memo: null
           },
           {
             tableId: "table-1",
             rowItemId: "row-1",
             columnItemId: "column-2",
-            checkboxVisible: true
+            markType: "default",
+            memo: null
           }
         ]
       }).success
     ).toBe(true);
   });
 
-  it("rejects oversized board cell visibility batches and unsafe ids", () => {
+  it("rejects oversized board cell mark batches and unsafe ids", () => {
     expect(
       boardCellStatePatchBatchSchema.safeParse({
         patches: new Array(201).fill({
           tableId: "table-1",
           rowItemId: "row-1",
           columnItemId: "column-1",
-          checkboxVisible: false
+          markType: "disabled",
+          memo: null
         })
       }).success
     ).toBe(false);
@@ -239,7 +271,8 @@ describe("board route schemas", () => {
             tableId: "table-1",
             rowItemId: "row🙂",
             columnItemId: "column-1",
-            checkboxVisible: false
+            markType: "disabled",
+            memo: null
           }
         ]
       }).success

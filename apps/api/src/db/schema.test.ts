@@ -141,6 +141,12 @@ describe("D1 schema", () => {
     }
   });
 
+  it("stores per-cell checkmark marks with reserved period expiry keys", () => {
+    expect(migration).toContain("mark_type IN ('default', 'fixed', 'reserved', 'disabled')");
+    expect(migration).toContain("mark_period_key TEXT");
+    expect(migration).toContain("UPDATE board_cell_states SET mark_type = 'disabled' WHERE checkbox_visible = 0");
+  });
+
   it("stores aggregate admin error counters without request details", () => {
     expect(migration).toContain("CREATE TABLE IF NOT EXISTS admin_error_counters");
     expect(migration).toContain("route_group TEXT NOT NULL");

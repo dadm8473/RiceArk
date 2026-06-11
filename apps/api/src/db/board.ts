@@ -81,11 +81,15 @@ export interface BoardCompletionPatch {
   completed: boolean;
 }
 
+export type BoardCellMarkType = "default" | "fixed" | "reserved" | "disabled";
+
 export interface BoardCellStatePatch {
   tableId: string;
   rowItemId: string;
   columnItemId: string;
-  checkboxVisible: boolean;
+  markType: BoardCellMarkType;
+  memo: string | null;
+  periodKey?: string | undefined;
 }
 
 export interface CreateBoardSheetInput {
@@ -623,6 +627,49 @@ export function findUnauthorizedBoardCellStatePatches(
   return patches.filter((patch) => !authorized.has(completionTargetKey(patch)));
 }
 
+export function findBoardCellStatePatchesOutsideCurrentPeriod(
+  patches: BoardCellStatePatch[],
+  authorizedTargets: AuthorizedBoardCompletionTarget[],
+  now: Date = new Date()
+): BoardCellStatePatch[] {
+  const authorized = new Map(authorizedTargets.map((target) => [completionTargetKey(target), target]));
+  return patches.filter((patch) => {
+    if (patch.markType !== "reserved" || !patch.periodKey) return false;
+    const target = authorized.get(completionTargetKey(patch));
+    if (!target) return false;
+    return !currentTargetPeriodKeys(target, now).includes(patch.periodKey);
+  });
+}
+
+export interface BoardCellStateRowForExpiry {
+  row_item_id: string;
+  column_item_id: string;
+  mark_type?: string | null;
+  mark_period_key?: string | null;
+}
+
+export function resolveExpiredBoardCellStateRows<T extends BoardCellStateRowForExpiry>(
+  rows: T[],
+  axisItems: Array<{ id: string; kind: string; task_reset_rule_json?: string | null }>,
+  now: Date = new Date()
+): T[] {
+  const itemsById = new Map(axisItems.map((item) => [item.id, item]));
+  return rows.filter((row) => {
+    if (row.mark_type !== "reserved") return true;
+    const currentKeys = [itemsById.get(row.row_item_id), itemsById.get(row.column_item_id)].flatMap((item) => {
+      if (!item || item.kind !== "task") return [];
+      const rule = parseResetRule(item.task_reset_rule_json);
+      if (!rule) return [];
+      try {
+        return [getPeriodKey(rule, now)];
+      } catch {
+        return [];
+      }
+    });
+    return row.mark_period_key !== null && row.mark_period_key !== undefined && currentKeys.includes(row.mark_period_key);
+  });
+}
+
 export function buildBoardCompletionPatchesFromLegacy(input: {
   tableId: string;
   axisItems: BoardAxisItemForCompletionMapping[];
@@ -1068,7 +1115,10 @@ export async function loadBoard(env: Env, userId: string): Promise<BoardPayload>
     tables: tables.results,
     notes: notes.results,
     axisItems: axisItems.results,
-    cellStates: cellStates.results,
+    cellStates: resolveExpiredBoardCellStateRows(
+      cellStates.results as unknown as BoardCellStateRowForExpiry[],
+      axisItems.results as unknown as Array<{ id: string; kind: string; task_reset_rule_json?: string | null }>
+    ),
     completions: completions.results
   };
 }
@@ -1324,7 +1374,11 @@ export async function loadSharedBoard(env: Env, shareId: string, now = new Date(
     tables: tables.results,
     notes: notes.results,
     axisItems: axisItems.results,
-    cellStates: cellStates.results,
+    cellStates: resolveExpiredBoardCellStateRows(
+      cellStates.results as unknown as BoardCellStateRowForExpiry[],
+      axisItems.results as unknown as Array<{ id: string; kind: string; task_reset_rule_json?: string | null }>,
+      now
+    ),
     completions: completions.results
   };
 }
@@ -2347,22 +2401,42 @@ export async function saveBoardCellStatePatches(
   if (findUnauthorizedBoardCellStatePatches(merged, authorizedTargets).length > 0) {
     return false;
   }
+  if (findBoardCellStatePatchesOutsideCurrentPeriod(merged, authorizedTargets).length > 0) {
+    return false;
+  }
 
   const statements = merged.map((patch) => {
-    if (patch.checkboxVisible) {
+    if (patch.markType === "default") {
       return env.DB.prepare(
         `DELETE FROM board_cell_states
          WHERE user_id = ? AND table_id = ? AND row_item_id = ? AND column_item_id = ?`
       ).bind(userId, patch.tableId, patch.rowItemId, patch.columnItemId);
     }
 
+    const memo = patch.markType === "disabled" ? null : patch.memo === "" ? null : patch.memo;
+    const markPeriodKey = patch.markType === "reserved" ? (patch.periodKey ?? null) : null;
+    const checkboxVisible = patch.markType === "disabled" ? 0 : 1;
     return env.DB.prepare(
       `INSERT INTO board_cell_states
-         (id, user_id, table_id, row_item_id, column_item_id, checkbox_visible, updated_at)
-       VALUES (?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
+         (id, user_id, table_id, row_item_id, column_item_id, checkbox_visible, mark_type, memo, mark_period_key, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
        ON CONFLICT(table_id, row_item_id, column_item_id)
-       DO UPDATE SET checkbox_visible = 0, updated_at = CURRENT_TIMESTAMP`
-    ).bind(crypto.randomUUID(), userId, patch.tableId, patch.rowItemId, patch.columnItemId);
+       DO UPDATE SET checkbox_visible = excluded.checkbox_visible,
+                     mark_type = excluded.mark_type,
+                     memo = excluded.memo,
+                     mark_period_key = excluded.mark_period_key,
+                     updated_at = CURRENT_TIMESTAMP`
+    ).bind(
+      crypto.randomUUID(),
+      userId,
+      patch.tableId,
+      patch.rowItemId,
+      patch.columnItemId,
+      checkboxVisible,
+      patch.markType,
+      memo,
+      markPeriodKey
+    );
   });
 
   if (statements.length > 0) {

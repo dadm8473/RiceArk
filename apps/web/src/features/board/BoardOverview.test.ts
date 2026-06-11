@@ -6,6 +6,7 @@ import {
   applyBoardTableSettingsToAxisItems,
   applyBoardAxisItemSaveToAxisItems,
   BoardAxisItemEditModal,
+  BoardCellMarkEditModal,
   BoardDisplayOptions,
   BoardOverview,
   BoardScheduleAdventureRow,
@@ -14,10 +15,7 @@ import {
   BoardTableGrid,
   BoardSheetSettingsModal,
   bringBoardTableToFront,
-  buildBoardTaskCheckboxVisibilityPatches,
   getStoredBoardZoom,
-  getBoardTaskCheckboxTargets,
-  getBoardTaskCheckboxVisibilityMode,
   getBoardScheduleRowAvailable,
   getCharacterRefreshCooldownState,
   getBoardEventRewardFilterSummary,
@@ -34,6 +32,7 @@ import {
   normalizeBoardZoom,
   shouldSaveBoardCharacterDetails
 } from "./BoardOverview";
+import { getBoardCellPeriodKey } from "./completions";
 import type { BoardAxisItem, BoardPayload } from "./types";
 
 const board: BoardPayload = {
@@ -1057,7 +1056,7 @@ describe("BoardOverview", () => {
     expect(html).toContain('aria-label="쌀(골드) 관심 보상"');
   });
 
-  it("keeps hidden cells present for layout without rendering a checkbox", () => {
+  it("keeps disabled cells present for layout without rendering a checkbox", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {
         board: {
@@ -1067,7 +1066,10 @@ describe("BoardOverview", () => {
               table_id: "table-1",
               row_item_id: "row-task-1",
               column_item_id: "column-character-1",
-              checkbox_visible: 0
+              checkbox_visible: 0,
+              mark_type: "disabled",
+              memo: null,
+              mark_period_key: null
             }
           ]
         }
@@ -1076,6 +1078,80 @@ describe("BoardOverview", () => {
 
     expect(html).toContain('class="board-check-placeholder"');
     expect(html).not.toContain('aria-label="쿠르잔 전선 / 냠수나이스1" class="board-check"');
+  });
+
+  it("renders fixed and reserved corner marks with a memo dot on marked cells", () => {
+    const secondCharacter: BoardAxisItem = {
+      ...board.axisItems[1]!,
+      id: "column-character-2",
+      label: "냠수나이스2",
+      character_id: "character-2",
+      sort_order: 1
+    };
+    const currentPeriodKey = getBoardCellPeriodKey(board.axisItems[0]!, secondCharacter);
+    const html = renderToStaticMarkup(
+      createElement(BoardOverview, {
+        board: {
+          ...board,
+          axisItems: [...board.axisItems, secondCharacter],
+          cellStates: [
+            {
+              table_id: "table-1",
+              row_item_id: "row-task-1",
+              column_item_id: "column-character-1",
+              checkbox_visible: 1,
+              mark_type: "fixed",
+              memo: "고정파티 21시",
+              mark_period_key: null
+            },
+            {
+              table_id: "table-1",
+              row_item_id: "row-task-1",
+              column_item_id: "column-character-2",
+              checkbox_visible: 1,
+              mark_type: "reserved",
+              memo: null,
+              mark_period_key: currentPeriodKey ?? ""
+            }
+          ]
+        }
+      })
+    );
+
+    expect(html).toContain('class="board-check-mark fixed"');
+    expect(html).toContain('class="board-check-mark reserved"');
+    expect(html).toContain('class="board-check-memo-dot"');
+  });
+
+  it("treats reserved marks from a past period as plain cells", () => {
+    const html = renderToStaticMarkup(
+      createElement(BoardOverview, {
+        board: {
+          ...board,
+          cellStates: [
+            {
+              table_id: "table-1",
+              row_item_id: "row-task-1",
+              column_item_id: "column-character-1",
+              checkbox_visible: 1,
+              mark_type: "reserved",
+              memo: "지난주 약속",
+              mark_period_key: "weekly:2000-01-05"
+            }
+          ]
+        }
+      })
+    );
+
+    expect(html).not.toContain("board-check-mark reserved");
+    expect(html).not.toContain("board-check-memo-dot");
+  });
+
+  it("offers the cell mark edit mode from the table menu", () => {
+    const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
+
+    expect(html).toContain('aria-label="숙제 고정/예약 편집 모드 켜기"');
+    expect(html).toContain("고정/예약");
   });
 
   it("does not render an empty board as a stretching spreadsheet", () => {
@@ -1339,8 +1415,6 @@ describe("BoardOverview", () => {
     const html = renderToStaticMarkup(
       createElement(BoardAxisItemEditModal, {
         item: { ...board.axisItems[0]!, task_reset_type: "weekly" },
-        axisItems: board.axisItems,
-        cellStates: board.cellStates,
         settings: board.settings,
         table: board.tables[0]!,
         onClose: () => undefined,
@@ -1361,8 +1435,6 @@ describe("BoardOverview", () => {
     const html = renderToStaticMarkup(
       createElement(BoardAxisItemEditModal, {
         item: { ...board.axisItems[0]!, task_reset_type: "weekly", size_px: 44, cross_size_px: 180 },
-        axisItems: board.axisItems,
-        cellStates: board.cellStates,
         settings: board.settings,
         table: board.tables[0]!,
         onClose: () => undefined,
@@ -1379,91 +1451,67 @@ describe("BoardOverview", () => {
     expect(html.indexOf("행 너비")).toBeLessThan(html.indexOf("체크 색상"));
   });
 
-  it("renders task checkbox visibility controls from item settings", () => {
-    const axisItems: BoardAxisItem[] = [
-      board.axisItems[0]!,
-      board.axisItems[1]!,
-      { ...board.axisItems[1]!, id: "column-character-2", label: "냠수나이스2", sort_order: 10 }
-    ];
+  it("moves checkbox visibility out of the axis item modal into the cell mark editor", () => {
     const html = renderToStaticMarkup(
       createElement(BoardAxisItemEditModal, {
         item: board.axisItems[0]!,
-        axisItems,
-        cellStates: [
-          {
-            table_id: "table-1",
-            row_item_id: "row-task-1",
-            column_item_id: "column-character-2",
-            checkbox_visible: 0
-          }
-        ],
         settings: board.settings,
         table: board.tables[0]!,
         onClose: () => undefined,
         onDelete: async () => undefined,
         onSave: async () => undefined,
-        onCharacterSave: async () => undefined,
-        onCellStatesSave: async () => undefined
+        onCharacterSave: async () => undefined
       })
     );
 
-    expect(html).toContain("체크박스 표시 대상");
-    expect(html).toContain('<option value="custom" selected="">직접 선택</option>');
-    expect(html).toContain("냠수나이스1");
-    expect(html).toContain("냠수나이스2");
+    expect(html).not.toContain("체크박스 표시 대상");
   });
 
-  it("maps task checkbox visibility targets without mixing row and column orientation", () => {
-    const rowTaskTargets = getBoardTaskCheckboxTargets(
-      board.axisItems[0]!,
-      [
-        board.axisItems[0]!,
-        board.axisItems[1]!,
-        { ...board.axisItems[1]!, id: "column-character-2", label: "냠수나이스2", sort_order: 10 }
-      ],
-      [
-        {
+  it("renders the cell mark editor with type options and a memo input", () => {
+    const html = renderToStaticMarkup(
+      createElement(BoardCellMarkEditModal, {
+        cellState: {
           table_id: "table-1",
           row_item_id: "row-task-1",
-          column_item_id: "column-character-2",
-          checkbox_visible: 0
-        }
-      ]
+          column_item_id: "column-character-1",
+          checkbox_visible: 1,
+          mark_type: "fixed",
+          memo: "고정파티 21시",
+          mark_period_key: null
+        },
+        column: board.axisItems[1]!,
+        row: board.axisItems[0]!,
+        table: board.tables[0]!,
+        onClose: () => undefined,
+        onSave: async () => undefined
+      })
     );
-    const taskColumn = { ...board.axisItems[0]!, id: "column-task-1", axis: "column" as const };
-    const characterRow = { ...board.axisItems[1]!, id: "row-character-1", axis: "row" as const };
-    const columnTaskTargets = getBoardTaskCheckboxTargets(taskColumn, [taskColumn, characterRow], []);
 
-    expect(rowTaskTargets.map((target) => [target.rowItemId, target.columnItemId, target.visible])).toEqual([
-      ["row-task-1", "column-character-1", true],
-      ["row-task-1", "column-character-2", false]
-    ]);
-    expect(getBoardTaskCheckboxVisibilityMode(rowTaskTargets)).toBe("custom");
-    expect(columnTaskTargets.map((target) => [target.rowItemId, target.columnItemId, target.visible])).toEqual([
-      ["row-character-1", "column-task-1", true]
-    ]);
+    expect(html).toContain("체크마크 설정");
+    expect(html).toContain("쿠르잔 전선 / 냠수나이스1");
+    expect(html).toContain("기본");
+    expect(html).toContain("고정");
+    expect(html).toContain("예약");
+    expect(html).toContain("비활성화");
+    expect(html).toContain('aria-checked="true"');
+    expect(html).toContain('value="고정파티 21시"');
   });
 
-  it("builds task checkbox visibility patches for bulk and custom modes", () => {
-    const axisItems: BoardAxisItem[] = [
-      board.axisItems[0]!,
-      board.axisItems[1]!,
-      { ...board.axisItems[1]!, id: "column-character-2", label: "냠수나이스2", sort_order: 10 }
-    ];
-
-    expect(buildBoardTaskCheckboxVisibilityPatches(board.axisItems[0]!, axisItems, { mode: "all_hidden" })).toEqual([
-      { tableId: "table-1", rowItemId: "row-task-1", columnItemId: "column-character-1", checkboxVisible: false },
-      { tableId: "table-1", rowItemId: "row-task-1", columnItemId: "column-character-2", checkboxVisible: false }
-    ]);
-    expect(
-      buildBoardTaskCheckboxVisibilityPatches(board.axisItems[0]!, axisItems, {
-        mode: "custom",
-        visibleCharacterItemIds: ["column-character-2"]
+  it("blocks reserved marks for tasks that never reset", () => {
+    const noResetRow = { ...board.axisItems[0]!, task_reset_rule_json: '{"type":"none"}' };
+    const html = renderToStaticMarkup(
+      createElement(BoardCellMarkEditModal, {
+        cellState: undefined,
+        column: board.axisItems[1]!,
+        row: noResetRow,
+        table: board.tables[0]!,
+        onClose: () => undefined,
+        onSave: async () => undefined
       })
-    ).toEqual([
-      { tableId: "table-1", rowItemId: "row-task-1", columnItemId: "column-character-1", checkboxVisible: false },
-      { tableId: "table-1", rowItemId: "row-task-1", columnItemId: "column-character-2", checkboxVisible: true }
-    ]);
+    );
+
+    expect(html).toContain("초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.");
+    expect(html).toMatch(/disabled=""[^>]*>.*예약|예약[^<]*<\/button>/);
   });
 
   it("lets row and column items edit both height and width from item settings", () => {

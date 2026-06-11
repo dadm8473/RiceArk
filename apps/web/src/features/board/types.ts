@@ -77,6 +77,9 @@ export interface BoardCellState {
   row_item_id: string;
   column_item_id: string;
   checkbox_visible: number;
+  mark_type: string;
+  memo: string | null;
+  mark_period_key: string | null;
 }
 
 export interface BoardCellCompletion {
