@@ -6,7 +6,7 @@ import {
   applyBoardTableSettingsToAxisItems,
   applyBoardAxisItemSaveToAxisItems,
   BoardAxisItemEditModal,
-  BoardCellMarkEditModal,
+  BoardCellMarkToolbar,
   BoardDisplayOptions,
   BoardOverview,
   BoardScheduleAdventureRow,
@@ -1467,51 +1467,54 @@ describe("BoardOverview", () => {
     expect(html).not.toContain("체크박스 표시 대상");
   });
 
-  it("renders the cell mark editor with type options and a memo input", () => {
+  it("renders the cell mark brush toolbar with type options and a shared memo input", () => {
     const html = renderToStaticMarkup(
-      createElement(BoardCellMarkEditModal, {
-        cellState: {
-          table_id: "table-1",
-          row_item_id: "row-task-1",
-          column_item_id: "column-character-1",
-          checkbox_visible: 1,
-          mark_type: "fixed",
-          memo: "고정파티 21시",
-          mark_period_key: null
-        },
-        column: board.axisItems[1]!,
-        row: board.axisItems[0]!,
-        table: board.tables[0]!,
-        onClose: () => undefined,
-        onSave: async () => undefined
+      createElement(BoardCellMarkToolbar, {
+        brush: { type: "fixed", memo: "고정파티 21시" },
+        notice: null,
+        onBrushChange: () => undefined
       })
     );
 
-    expect(html).toContain("체크마크 설정");
-    expect(html).toContain("쿠르잔 전선 / 냠수나이스1");
+    expect(html).toContain('aria-label="체크마크 브러시"');
     expect(html).toContain("기본");
     expect(html).toContain("고정");
     expect(html).toContain("예약");
     expect(html).toContain("비활성화");
     expect(html).toContain('aria-checked="true"');
     expect(html).toContain('value="고정파티 21시"');
+    expect(html).toContain("다시 클릭하면 해제");
   });
 
-  it("blocks reserved marks for tasks that never reset", () => {
-    const noResetRow = { ...board.axisItems[0]!, task_reset_rule_json: '{"type":"none"}' };
-    const html = renderToStaticMarkup(
-      createElement(BoardCellMarkEditModal, {
-        cellState: undefined,
-        column: board.axisItems[1]!,
-        row: noResetRow,
-        table: board.tables[0]!,
-        onClose: () => undefined,
-        onSave: async () => undefined
+  it("hides the brush memo input for default and disabled brushes and shows notices", () => {
+    const defaultHtml = renderToStaticMarkup(
+      createElement(BoardCellMarkToolbar, {
+        brush: { type: "default", memo: "" },
+        notice: null,
+        onBrushChange: () => undefined
+      })
+    );
+    const noticeHtml = renderToStaticMarkup(
+      createElement(BoardCellMarkToolbar, {
+        brush: { type: "reserved", memo: "" },
+        notice: "초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.",
+        onBrushChange: () => undefined
       })
     );
 
-    expect(html).toContain("초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.");
-    expect(html).toMatch(/disabled=""[^>]*>.*예약|예약[^<]*<\/button>/);
+    expect(defaultHtml).not.toContain('aria-label="브러시 메모"');
+    expect(noticeHtml).toContain('aria-label="브러시 메모"');
+    expect(noticeHtml).toContain("초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.");
+  });
+
+  it("paints cells directly with the brush instead of opening a modal", () => {
+    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("function handleCellMarkPaint(");
+    expect(source).toContain("onCellMarkPaint(row, column, mark, periodKey)");
+    expect(source).not.toContain("BoardCellMarkEditModal");
+    // 같은 브러시로 칠한 셀을 다시 클릭하면 해제
+    expect(source).toContain('const markType: BoardCellMarkType = isSameAsBrush ? "default" : markBrush.type;');
   });
 
   it("lets row and column items edit both height and width from item settings", () => {

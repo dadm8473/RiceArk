@@ -2074,10 +2074,34 @@ body {
   pointer-events: none;
 }
 
-.board-cell-mark-options {
+.board-cell-mark-toolbar {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 6px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+}
+
+.board-cell-mark-toolbar .cell-mark-description {
+  margin: 0;
+}
+
+.board-cell-mark-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.board-cell-mark-memo-input {
+  flex: 1 1 200px;
+  min-width: 150px;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid #c6cfdd;
+  border-radius: 4px;
+  font-size: 13px;
 }
 
 .board-cell-mark-option {
@@ -2085,12 +2109,13 @@ body {
   align-items: center;
   justify-content: center;
   gap: 4px;
+  flex: 0 0 auto;
   min-height: 32px;
   padding: 0 10px;
   border: 1px solid #c6cfdd;
   border-radius: 4px;
   color: #475569;
-  background: #f8fafc;
+  background: #ffffff;
   font-size: 13px;
   font-weight: 800;
 }
@@ -2108,13 +2133,6 @@ body {
 .board-cell-mark-option:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.cell-mark-target {
-  margin: 0;
-  color: #111827;
-  font-size: 13px;
-  font-weight: 800;
 }
 
 .cell-mark-description {
@@ -2158,8 +2176,19 @@ body {
   background: #172554;
 }
 
-.app-shell[data-theme="dark"] .cell-mark-target {
+.app-shell[data-theme="dark"] .board-cell-mark-toolbar {
+  border-color: #1e3a8a;
+  background: #172554;
+}
+
+.app-shell[data-theme="dark"] .board-cell-mark-memo-input {
+  border-color: #475569;
   color: #e5e7eb;
+  background: #111827;
+}
+
+.app-shell[data-theme="dark"] .board-cell-mark-toolbar .cell-mark-description {
+  color: #cbd5e1;
 }
 
 .board-check {

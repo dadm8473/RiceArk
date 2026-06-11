@@ -34,7 +34,13 @@ import { apiDelete, apiGet, apiPatch, apiPost } from "../../api/client";
 import { CharacterImport } from "../characters/CharacterImport";
 import { TaskForm } from "../tasks/TaskForm";
 import { BoardNoteMarkdown } from "./BoardNoteMarkdown";
-import { applyBoardCellStatePatch, resolveBoardCellMark, type BoardCellMark, type BoardCellStatePatch } from "./cellStates";
+import {
+  applyBoardCellStatePatch,
+  resolveBoardCellMark,
+  type BoardCellMark,
+  type BoardCellMarkType,
+  type BoardCellStatePatch
+} from "./cellStates";
 import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
 import { normalizeBoundedIntegerDraft } from "./numberInput";
 import {
@@ -246,6 +252,18 @@ const BOARD_CELL_MARK_OPTIONS: Array<{ value: "default" | "fixed" | "reserved" |
   { value: "disabled", label: "비활성화", description: "이 칸의 체크박스를 숨깁니다." }
 ];
 const BOARD_CELL_MARK_LABELS: Record<string, string> = { fixed: "고정", reserved: "예약" };
+
+export interface BoardCellMarkBrush {
+  type: BoardCellMarkType;
+  memo: string;
+}
+
+type BoardCellMarkPaintHandler = (
+  row: BoardAxisItem,
+  column: BoardAxisItem,
+  currentMark: BoardCellMark | null,
+  periodKey: string | null
+) => void;
 const LOST_ARK_EVENT_TABLE_DEFAULT_REWARD_FILTERS: LostArkEventRewardFilter[] = ["gold", "card", "coin", "silver", "cardXp"];
 const LOST_ARK_EVENT_TABLE_DEFAULT_COMPLETION_COLUMN = "완료";
 const LOST_ARK_EVENT_TABLE_ROW_HEADER_WIDTH = 420;
@@ -1016,9 +1034,8 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
   const [reorderTableId, setReorderTableId] = useState<string | null>(null);
   const [activeSortableId, setActiveSortableId] = useState<string | null>(null);
   const [markEditTableId, setMarkEditTableId] = useState<string | null>(null);
-  const [editingCellMark, setEditingCellMark] = useState<{ table: BoardTable; row: BoardAxisItem; column: BoardAxisItem } | null>(
-    null
-  );
+  const [markBrush, setMarkBrush] = useState<BoardCellMarkBrush>({ type: "fixed", memo: "" });
+  const [markBrushNotice, setMarkBrushNotice] = useState<string | null>(null);
   const [boardZoom, setBoardZoom] = useState(() =>
     typeof window === "undefined" ? BOARD_ZOOM_DEFAULT : getStoredBoardZoom(window.localStorage)
   );
@@ -1213,6 +1230,44 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
 
     await apiPatch("/api/board/cell-states", { patches });
     setCellStates((current) => patches.reduce((next, patch) => applyBoardCellStatePatch(next, patch), current));
+  }
+
+  function handleCellMarkPaint(
+    table: BoardTable,
+    row: BoardAxisItem,
+    column: BoardAxisItem,
+    currentMark: BoardCellMark | null,
+    periodKey: string | null
+  ) {
+    if (isReadOnly) return;
+    setMarkBrushNotice(null);
+    if (markBrush.type === "reserved" && (!periodKey || periodKey === "none:permanent")) {
+      setMarkBrushNotice("초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.");
+      return;
+    }
+
+    const memoEnabled = markBrush.type === "fixed" || markBrush.type === "reserved";
+    const brushMemo = memoEnabled && markBrush.memo.trim() ? markBrush.memo.trim() : null;
+    const isSameAsBrush =
+      markBrush.type !== "default" &&
+      currentMark !== null &&
+      currentMark.type === markBrush.type &&
+      (currentMark.memo ?? null) === brushMemo;
+    const markType: BoardCellMarkType = isSameAsBrush ? "default" : markBrush.type;
+    const patch: BoardCellStatePatch = {
+      tableId: table.id,
+      rowItemId: row.id,
+      columnItemId: column.id,
+      markType,
+      memo: markType === "fixed" || markType === "reserved" ? brushMemo : null,
+      ...(markType === "reserved" && periodKey ? { periodKey } : {})
+    };
+
+    setCellStates((current) => applyBoardCellStatePatch(current, patch));
+    void apiPatch("/api/board/cell-states", { patches: [patch] }).catch(async (err) => {
+      setFormError(err instanceof Error ? err.message : "체크마크 설정을 저장하지 못했습니다.");
+      await refreshBoard();
+    });
   }
 
   async function handleAxisItemSave(
@@ -1608,7 +1663,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
     }
     if (markEditTableId === tableId) {
       setMarkEditTableId(null);
-      setEditingCellMark(null);
+      setMarkBrushNotice(null);
     }
     setEditingTable(null);
   }
@@ -1636,7 +1691,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
       }
       if (nextLocked === 1 && markEditTableId === table.id) {
         setMarkEditTableId(null);
-        setEditingCellMark(null);
+        setMarkBrushNotice(null);
       }
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "표 잠금 상태를 저장하지 못했습니다.");
@@ -1648,7 +1703,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
     if (isBoardTableLocked(table)) return;
     setActiveSortableId(null);
     setMarkEditTableId(null);
-    setEditingCellMark(null);
+    setMarkBrushNotice(null);
     setReorderTableId((current) => (current === table.id ? null : table.id));
   }
 
@@ -1656,7 +1711,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
     if (isBoardTableLocked(table)) return;
     setReorderTableId(null);
     setActiveSortableId(null);
-    setEditingCellMark(null);
+    setMarkBrushNotice(null);
     setMarkEditTableId((current) => (current === table.id ? null : table.id));
   }
 
@@ -1919,7 +1974,11 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
                   readOnly={isReadOnly}
                   table={table}
                   onAxisItemEdit={interactionsLocked || isReorderMode || isMarkEditMode ? undefined : setEditingAxisItem}
-                  onCellMarkEdit={isMarkEditMode ? (row, column) => setEditingCellMark({ table, row, column }) : undefined}
+                  onCellMarkPaint={
+                    isMarkEditMode
+                      ? (row, column, currentMark, periodKey) => handleCellMarkPaint(table, row, column, currentMark, periodKey)
+                      : undefined
+                  }
                   onEventNotificationDelivered={handleEventNotificationDelivered}
                   onToggle={handleCompletionToggle}
                   settings={board.settings}
@@ -2169,6 +2228,16 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
                       </div>
                     </div> : null}
                   </div>
+                  {isMarkEditMode ? (
+                    <BoardCellMarkToolbar
+                      brush={markBrush}
+                      notice={markBrushNotice}
+                      onBrushChange={(nextBrush) => {
+                        setMarkBrush(nextBrush);
+                        setMarkBrushNotice(null);
+                      }}
+                    />
+                  ) : null}
                   {isReorderMode && !isReadOnly ? (
                     <DndContext
                       collisionDetection={closestCenter}
@@ -2491,24 +2560,6 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
           onCharacterSave={handleBoardCharacterSave}
           onDelete={handleAxisItemDelete}
           onSave={handleAxisItemSave}
-        />
-      ) : null}
-      {!isReadOnly && editingCellMark ? (
-        <BoardCellMarkEditModal
-          column={editingCellMark.column}
-          row={editingCellMark.row}
-          table={editingCellMark.table}
-          cellState={cellStates.find(
-            (cell) =>
-              cell.table_id === editingCellMark.table.id &&
-              cell.row_item_id === editingCellMark.row.id &&
-              cell.column_item_id === editingCellMark.column.id
-          )}
-          onClose={() => setEditingCellMark(null)}
-          onSave={async (patch) => {
-            await handleCellStatesSave([patch]);
-            setEditingCellMark(null);
-          }}
         />
       ) : null}
       {!isReadOnly && editingTable ? (
@@ -3456,7 +3507,7 @@ export function BoardTableGrid({
   readOnly = false,
   table,
   onAxisItemEdit,
-  onCellMarkEdit,
+  onCellMarkPaint,
   onEventNotificationDelivered,
   onToggle,
   settings
@@ -3470,7 +3521,7 @@ export function BoardTableGrid({
   readOnly?: boolean | undefined;
   table: BoardTable;
   onAxisItemEdit?: ((item: BoardAxisItem) => void) | undefined;
-  onCellMarkEdit?: ((row: BoardAxisItem, column: BoardAxisItem) => void) | undefined;
+  onCellMarkPaint?: BoardCellMarkPaintHandler | undefined;
   onEventNotificationDelivered?: ((tableId: string) => void) | undefined;
   onToggle: (patch: BoardCompletionPatch) => void;
   settings: BoardDisplaySettings;
@@ -3610,7 +3661,7 @@ export function BoardTableGrid({
         completedCells,
         cellMarksByKey,
         onAxisItemEdit,
-        onCellMarkEdit,
+        onCellMarkPaint,
         onToggle,
         readOnly,
         eventOptions.rewardFilters,
@@ -3697,7 +3748,7 @@ function renderBoardRows(
   completedCells: Set<string>,
   cellMarksByKey: Map<string, BoardCellState>,
   onAxisItemEdit: ((item: BoardAxisItem) => void) | undefined,
-  onCellMarkEdit: ((row: BoardAxisItem, column: BoardAxisItem) => void) | undefined,
+  onCellMarkPaint: BoardCellMarkPaintHandler | undefined,
   onToggle: (patch: BoardCompletionPatch) => void,
   readOnly: boolean,
   rewardFilters: LostArkEventRewardFilter[] = LOST_ARK_EVENT_TABLE_DEFAULT_REWARD_FILTERS,
@@ -3718,7 +3769,7 @@ function renderBoardRows(
       isMarkEditMode={isMarkEditMode}
       isReorderMode={isReorderMode}
       onAxisItemEdit={isReorderMode ? undefined : onAxisItemEdit}
-      onCellMarkEdit={onCellMarkEdit}
+      onCellMarkPaint={onCellMarkPaint}
       onToggle={onToggle}
       readOnly={readOnly}
       row={row}
@@ -4146,7 +4197,7 @@ function BoardGridRow({
   isMarkEditMode,
   isReorderMode,
   onAxisItemEdit,
-  onCellMarkEdit,
+  onCellMarkPaint,
   onToggle,
   readOnly,
   rewardFilters,
@@ -4164,7 +4215,7 @@ function BoardGridRow({
   isMarkEditMode?: boolean | undefined;
   isReorderMode?: boolean | undefined;
   onAxisItemEdit?: ((item: BoardAxisItem) => void) | undefined;
-  onCellMarkEdit?: ((row: BoardAxisItem, column: BoardAxisItem) => void) | undefined;
+  onCellMarkPaint?: BoardCellMarkPaintHandler | undefined;
   onToggle: (patch: BoardCompletionPatch) => void;
   readOnly: boolean;
   rewardFilters: LostArkEventRewardFilter[];
@@ -4196,7 +4247,7 @@ function BoardGridRow({
           eventSummary={eventSummary}
           isMarkEditMode={isMarkEditMode === true}
           isReorderMode={isReorderMode === true}
-          onCellMarkEdit={onCellMarkEdit}
+          onCellMarkPaint={onCellMarkPaint}
           onToggle={onToggle}
           readOnly={readOnly}
           row={row}
@@ -4215,7 +4266,7 @@ function BoardCheckCell({
   eventSummary,
   isMarkEditMode,
   isReorderMode,
-  onCellMarkEdit,
+  onCellMarkPaint,
   onToggle,
   readOnly,
   row,
@@ -4228,7 +4279,7 @@ function BoardCheckCell({
   eventSummary?: LostArkEventTodaySummary | null | undefined;
   isMarkEditMode: boolean;
   isReorderMode: boolean;
-  onCellMarkEdit?: ((row: BoardAxisItem, column: BoardAxisItem) => void) | undefined;
+  onCellMarkPaint?: BoardCellMarkPaintHandler | undefined;
   onToggle: (patch: BoardCompletionPatch) => void;
   readOnly: boolean;
   row: BoardAxisItem;
@@ -4267,7 +4318,7 @@ function BoardCheckCell({
     <div
       className={`board-check-cell${isMarkEditMode ? " mark-editable" : ""}`}
       style={cellStyle}
-      onClick={isMarkEditMode && onCellMarkEdit ? () => onCellMarkEdit(row, column) : undefined}
+      onClick={isMarkEditMode && onCellMarkPaint ? () => onCellMarkPaint(row, column, mark, periodKey) : undefined}
       onPointerEnter={(event) => {
         if (event.pointerType !== "mouse" || isMarkEditMode || isReorderMode || !hasTooltipContent) return;
         clearTooltipTimer();
@@ -4333,109 +4384,50 @@ function BoardCheckCell({
   );
 }
 
-export function BoardCellMarkEditModal({
-  cellState,
-  column,
-  onClose,
-  onSave,
-  row,
-  table
+export function BoardCellMarkToolbar({
+  brush,
+  notice,
+  onBrushChange
 }: {
-  cellState: BoardCellState | undefined;
-  column: BoardAxisItem;
-  row: BoardAxisItem;
-  table: BoardTable;
-  onClose: () => void;
-  onSave: (patch: BoardCellStatePatch) => Promise<void>;
+  brush: BoardCellMarkBrush;
+  notice: string | null;
+  onBrushChange: (brush: BoardCellMarkBrush) => void;
 }) {
-  const periodKey = getBoardCellPeriodKey(row, column);
-  const currentMark = resolveBoardCellMark(cellState, periodKey);
-  const reservedUnavailable = !periodKey || periodKey === "none:permanent";
-  const [markType, setMarkType] = useState<BoardCellStatePatch["markType"]>(currentMark?.type ?? "default");
-  const [memo, setMemo] = useState(currentMark?.memo ?? "");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const memoEnabled = markType === "fixed" || markType === "reserved";
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setPending(true);
-    setError(null);
-    try {
-      await onSave({
-        tableId: table.id,
-        rowItemId: row.id,
-        columnItemId: column.id,
-        markType,
-        memo: memoEnabled ? (memo.trim() ? memo.trim() : null) : null,
-        ...(markType === "reserved" && periodKey ? { periodKey } : {})
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "체크마크 설정을 저장하지 못했습니다.");
-      setPending(false);
-    }
-  }
+  const memoEnabled = brush.type === "fixed" || brush.type === "reserved";
+  const activeOption = BOARD_CELL_MARK_OPTIONS.find((option) => option.value === brush.type);
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <section className="tool-modal edit-modal cell-mark-edit-modal" aria-modal="true" role="dialog" aria-label="체크마크 설정">
-        <header className="tool-modal-header">
-          <h2>체크마크 설정</h2>
-          <button className="modal-close-button" type="button" aria-label="닫기" onClick={onClose}>
-            <X aria-hidden="true" size={18} />
+    <div className="board-cell-mark-toolbar" onPointerDown={(event) => event.stopPropagation()}>
+      <div className="board-cell-mark-options" role="radiogroup" aria-label="체크마크 브러시">
+        {BOARD_CELL_MARK_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            className={`board-cell-mark-option${brush.type === option.value ? " active" : ""}`}
+            type="button"
+            role="radio"
+            aria-checked={brush.type === option.value}
+            title={option.description}
+            onClick={() => onBrushChange({ ...brush, type: option.value })}
+          >
+            {option.value === "fixed" ? <Pin aria-hidden="true" size={13} /> : null}
+            {option.value === "reserved" ? <Clock aria-hidden="true" size={13} /> : null}
+            {option.label}
           </button>
-        </header>
-        <form className="tool-modal-body edit-form" onSubmit={submit}>
-          <p className="cell-mark-target">
-            {row.label} / {column.label}
-          </p>
-          <div className="board-cell-mark-options" role="radiogroup" aria-label="체크마크 타입">
-            {BOARD_CELL_MARK_OPTIONS.map((option) => {
-              const reservedDisabled = option.value === "reserved" && reservedUnavailable;
-              return (
-                <button
-                  key={option.value}
-                  className={`board-cell-mark-option${markType === option.value ? " active" : ""}`}
-                  type="button"
-                  role="radio"
-                  aria-checked={markType === option.value}
-                  disabled={reservedDisabled}
-                  title={reservedDisabled ? "초기화되지 않는 숙제에는 예약을 설정할 수 없습니다." : option.description}
-                  onClick={() => setMarkType(option.value)}
-                >
-                  {option.value === "fixed" ? <Pin aria-hidden="true" size={13} /> : null}
-                  {option.value === "reserved" ? <Clock aria-hidden="true" size={13} /> : null}
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-          <p className="cell-mark-description">
-            {BOARD_CELL_MARK_OPTIONS.find((option) => option.value === markType)?.description}
-          </p>
-          {reservedUnavailable ? <p className="compact-notice">초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.</p> : null}
-          {memoEnabled ? (
-            <label>
-              메모
-              <input
-                maxLength={120}
-                placeholder="예: 고정파티 수요일 21시"
-                value={memo}
-                onChange={(event) => setMemo(event.currentTarget.value)}
-              />
-            </label>
-          ) : null}
-          {error ? <p className="error-text">{error}</p> : null}
-          <div className="edit-actions">
-            <button className="secondary-button" disabled={pending} type="button" onClick={onClose}>
-              취소
-            </button>
-            <button className="primary-button" disabled={pending} type="submit">
-              {pending ? "저장 중" : "저장"}
-            </button>
-          </div>
-        </form>
-      </section>
+        ))}
+        {memoEnabled ? (
+          <input
+            aria-label="브러시 메모"
+            className="board-cell-mark-memo-input"
+            maxLength={120}
+            placeholder="메모 (선택, 칠하는 셀에 함께 적용)"
+            value={brush.memo}
+            onChange={(event) => onBrushChange({ ...brush, memo: event.currentTarget.value })}
+          />
+        ) : null}
+      </div>
+      <p className="cell-mark-description">
+        {notice ?? `${activeOption?.description ?? ""} 셀을 클릭하면 바로 적용되고, 같은 설정의 셀을 다시 클릭하면 해제됩니다.`}
+      </p>
     </div>
   );
 }
