@@ -1,4 +1,6 @@
+import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
+import { z } from "zod";
 import { buildSessionCookie, clearSessionCookie, readSessionCookie } from "../auth/cookies";
 import {
   buildAuthorizationUrl,
@@ -15,8 +17,13 @@ import { createSession, createSessionToken, deleteSession } from "../auth/sessio
 import { isAdminUser } from "../auth/admin";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
+import { safeText } from "../http/input";
 
 export const authRoutes = new Hono<{ Bindings: Env }>();
+
+export const updateProfileSchema = z.object({
+  displayName: safeText({ allowEmoji: true, maxChars: 12, maxBytes: 48 })
+}).strict();
 
 function buildAuthErrorRedirect(appOrigin: string, providerName: string): string {
   const url = new URL(appOrigin);
@@ -144,6 +151,16 @@ authRoutes.get("/session", async (c) => {
   const user = await requireUser(c);
   const isAdmin = await isAdminUser(c.env, user.id);
   return c.json({ user: { ...user, isAdmin } });
+});
+
+authRoutes.patch("/profile", zValidator("json", updateProfileSchema), async (c) => {
+  const user = await requireUser(c);
+  const { displayName } = c.req.valid("json");
+  await c.env.DB.prepare("UPDATE users SET display_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .bind(displayName, user.id)
+    .run();
+  const isAdmin = await isAdminUser(c.env, user.id);
+  return c.json({ user: { ...user, displayName, isAdmin } });
 });
 
 authRoutes.post("/auth/logout", async (c) => {

@@ -25,7 +25,11 @@ export function formatSessionError(err: unknown): string | null {
   return err instanceof Error ? err.message : "로그인 상태를 확인하지 못했습니다.";
 }
 
-export function useSession(): SessionState {
+export type UseSessionResult = SessionState & {
+  updateUser: (user: AuthUser) => void;
+};
+
+export function useSession(): UseSessionResult {
   const [state, setState] = useState<SessionState>({ status: "checking", user: null, error: null });
 
   useEffect(() => {
@@ -45,5 +49,8 @@ export function useSession(): SessionState {
     };
   }, []);
 
-  return state;
+  return {
+    ...state,
+    updateUser: (user: AuthUser) => setState({ status: "authenticated", user, error: null })
+  };
 }

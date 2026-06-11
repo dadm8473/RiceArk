@@ -90,4 +90,81 @@ describe("auth routes", () => {
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("http://127.0.0.1:5173");
   });
+
+  it("updates the profile display name for the logged-in user", async () => {
+    const updates: Array<{ sql: string; binds: unknown[] }> = [];
+    const profileDb = {
+      prepare(sql: string) {
+        const statement = {
+          bind: (...binds: unknown[]) => ({
+            first: async () => {
+              if (sql.includes("FROM sessions")) {
+                return { id: "user-1", display_name: "쌀먹도사", avatar_url: null };
+              }
+              return null;
+            },
+            run: async () => {
+              updates.push({ sql, binds });
+              return { success: true };
+            },
+            all: async () => ({ results: [] })
+          })
+        };
+        return statement;
+      }
+    };
+
+    const res = await app.request(
+      "/api/profile",
+      {
+        method: "PATCH",
+        headers: { cookie: "riceark_session=test-session", "content-type": "application/json" },
+        body: JSON.stringify({ displayName: "  열두글자닉네임테스트12  " })
+      },
+      { ...env, DB: profileDb }
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      user: { id: "user-1", displayName: "열두글자닉네임테스트12" }
+    });
+    const update = updates.find((entry) => entry.sql.includes("UPDATE users SET display_name"));
+    expect(update?.binds).toEqual(["열두글자닉네임테스트12", "user-1"]);
+  });
+
+  it("rejects display names longer than 12 characters and anonymous profile updates", async () => {
+    const sessionDb = {
+      prepare(sql: string) {
+        return {
+          bind: () => ({
+            first: async () => (sql.includes("FROM sessions") ? { id: "user-1", display_name: "쌀먹도사", avatar_url: null } : null),
+            run: async () => ({ success: true }),
+            all: async () => ({ results: [] })
+          })
+        };
+      }
+    };
+
+    const tooLong = await app.request(
+      "/api/profile",
+      {
+        method: "PATCH",
+        headers: { cookie: "riceark_session=test-session", "content-type": "application/json" },
+        body: JSON.stringify({ displayName: "열세글자가넘어가는닉네임은안돼" })
+      },
+      { ...env, DB: sessionDb }
+    );
+    expect(tooLong.status).toBe(400);
+
+    const anonymous = await app.request(
+      "/api/profile",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ displayName: "닉네임" })
+      },
+      { ...env, DB: sessionDb }
+    );
+    expect(anonymous.status).toBe(401);
+  });
 });

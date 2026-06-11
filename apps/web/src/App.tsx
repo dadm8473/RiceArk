@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Activity, Calculator } from "lucide-react";
-import { apiPostNoContent } from "./api/client";
+import { apiPatch, apiPostNoContent } from "./api/client";
 import { AdminDashboard } from "./features/admin/AdminDashboard";
 import { AuctionCalculatorModal } from "./features/auction-calculator/AuctionCalculatorModal";
 import { AuthMenu, type AppTheme } from "./features/auth/AuthMenu";
-import { useSession } from "./features/auth/useSession";
+import { useSession, type AuthUser } from "./features/auth/useSession";
 import { BoardOverview } from "./features/board/BoardOverview";
 import { useBoard } from "./features/board/useBoard";
 import { extractSharedRiceBinId, SharedRiceBinPanel } from "./features/shared-rice-bin/SharedRiceBinPanel";
@@ -79,6 +79,11 @@ export function App() {
     setTheme((current) => (current === "dark" ? "light" : "dark"));
   };
 
+  const handleDisplayNameSave = async (displayName: string) => {
+    const payload = await apiPatch<{ user: AuthUser }>("/api/profile", { displayName });
+    session.updateUser(payload.user);
+  };
+
   const clearSharedRiceBinEntryState = () => {
     setInitialShareId(null);
     if (typeof window === "undefined" || !extractSharedRiceBinId(window.location.href)) return;
@@ -143,6 +148,7 @@ export function App() {
             status={session.status}
             theme={theme}
             user={session.user}
+            onDisplayNameSave={handleDisplayNameSave}
             onLogout={handleLogout}
             onThemeToggle={handleThemeToggle}
             onToggleMenu={() => setAuthMenuOpen((open) => !open)}
