@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyBoardCompletionPatch, getBoardCellPeriodKey, mergeBoardCompletionPatches } from "./completions";
+import {
+  applyBoardCompletionPatch,
+  applyPendingBoardCompletionPatches,
+  getBoardCellPeriodKey,
+  mergeBoardCompletionPatches
+} from "./completions";
 import type { BoardAxisItem, BoardCellCompletion } from "./types";
 
 const taskRow: BoardAxisItem = {
@@ -93,6 +98,30 @@ describe("board completion helpers", () => {
         columnItemId: "column-character-1",
         periodKey: "daily:2026-06-01",
         completed: false
+      }
+    ]);
+  });
+
+  it("overlays pending completion patches on a freshly reloaded board payload", () => {
+    const reloadedCompletions: BoardCellCompletion[] = [];
+
+    expect(
+      applyPendingBoardCompletionPatches(reloadedCompletions, [
+        {
+          tableId: "table-1",
+          rowItemId: "row-task-1",
+          columnItemId: "column-character-1",
+          periodKey: "daily:2026-06-01",
+          completed: true
+        }
+      ])
+    ).toEqual([
+      {
+        table_id: "table-1",
+        row_item_id: "row-task-1",
+        column_item_id: "column-character-1",
+        period_key: "daily:2026-06-01",
+        completed: 1
       }
     ]);
   });

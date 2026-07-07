@@ -113,6 +113,13 @@ describe("App", () => {
     expect(html.indexOf("공유 쌀통")).toBeLessThan(html.indexOf("분배금 계산기"));
   });
 
+  it("renders a patch notes board entry next to the calculator", () => {
+    const html = renderToStaticMarkup(createElement(App));
+
+    expect(html).toContain("패치노트");
+    expect(html.indexOf("분배금 계산기")).toBeLessThan(html.indexOf("패치노트"));
+  });
+
   it("shows the operations dashboard entry only to admin users", () => {
     hooks.useSession.mockReturnValue({
       status: "authenticated",
@@ -142,10 +149,12 @@ describe("App", () => {
     expect(html.indexOf("문의하기")).toBeLessThan(html.indexOf("Discord로 로그인"));
   });
 
-  it("passes an enabled flag to the board hook so anonymous shared lookup does not load a private board", () => {
+  it("passes separate load and polling flags to the board hook so shared lookup does not keep polling", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf-8");
 
-    expect(source).toContain("useBoard({ enabled: isBoardEnabled })");
+    expect(source).toContain("const isBoardEnabled =");
+    expect(source).toContain("const isBoardPollingEnabled = activeView === \"board\"");
+    expect(source).toContain("useBoard({ enabled: isBoardEnabled, pollingEnabled: isBoardPollingEnabled })");
   });
 
   it("clears shared rice bin link state when the user switches back to their own rice bin", () => {
@@ -154,6 +163,14 @@ describe("App", () => {
     expect(source).toContain("const handleOwnBoardSelected = () =>");
     expect(source).toMatch(/handleOwnBoardSelected[\s\S]{0,220}setActiveView\("board"\)[\s\S]{0,220}clearSharedRiceBinEntryState\(\)/);
     expect(source).toContain('onClick={handleOwnBoardSelected}');
+  });
+
+  it("turns a shared rice bin tab reselect into a lookup reset signal", () => {
+    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("sharedRiceBinLookupResetKey");
+    expect(source).toMatch(/handleSharedRiceBinSelected[\s\S]{0,260}activeView === "shared"[\s\S]{0,260}setSharedRiceBinLookupResetKey/);
+    expect(source).toContain("resetToLookupKey={sharedRiceBinLookupResetKey}");
   });
 });
 

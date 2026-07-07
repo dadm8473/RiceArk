@@ -141,13 +141,15 @@ export const createBoardNoteSchema = z.object({
 }).strict();
 
 export const updateBoardNoteSchema = z.object({
-  title: boardNoteTitleSchema,
-  body: boardNoteBodySchema,
-  color: boardTaskColorSchema,
-  width: boardNoteWidthSchema,
-  height: boardNoteHeightSchema,
+  title: boardNoteTitleSchema.optional(),
+  body: boardNoteBodySchema.optional(),
+  color: boardTaskColorSchema.optional(),
+  width: boardNoteWidthSchema.optional(),
+  height: boardNoteHeightSchema.optional(),
   locked: z.union([z.literal(0), z.literal(1)]).optional()
-}).strict();
+})
+  .strict()
+  .refine((input) => Object.keys(input).length > 0, { message: "At least one note field is required" });
 
 export const createBoardAxisItemSchema = z.object({
   tableId: resourceIdSchema,

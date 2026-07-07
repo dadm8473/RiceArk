@@ -10,10 +10,12 @@ import {
   BoardDisplayOptions,
   BoardOverview,
   BoardScheduleAdventureRow,
+  BoardTableToolModal,
   BoardTableSettingsModal,
   BoardTableCreateModal,
   BoardTableGrid,
   BoardSheetSettingsModal,
+  buildBoardNoteSavePatch,
   bringBoardTableToFront,
   getStoredBoardZoom,
   getBoardScheduleRowAvailable,
@@ -27,6 +29,7 @@ import {
   getBoardEventNotificationCurrentLabel,
   getBoardEventNotificationSettingsForMinuteSelection,
   getStoredBoardEventNotificationSettings,
+  getRefreshableBoardCharacterIds,
   normalizeBoardEventNotificationMinutes,
   parseBoardEventOptions,
   normalizeBoardZoom,
@@ -120,6 +123,26 @@ describe("BoardOverview", () => {
 
     expect(source).not.toContain("공유 쌀통 읽기 전용");
     expect(source).not.toContain("shared-readonly-badge");
+  });
+
+  it("builds note save requests from only the fields the user changed", () => {
+    const note = {
+      id: "note-1",
+      sheet_id: "sheet-1",
+      title: "레이드 메모",
+      body: "20분 전 본문",
+      color: "#fef3c7",
+      sort_order: 0,
+      x: 0,
+      y: 0,
+      width: 220,
+      height: 160,
+      locked: 0
+    };
+
+    expect(buildBoardNoteSavePatch(note, { body: "새 본문" })).toEqual({ body: "새 본문" });
+    expect(buildBoardNoteSavePatch(note, { color: "#fee2e2" })).toEqual({ color: "#fee2e2" });
+    expect(buildBoardNoteSavePatch(note, { title: "  " })).toEqual({ title: "메모" });
   });
 
   it("normalizes board zoom to safe 5 percent increments from local storage", () => {
@@ -380,6 +403,61 @@ describe("BoardOverview", () => {
 
     expect(html).toContain('class="board-check"');
     expect(html).toContain("disabled");
+  });
+
+  it("keeps table-level character refresh inside the character tool modal instead of the table menu", () => {
+    const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
+    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+    const modalHtml = renderToStaticMarkup(
+      createElement(BoardTableToolModal, {
+        isRefreshingCharacters: false,
+        onClose: vi.fn(),
+        onRefreshCharacters: async () => ({ failedCount: 0, refreshedCount: 1, totalCount: 1 }),
+        onSaved: vi.fn(),
+        refreshableCharacterCount: 1,
+        table: board.tables[0]!,
+        tool: "characters"
+      })
+    );
+
+    expect(html).not.toContain("캐릭터 정보 일괄 업데이트");
+    expect(modalHtml).toContain("캐릭터 정보 일괄 업데이트");
+    expect(modalHtml).toContain("가져온 캐릭터 1명");
+    expect(source).toContain("onRefreshCharacters={() => handleRefreshTableCharacters(activeTableTool.table)}");
+  });
+
+  it("collects only refreshable imported characters from the selected table", () => {
+    expect(
+      getRefreshableBoardCharacterIds("table-1", [
+        {
+          ...board.axisItems[1]!,
+          character_id: "character-1",
+          character_source: "lostark"
+        },
+        {
+          ...board.axisItems[1]!,
+          id: "column-character-duplicate",
+          character_id: "character-1",
+          character_source: "lostark",
+          sort_order: 10
+        },
+        {
+          ...board.axisItems[1]!,
+          id: "manual-character",
+          character_id: "character-manual",
+          character_source: "manual",
+          sort_order: 20
+        },
+        {
+          ...board.axisItems[1]!,
+          id: "other-table-character",
+          table_id: "table-2",
+          character_id: "character-2",
+          character_source: "lostark",
+          sort_order: 30
+        }
+      ])
+    ).toEqual(["character-1"]);
   });
 
   it("offers a Lost Ark event table template from the table creation flow", () => {

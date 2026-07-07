@@ -1,5 +1,5 @@
 import { Copy, ExternalLink, Heart, Search, Share2, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { apiDelete, apiGet, apiPost } from "../../api/client";
 import { BoardOverview } from "../board/BoardOverview";
 import type { BoardPayload } from "../board/types";
@@ -21,6 +21,7 @@ interface BoardShareFavoriteSummary extends BoardShareSummary {
 interface Props {
   initialShareId?: string | null | undefined;
   ownerBoard?: BoardPayload | null | undefined;
+  resetToLookupKey?: number | undefined;
   onSharedBoardClosed?: (() => void) | undefined;
   onOwnerBoardChanged?: (() => Promise<BoardPayload | null> | void) | undefined;
   sessionStatus: SessionState["status"];
@@ -74,7 +75,14 @@ export function openSharedRiceBinInNewTab(
   return true;
 }
 
-export function SharedRiceBinPanel({ initialShareId, ownerBoard, onSharedBoardClosed, onOwnerBoardChanged, sessionStatus }: Props) {
+export function SharedRiceBinPanel({
+  initialShareId,
+  ownerBoard,
+  resetToLookupKey = 0,
+  onSharedBoardClosed,
+  onOwnerBoardChanged,
+  sessionStatus
+}: Props) {
   const [lookupValue, setLookupValue] = useState(initialShareId ?? "");
   const [sharedBoard, setSharedBoard] = useState<BoardPayload | null>(null);
   const [shares, setShares] = useState<BoardShareSummary[]>([]);
@@ -82,6 +90,7 @@ export function SharedRiceBinPanel({ initialShareId, ownerBoard, onSharedBoardCl
   const [pending, setPending] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const lastResetToLookupKeyRef = useRef(resetToLookupKey);
   const isAuthenticated = sessionStatus === "authenticated";
   const shareBySheetId = useMemo(() => new Map(shares.map((share) => [share.sheetId, share])), [shares]);
   const favoriteShareIds = useMemo(() => new Set(favorites.map((favorite) => favorite.shareId)), [favorites]);
@@ -115,6 +124,14 @@ export function SharedRiceBinPanel({ initialShareId, ownerBoard, onSharedBoardCl
     if (!initialShareId) return;
     void handleLookup(initialShareId);
   }, [initialShareId]);
+
+  useEffect(() => {
+    if (lastResetToLookupKeyRef.current === resetToLookupKey) return;
+    lastResetToLookupKeyRef.current = resetToLookupKey;
+    if (!sharedBoard) return;
+    setSharedBoard(null);
+    onSharedBoardClosed?.();
+  }, [resetToLookupKey, sharedBoard, onSharedBoardClosed]);
 
   async function handleLookup(rawInput = lookupValue) {
     const shareId = extractSharedRiceBinId(rawInput);

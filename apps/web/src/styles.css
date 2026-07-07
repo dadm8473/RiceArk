@@ -146,6 +146,31 @@ body {
   border-top-color: #334155;
 }
 
+.app-shell[data-theme="dark"] .patch-note-editor,
+.app-shell[data-theme="dark"] .patch-note-card {
+  border-color: #475569;
+  background: #111827;
+}
+
+.app-shell[data-theme="dark"] .board-character-refresh-panel {
+  border-color: #475569;
+  background: #111827;
+}
+
+.app-shell[data-theme="dark"] .patch-note-editor h3,
+.app-shell[data-theme="dark"] .patch-note-card h3,
+.app-shell[data-theme="dark"] .patch-note-body-text,
+.app-shell[data-theme="dark"] .board-character-refresh-panel strong {
+  color: #e5e7eb;
+}
+
+.app-shell[data-theme="dark"] .patch-note-editor label,
+.app-shell[data-theme="dark"] .patch-note-card time,
+.app-shell[data-theme="dark"] .muted-text,
+.app-shell[data-theme="dark"] .board-character-refresh-panel span {
+  color: #cbd5e1;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -2895,6 +2920,12 @@ body {
   color: #2f3a4b;
 }
 
+.muted-text {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
 .workspace-actions {
   display: flex;
   align-items: center;
@@ -2930,6 +2961,50 @@ body {
 
 .task-tool-modal {
   width: min(520px, 100%);
+}
+
+.board-character-tool-body {
+  display: grid;
+  gap: 12px;
+}
+
+.board-character-refresh-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #d8dee8;
+  border-radius: 4px;
+  background: #f8fafc;
+}
+
+.board-character-refresh-panel > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.board-character-refresh-panel strong {
+  color: #111827;
+  font-size: 13px;
+}
+
+.board-character-refresh-panel span {
+  color: #526173;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.board-character-refresh-panel p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.board-character-refresh-panel button {
+  gap: 5px;
+  min-height: 32px;
+  white-space: nowrap;
 }
 
 .tool-modal-header {
@@ -2968,6 +3043,125 @@ body {
 
 .auction-calculator-modal {
   width: min(460px, 100%);
+}
+
+.patch-notes-modal {
+  width: min(720px, 100%);
+}
+
+.patch-notes-body {
+  display: grid;
+  gap: 12px;
+}
+
+.patch-note-editor {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d8dee8;
+  border-radius: 4px;
+  background: #f8fafc;
+}
+
+.patch-note-editor h3 {
+  margin: 0;
+  color: #111827;
+  font-size: 14px;
+}
+
+.patch-note-editor-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.patch-note-editor label {
+  display: grid;
+  gap: 5px;
+  color: #2f3a4b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.patch-note-editor input,
+.patch-note-editor textarea {
+  width: 100%;
+  border: 1px solid #aeb9c8;
+  border-radius: 4px;
+  padding: 8px;
+  color: #111827;
+  background: #ffffff;
+  font: inherit;
+}
+
+.patch-note-editor textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.patch-note-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.patch-note-list {
+  display: grid;
+  gap: 10px;
+}
+
+.patch-note-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d8dee8;
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.patch-note-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.patch-note-card h3 {
+  margin: 0;
+  color: #111827;
+  font-size: 15px;
+}
+
+.patch-note-card time {
+  display: block;
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.patch-note-card-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.patch-note-card-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.patch-note-body-text {
+  margin: 0;
+  color: #263244;
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
 .auction-calculator-body {

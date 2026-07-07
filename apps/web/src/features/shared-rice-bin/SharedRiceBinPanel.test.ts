@@ -94,4 +94,12 @@ describe("SharedRiceBinPanel", () => {
     expect(source).toContain("onSharedBoardClosed?.()");
     expect(source).not.toContain("공유 쌀통 읽기 전용");
   });
+
+  it("can reset an open shared board back to lookup from the parent tab", () => {
+    const source = readFileSync(new URL("./SharedRiceBinPanel.tsx", import.meta.url), "utf-8");
+
+    expect(source).toContain("resetToLookupKey");
+    expect(source).toContain("lastResetToLookupKeyRef");
+    expect(source).toMatch(/resetToLookupKey[\s\S]{0,500}setSharedBoard\(null\)[\s\S]{0,260}onSharedBoardClosed\?\.\(\)/);
+  });
 });

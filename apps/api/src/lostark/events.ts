@@ -118,7 +118,7 @@ const ADVENTURE_ISLAND_CONTINENTS: Record<string, string> = {
   "쿵덕쿵 아일랜드": "베른 북부",
   "포르페": "애니츠",
   "하모니 섬": "로헨델",
-  "환영 나비 섬": "파푸니카"
+  "환영 나비 섬": "로헨델"
 };
 
 const REWARD_LABELS: Record<LostArkEventRewardFilter, string> = {

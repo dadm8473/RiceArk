@@ -10,12 +10,14 @@ import {
   boardRolesForTableOrientation,
   canApplyBoardTableSettingsUpdate,
   createBoardAxisItem,
+  createBoardNote,
   createBoardTable,
   addBoardShareFavorite,
   createManualBoardCharacterForTable,
   createBoardTaskForTable,
   defaultBoardRolesForOrientation,
   defaultOrientationForTableRoles,
+  deleteBoardNote,
   deleteBoardShareFavorite,
   ensureDefaultBoard,
   getCurrentBoardCompletionPeriodKeys,
@@ -37,7 +39,9 @@ import {
   reorderBoardAxisItems,
   saveBoardCellStatePatches,
   saveBoardCompletionPatches,
-  transposeBoardRoles
+  transposeBoardRoles,
+  updateBoardNote,
+  updateBoardNoteLayout
 } from "./board";
 
 describe("board db defaults", () => {
@@ -119,6 +123,49 @@ describe("board db defaults", () => {
     await expect(stopBoardSheetShare(env, "user-1", "sheet-1")).resolves.toBe(true);
     expect(batches[0]?.some((statement) => statement.sql.includes("DELETE FROM board_shares"))).toBe(true);
     expect(batches[0]?.some((statement) => statement.sql.includes("content_version = content_version + 1"))).toBe(true);
+  });
+
+  it("bumps sheet versions when board notes are created, edited, moved, or deleted", async () => {
+    const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
+    const runs: Array<{ sql: string; values: unknown[] }> = [];
+    const env = {
+      DB: {
+        prepare(sql: string) {
+          return {
+            sql,
+            values: [] as unknown[],
+            bind(...values: unknown[]) {
+              return { ...this, values };
+            },
+            async first() {
+              if (sql.includes("SELECT id FROM board_tables WHERE user_id = ? LIMIT 1")) return { id: "table-existing" };
+              if (sql.includes("SELECT id FROM sheets WHERE id = ? AND user_id = ?")) return { id: "sheet-1" };
+              if (sql.includes("SELECT COALESCE(MAX(sort_order)")) return { maxSortOrder: 0, noteCount: 1 };
+              return null;
+            },
+            async run() {
+              runs.push({ sql, values: this.values });
+              return { success: true, meta: { changes: 1 } };
+            }
+          };
+        },
+        async batch(statements: Array<{ sql: string; values: unknown[] }>) {
+          batches.push(statements);
+          return statements.map(() => ({ success: true, meta: { changes: 1 } }));
+        }
+      }
+    } as unknown as Parameters<typeof updateBoardNote>[0];
+
+    await createBoardNote(env, "user-1", { sheetId: "sheet-1", title: "메모", body: "본문" });
+    await expect(updateBoardNote(env, "user-1", "note-1", { body: "수정" })).resolves.toBe("updated");
+    await expect(updateBoardNoteLayout(env, "user-1", "note-1", { x: 10, y: 20, width: 240, height: 180 })).resolves.toBe(true);
+    await expect(deleteBoardNote(env, "user-1", "note-1")).resolves.toBe(true);
+
+    expect(runs).toHaveLength(0);
+    expect(batches).toHaveLength(4);
+    expect(
+      batches.every((statements) => statements.some((statement) => statement.sql.includes("content_version = content_version + 1")))
+    ).toBe(true);
   });
 
   it("lists owner shares and user share favorites", async () => {
@@ -314,10 +361,12 @@ describe("board db defaults", () => {
     expect(preparedSql.some((sql) => sql.includes("INSERT INTO board_tables"))).toBe(false);
   });
 
-  it("loads owner board versions with a reset period fingerprint", async () => {
+  it("loads owner board versions without scanning axis items on every poll", async () => {
+    const preparedSql: string[] = [];
     const env = {
       DB: {
         prepare(sql: string) {
+          preparedSql.push(sql);
           return {
             sql,
             values: [] as unknown[],
@@ -332,14 +381,7 @@ describe("board db defaults", () => {
               if (sql.includes("FROM sheets")) {
                 return { results: [{ id: "sheet-1", content_version: 5 }] };
               }
-              if (sql.includes("FROM board_axis_items")) {
-                return {
-                  results: [
-                    { kind: "task", task_reset_rule_json: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}' },
-                    { kind: "task", task_reset_rule_json: '{"type":"weekly","weekday":3,"hour":6,"timezone":"Asia/Seoul"}' }
-                  ]
-                };
-              }
+              if (sql.includes("FROM board_axis_items")) throw new Error("versions should not scan axis items");
               return { results: [] };
             }
           };
@@ -350,14 +392,17 @@ describe("board db defaults", () => {
     await expect(loadBoardVersionSummary(env, "user-1", new Date("2026-06-05T03:00:00.000Z"))).resolves.toEqual({
       manifestVersion: 3,
       sheets: [{ id: "sheet-1", version: 5 }],
-      periodFingerprint: "daily:2026-06-05|weekly:2026-06-03"
+      periodFingerprint: ""
     });
+    expect(preparedSql.some((sql) => sql.includes("FROM board_axis_items"))).toBe(false);
   });
 
-  it("loads shared board versions only when the share is active", async () => {
+  it("loads shared board versions only when the share is active without scanning axis items", async () => {
+    const preparedSql: string[] = [];
     const env = {
       DB: {
         prepare(sql: string) {
+          preparedSql.push(sql);
           return {
             sql,
             values: [] as unknown[],
@@ -371,11 +416,7 @@ describe("board db defaults", () => {
               return null;
             },
             async all() {
-              if (sql.includes("FROM board_axis_items")) {
-                return {
-                  results: [{ kind: "task", task_reset_rule_json: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}' }]
-                };
-              }
+              if (sql.includes("FROM board_axis_items")) throw new Error("shared versions should not scan axis items");
               return { results: [] };
             }
           };
@@ -387,8 +428,9 @@ describe("board db defaults", () => {
       shareId: "AbCdEfGhIjKlMnOpQrStUv",
       sheetId: "sheet-1",
       version: 7,
-      periodFingerprint: "daily:2026-06-05"
+      periodFingerprint: ""
     });
+    expect(preparedSql.some((sql) => sql.includes("FROM board_axis_items"))).toBe(false);
   });
 
   it("bumps the owning sheet version when saving completion and cell visibility patches", async () => {

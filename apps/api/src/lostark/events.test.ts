@@ -98,6 +98,32 @@ describe("normalizeLostArkEventCalendar", () => {
     expect(summary.adventureIsland.endedRewardLabels).toEqual([]);
   });
 
+  it("maps phantom butterfly island to Rohendel as the closest continent", () => {
+    const summary = normalizeLostArkEventCalendar(
+      [
+        {
+          CategoryName: "모험 섬",
+          ContentsName: "환영 나비 섬",
+          StartTimes: ["2026-06-07T19:00:00", "2026-06-07T21:00:00"],
+          Location: "환영 나비 섬",
+          RewardItems: [
+            {
+              Items: [
+                {
+                  Name: "골드",
+                  StartTimes: ["2026-06-07T19:00:00", "2026-06-07T21:00:00"]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      { now, rewardFilters: ["gold"] }
+    );
+
+    expect(summary.adventureIsland.entries[0]?.continent).toBe("로헨델");
+  });
+
   it("summarizes chaos gate and field boss using game-rule times for the active day", () => {
     const summary = normalizeLostArkEventCalendar(
       [

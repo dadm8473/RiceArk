@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, Calculator } from "lucide-react";
+import { Activity, Calculator, FileText } from "lucide-react";
 import { apiPatch, apiPostNoContent } from "./api/client";
 import { AdminDashboard } from "./features/admin/AdminDashboard";
 import { AuctionCalculatorModal } from "./features/auction-calculator/AuctionCalculatorModal";
@@ -7,6 +7,7 @@ import { AuthMenu, type AppTheme } from "./features/auth/AuthMenu";
 import { useSession, type AuthUser } from "./features/auth/useSession";
 import { BoardOverview } from "./features/board/BoardOverview";
 import { useBoard } from "./features/board/useBoard";
+import { PatchNotesModal } from "./features/patch-notes/PatchNotesModal";
 import { extractSharedRiceBinId, SharedRiceBinPanel } from "./features/shared-rice-bin/SharedRiceBinPanel";
 
 const SHARE_ID_PATH_PATTERN = /^[A-Za-z0-9_-]{22}$/;
@@ -43,11 +44,14 @@ export function App() {
   const session = useSession();
   const [initialShareId, setInitialShareId] = useState(() => (typeof window === "undefined" ? null : extractSharedRiceBinId(window.location.href)));
   const [activeView, setActiveView] = useState<AppView>(() => (initialShareId ? "shared" : "board"));
+  const [sharedRiceBinLookupResetKey, setSharedRiceBinLookupResetKey] = useState(0);
   const isAdmin = session.status === "authenticated" && session.user.isAdmin === true;
   const isBoardEnabled = activeView === "board" || (activeView === "shared" && session.status === "authenticated");
-  const board = useBoard({ enabled: isBoardEnabled });
+  const isBoardPollingEnabled = activeView === "board";
+  const board = useBoard({ enabled: isBoardEnabled, pollingEnabled: isBoardPollingEnabled });
   const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [calculatorOpen, setCalculatorOpen] = useState(false);
+  const [patchNotesOpen, setPatchNotesOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const [theme, setTheme] = useState<AppTheme>(() =>
     getStoredAppTheme(typeof window === "undefined" ? null : window.localStorage)
@@ -101,6 +105,7 @@ export function App() {
   };
 
   const handleSharedRiceBinSelected = () => {
+    if (activeView === "shared") setSharedRiceBinLookupResetKey((key) => key + 1);
     setActiveView("shared");
     setCalculatorOpen(false);
   };
@@ -130,6 +135,10 @@ export function App() {
               <Calculator aria-hidden="true" size={16} />
               분배금 계산기
             </button>
+            <button type="button" onClick={() => setPatchNotesOpen(true)}>
+              <FileText aria-hidden="true" size={16} />
+              패치노트
+            </button>
             {isAdmin ? (
               <button className={activeView === "admin" ? "active" : undefined} type="button" onClick={handleAdminSelected}>
                 <Activity aria-hidden="true" size={16} />
@@ -156,6 +165,7 @@ export function App() {
         </div>
       </header>
       {calculatorOpen ? <AuctionCalculatorModal onClose={() => setCalculatorOpen(false)} /> : null}
+      {patchNotesOpen ? <PatchNotesModal isAdmin={isAdmin} onClose={() => setPatchNotesOpen(false)} /> : null}
       <section className="workspace">
         {authErrorMessage ? <p className="error-text">{authErrorMessage}</p> : null}
         {session.status === "error" ? <p className="error-text">{session.error}</p> : null}
@@ -171,6 +181,7 @@ export function App() {
           <SharedRiceBinPanel
             initialShareId={initialShareId}
             ownerBoard={session.status === "authenticated" ? board.data : null}
+            resetToLookupKey={sharedRiceBinLookupResetKey}
             sessionStatus={session.status}
             onSharedBoardClosed={handleSharedBoardClosed}
             onOwnerBoardChanged={board.reload}

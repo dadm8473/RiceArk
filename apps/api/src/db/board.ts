@@ -68,11 +68,6 @@ export interface SharedBoardVersionSummary {
   periodFingerprint: string;
 }
 
-interface BoardPeriodFingerprintAxisItem {
-  kind: "character" | "task" | "custom";
-  task_reset_rule_json: string | null;
-}
-
 export interface BoardCompletionPatch {
   tableId: string;
   rowItemId: string;
@@ -134,11 +129,11 @@ export interface CreateBoardNoteInput {
 }
 
 export interface UpdateBoardNoteInput {
-  title: string;
-  body: string;
-  color: string;
-  width: number;
-  height: number;
+  title?: string | undefined;
+  body?: string | undefined;
+  color?: string | undefined;
+  width?: number | undefined;
+  height?: number | undefined;
   locked?: 0 | 1 | undefined;
 }
 
@@ -1162,8 +1157,22 @@ function bumpBoardSheetVersionsForTables(env: Env, userId: string, tableIds: str
          FROM board_tables
          WHERE user_id = ?
            AND id IN (${placeholders(ids)})
-       )`
+      )`
   ).bind(userId, userId, ...ids);
+}
+
+function bumpBoardSheetVersionForNote(env: Env, userId: string, noteId: string) {
+  return env.DB.prepare(
+    `UPDATE sheets
+     SET content_version = content_version + 1,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE user_id = ?
+       AND id IN (
+         SELECT sheet_id
+         FROM board_notes
+         WHERE id = ? AND user_id = ?
+       )`
+  ).bind(userId, noteId, userId);
 }
 
 export async function startBoardSheetShare(env: Env, userId: string, sheetId: string): Promise<BoardShareStartResult | "not_found"> {
@@ -1383,42 +1392,27 @@ export async function loadSharedBoard(env: Env, shareId: string, now = new Date(
   };
 }
 
-function buildBoardPeriodFingerprint(axisItems: BoardPeriodFingerprintAxisItem[], now: Date): string {
-  const periodKeys = getCurrentBoardCompletionPeriodKeys(axisItems, now);
-  return periodKeys.join("|");
-}
-
-export async function loadBoardVersionSummary(env: Env, userId: string, now = new Date()): Promise<BoardVersionSummary> {
-  const [manifest, sheets, axisItems] = await Promise.all([
+export async function loadBoardVersionSummary(env: Env, userId: string, _now = new Date()): Promise<BoardVersionSummary> {
+  const [manifest, sheets] = await Promise.all([
     env.DB.prepare("SELECT version FROM board_manifest_versions WHERE user_id = ?")
       .bind(userId)
       .first<{ version: number }>(),
     env.DB.prepare("SELECT id, content_version FROM sheets WHERE user_id = ? ORDER BY sort_order, name")
       .bind(userId)
-      .all<{ id: string; content_version: number }>(),
-    env.DB.prepare(
-      `SELECT board_axis_items.kind, board_axis_items.task_reset_rule_json
-       FROM board_axis_items
-       JOIN board_tables
-         ON board_tables.id = board_axis_items.table_id
-        AND board_tables.user_id = board_axis_items.user_id
-       WHERE board_axis_items.user_id = ?`
-    )
-      .bind(userId)
-      .all<BoardPeriodFingerprintAxisItem>()
+      .all<{ id: string; content_version: number }>()
   ]);
 
   return {
     manifestVersion: manifest?.version ?? 0,
     sheets: sheets.results.map((sheet) => ({ id: sheet.id, version: sheet.content_version })),
-    periodFingerprint: buildBoardPeriodFingerprint(axisItems.results, now)
+    periodFingerprint: ""
   };
 }
 
 export async function loadSharedBoardVersionSummary(
   env: Env,
   shareId: string,
-  now = new Date()
+  _now = new Date()
 ): Promise<SharedBoardVersionSummary | null> {
   const share = await env.DB.prepare(
     `SELECT board_shares.owner_user_id,
@@ -1434,23 +1428,11 @@ export async function loadSharedBoardVersionSummary(
     .first<{ owner_user_id: string; sheet_id: string; content_version: number }>();
   if (!share) return null;
 
-  const axisItems = await env.DB.prepare(
-    `SELECT board_axis_items.kind, board_axis_items.task_reset_rule_json
-     FROM board_axis_items
-     JOIN board_tables
-       ON board_tables.id = board_axis_items.table_id
-      AND board_tables.user_id = board_axis_items.user_id
-     WHERE board_axis_items.user_id = ?
-       AND board_tables.sheet_id = ?`
-  )
-    .bind(share.owner_user_id, share.sheet_id)
-    .all<BoardPeriodFingerprintAxisItem>();
-
   return {
     shareId,
     sheetId: share.sheet_id,
     version: share.content_version,
-    periodFingerprint: buildBoardPeriodFingerprint(axisItems.results, now)
+    periodFingerprint: ""
   };
 }
 
@@ -1650,24 +1632,25 @@ export async function createBoardNote(env: Env, userId: string, input: CreateBoa
   const sortOrder = (placement?.maxSortOrder ?? -10) + 10;
   const y = (placement?.noteCount ?? 0) * 180;
 
-  await env.DB.prepare(
-    `INSERT INTO board_notes (
-       id,
-       user_id,
-       sheet_id,
-       title,
-       body,
-       color,
-       sort_order,
-       x,
-       y,
-       width,
-       height
-     )
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 220, 160)`
-  )
-    .bind(id, userId, input.sheetId, input.title, input.body, input.color ?? "#fef3c7", sortOrder, y)
-    .run();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO board_notes (
+         id,
+         user_id,
+         sheet_id,
+         title,
+         body,
+         color,
+         sort_order,
+         x,
+         y,
+         width,
+         height
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 220, 160)`
+    ).bind(id, userId, input.sheetId, input.title, input.body, input.color ?? "#fef3c7", sortOrder, y),
+    bumpBoardSheetVersion(env, userId, input.sheetId)
+  ]);
 
   return { id };
 }
@@ -1680,21 +1663,31 @@ export async function updateBoardNote(
   noteId: string,
   input: UpdateBoardNoteInput
 ): Promise<BoardNoteUpdateResult> {
-  const result = await env.DB.prepare(
-    `UPDATE board_notes
-     SET title = ?,
-         body = ?,
-         color = ?,
-         width = ?,
-         height = ?,
-         locked = COALESCE(?, locked),
-         updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ?`
-  )
-    .bind(input.title, input.body, input.color, input.width, input.height, input.locked ?? null, noteId, userId)
-    .run();
+  const [result] = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE board_notes
+       SET title = COALESCE(?, title),
+           body = COALESCE(?, body),
+           color = COALESCE(?, color),
+           width = COALESCE(?, width),
+           height = COALESCE(?, height),
+           locked = COALESCE(?, locked),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`
+    ).bind(
+      input.title ?? null,
+      input.body ?? null,
+      input.color ?? null,
+      input.width ?? null,
+      input.height ?? null,
+      input.locked ?? null,
+      noteId,
+      userId
+    ),
+    bumpBoardSheetVersionForNote(env, userId, noteId)
+  ]);
 
-  return (result.meta.changes ?? 0) > 0 ? "updated" : "not_found";
+  return (result?.meta.changes ?? 0) > 0 ? "updated" : "not_found";
 }
 
 export async function updateBoardNoteLayout(
@@ -1703,24 +1696,28 @@ export async function updateBoardNoteLayout(
   noteId: string,
   patch: BoardNoteLayoutPatch
 ): Promise<boolean> {
-  const result = await env.DB.prepare(
-    `UPDATE board_notes
-     SET x = ?,
-         y = ?,
-         width = ?,
-         height = ?,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ?`
-  )
-    .bind(patch.x, patch.y, patch.width, patch.height, noteId, userId)
-    .run();
+  const [result] = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE board_notes
+       SET x = ?,
+           y = ?,
+           width = ?,
+           height = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`
+    ).bind(patch.x, patch.y, patch.width, patch.height, noteId, userId),
+    bumpBoardSheetVersionForNote(env, userId, noteId)
+  ]);
 
-  return (result.meta.changes ?? 0) > 0;
+  return (result?.meta.changes ?? 0) > 0;
 }
 
 export async function deleteBoardNote(env: Env, userId: string, noteId: string): Promise<boolean> {
-  const result = await env.DB.prepare("DELETE FROM board_notes WHERE id = ? AND user_id = ?").bind(noteId, userId).run();
-  return (result.meta.changes ?? 0) > 0;
+  const [, result] = await env.DB.batch([
+    bumpBoardSheetVersionForNote(env, userId, noteId),
+    env.DB.prepare("DELETE FROM board_notes WHERE id = ? AND user_id = ?").bind(noteId, userId)
+  ]);
+  return (result?.meta.changes ?? 0) > 0;
 }
 
 export async function updateBoardTableSettings(

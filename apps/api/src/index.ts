@@ -11,6 +11,7 @@ import { characterRoutes } from "./routes/characters";
 import { dashboardRoutes } from "./routes/dashboard";
 import { healthRoutes } from "./routes/health";
 import { lostArkEventRoutes } from "./routes/lostarkEvents";
+import { patchNoteRoutes } from "./routes/patchNotes";
 import { settingsRoutes } from "./routes/settings";
 import { taskRoutes } from "./routes/tasks";
 
@@ -35,6 +36,7 @@ app.route("/", characterRoutes);
 app.route("/", dashboardRoutes);
 app.route("/", healthRoutes);
 app.route("/", lostArkEventRoutes);
+app.route("/", patchNoteRoutes);
 app.route("/", settingsRoutes);
 app.route("/", taskRoutes);
 

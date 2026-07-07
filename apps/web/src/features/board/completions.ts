@@ -30,6 +30,16 @@ export function mergeBoardCompletionPatches(patches: BoardCompletionPatch[]): Bo
   return [...latest.values()];
 }
 
+export function applyPendingBoardCompletionPatches(
+  completions: BoardCellCompletion[],
+  pendingPatches: BoardCompletionPatch[]
+): BoardCellCompletion[] {
+  return mergeBoardCompletionPatches(pendingPatches).reduce(
+    (next, patch) => applyBoardCompletionPatch(next, patch),
+    completions
+  );
+}
+
 export function applyBoardCompletionPatch(
   completions: BoardCellCompletion[],
   patch: BoardCompletionPatch

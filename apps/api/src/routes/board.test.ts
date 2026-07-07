@@ -376,6 +376,9 @@ describe("board route schemas", () => {
       height: 180,
       locked: 1
     });
+    expect(updateBoardNoteSchema.parse({ body: "본문만 수정" })).toEqual({ body: "본문만 수정" });
+    expect(updateBoardNoteSchema.parse({ color: "#FEE2E2" })).toEqual({ color: "#fee2e2" });
+    expect(updateBoardNoteSchema.safeParse({}).success).toBe(false);
   });
 
   it("rejects unsafe or oversized board note input", () => {

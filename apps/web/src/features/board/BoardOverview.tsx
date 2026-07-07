@@ -19,6 +19,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Bell, Check, Clock, Columns3, Lock, Minus, Pencil, Pin, Plus, RefreshCw, Rows3, Save, Settings, Shuffle, StickyNote, Trash2, Unlock, UserPlus, X } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -41,7 +42,12 @@ import {
   type BoardCellMarkType,
   type BoardCellStatePatch
 } from "./cellStates";
-import { applyBoardCompletionPatch, getBoardCellPeriodKey, type BoardCompletionPatch } from "./completions";
+import {
+  applyBoardCompletionPatch,
+  applyPendingBoardCompletionPatches,
+  getBoardCellPeriodKey,
+  type BoardCompletionPatch
+} from "./completions";
 import { normalizeBoundedIntegerDraft } from "./numberInput";
 import {
   applyBoardAxisOrder,
@@ -95,6 +101,12 @@ interface BoardCharacterRefreshResult {
   combatPower: string | null;
 }
 
+export interface TableCharacterRefreshSummary {
+  failedCount: number;
+  refreshedCount: number;
+  totalCount: number;
+}
+
 interface BoardAxisSeparator {
   widthPx: number;
   style: "solid" | "dashed" | "dotted";
@@ -115,6 +127,8 @@ interface BoardNoteSaveInput {
   locked?: 0 | 1 | undefined;
 }
 
+type BoardNoteSavePatch = Partial<BoardNoteSaveInput>;
+
 interface TableMoveSession {
   tableId: string;
   pointerId: number;
@@ -127,6 +141,17 @@ interface BoardNoteLayoutPatch {
   y: number;
   width: number;
   height: number;
+}
+
+export function buildBoardNoteSavePatch(_note: BoardNote, input: Partial<BoardNoteSaveInput>): BoardNoteSavePatch {
+  const patch: BoardNoteSavePatch = {};
+  if (input.title !== undefined) patch.title = input.title.trim() || "메모";
+  if (input.body !== undefined) patch.body = input.body;
+  if (input.color !== undefined) patch.color = input.color;
+  if (input.width !== undefined) patch.width = input.width;
+  if (input.height !== undefined) patch.height = input.height;
+  if (input.locked !== undefined) patch.locked = input.locked;
+  return patch;
 }
 
 interface NoteMoveSession {
@@ -630,6 +655,16 @@ export function getCharacterRefreshCooldownState(blockedUntilMs: number, nowMs =
   };
 }
 
+export function getRefreshableBoardCharacterIds(tableId: string, items: BoardAxisItem[]): string[] {
+  const ids = new Set<string>();
+  for (const item of items) {
+    if (item.table_id !== tableId || item.kind !== "character" || item.visible !== 1 || !item.character_id) continue;
+    if (item.character_source === "manual") continue;
+    ids.add(item.character_id);
+  }
+  return [...ids];
+}
+
 function getCharacterDisplaySettings(settings: BoardDisplaySettings): BoardCharacterDisplaySettings {
   return {
     displayName: settings.show_display_name !== 0,
@@ -995,8 +1030,13 @@ function isBoardTableLocked(table: BoardTable): boolean {
 
 export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props) {
   const isReadOnly = readOnly || board.readOnly === true;
-  const { enqueue } = useBoardCompletionQueue();
   const [completions, setCompletions] = useState(board.completions);
+  const pendingCompletionPatchesRef = useRef<BoardCompletionPatch[]>([]);
+  const handlePendingCompletionPatchesChange = useCallback((patches: BoardCompletionPatch[]) => {
+    pendingCompletionPatchesRef.current = patches;
+    setCompletions((current) => applyPendingBoardCompletionPatches(current, patches));
+  }, []);
+  const { enqueue } = useBoardCompletionQueue({ onPendingPatchesChange: handlePendingCompletionPatchesChange });
   const [cellStates, setCellStates] = useState(board.cellStates);
   const [axisItems, setAxisItems] = useState(board.axisItems);
   const [tables, setTables] = useState(board.tables);
@@ -1015,6 +1055,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
   const [isCreateNoteOpen, setIsCreateNoteOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<"sheet" | "sheet-update" | "sheet-delete" | "table" | "note" | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [refreshingCharacterTableId, setRefreshingCharacterTableId] = useState<string | null>(null);
   const [editingAxisItem, setEditingAxisItem] = useState<BoardAxisItem | null>(null);
   const [editingNote, setEditingNote] = useState<BoardNote | null>(null);
   const [activeTableTool, setActiveTableTool] = useState<ActiveTableTool | null>(null);
@@ -1061,7 +1102,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
     sortedSheets.find((sheet) => sheet.is_default === 1) ??
     sortedSheets[0];
   useEffect(() => {
-    setCompletions(board.completions);
+    setCompletions(applyPendingBoardCompletionPatches(board.completions, pendingCompletionPatchesRef.current));
   }, [board.completions]);
 
   useEffect(() => {
@@ -1211,7 +1252,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
     if (permission !== "granted" || typeof window === "undefined" || !("Notification" in window)) return;
     const notification = new window.Notification("RiceArk 테스트 알림", {
       body: "브라우저와 운영체제 알림 설정을 확인합니다.",
-      icon: "/image/icon/icon.png",
+      icon: "/icons/icon-192.png",
       tag: `riceark-test:${tableId}`
     });
     notification.onclick = () => {
@@ -1372,6 +1413,44 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
       )
     );
     return updated;
+  }
+
+  async function handleRefreshTableCharacters(table: BoardTable): Promise<TableCharacterRefreshSummary> {
+    if (isReadOnly || isBoardTableLocked(table) || refreshingCharacterTableId !== null) {
+      return { failedCount: 0, refreshedCount: 0, totalCount: 0 };
+    }
+
+    const characterIds = getRefreshableBoardCharacterIds(table.id, axisItems);
+    if (characterIds.length === 0) {
+      return { failedCount: 0, refreshedCount: 0, totalCount: 0 };
+    }
+
+    setRefreshingCharacterTableId(table.id);
+    setFormError(null);
+    let failedCount = 0;
+
+    try {
+      for (const characterId of characterIds) {
+        try {
+          await handleBoardCharacterRefresh(characterId);
+        } catch {
+          failedCount += 1;
+        }
+      }
+
+      if (failedCount > 0) {
+        setFormError(
+          `캐릭터 ${characterIds.length - failedCount}명 갱신, ${failedCount}명 실패했습니다. 1분 제한 또는 로스트아크 API 상태를 확인해주세요.`
+        );
+      }
+      return {
+        failedCount,
+        refreshedCount: characterIds.length - failedCount,
+        totalCount: characterIds.length
+      };
+    } finally {
+      setRefreshingCharacterTableId(null);
+    }
   }
 
   async function handleAxisItemDelete(axisItemId: string) {
@@ -1557,14 +1636,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
       setEditingNoteBodyId((current) => (current === noteId ? null : current));
     }
     try {
-      await apiPatch("/api/board/notes/" + encodeURIComponent(noteId), {
-        title: nextNote.title,
-        body: nextNote.body,
-        color: nextNote.color,
-        width: nextNote.width,
-        height: nextNote.height,
-        locked: nextNote.locked === 1 ? 1 : 0
-      });
+      await apiPatch("/api/board/notes/" + encodeURIComponent(noteId), buildBoardNoteSavePatch(currentNote, input));
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "메모를 저장하지 못했습니다.");
       await refreshBoard();
@@ -2543,11 +2615,14 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
         <BoardTableToolModal
           table={activeTableTool.table}
           tool={activeTableTool.tool}
+          isRefreshingCharacters={refreshingCharacterTableId === activeTableTool.table.id}
           onClose={() => setActiveTableTool(null)}
+          onRefreshCharacters={() => handleRefreshTableCharacters(activeTableTool.table)}
           onSaved={async () => {
             setActiveTableTool(null);
             await refreshBoard();
           }}
+          refreshableCharacterCount={getRefreshableBoardCharacterIds(activeTableTool.table.id, axisItems).length}
         />
       ) : null}
       {!isReadOnly && editingAxisItem ? (
@@ -2795,19 +2870,46 @@ export function BoardSheetSettingsModal({
   );
 }
 
-function BoardTableToolModal({
+export function BoardTableToolModal({
+  isRefreshingCharacters,
   onClose,
+  onRefreshCharacters,
   onSaved,
+  refreshableCharacterCount,
   table,
   tool
 }: {
+  isRefreshingCharacters?: boolean | undefined;
   onClose: () => void;
+  onRefreshCharacters?: (() => Promise<TableCharacterRefreshSummary>) | undefined;
   onSaved: () => void | Promise<void>;
+  refreshableCharacterCount?: number | undefined;
   table: BoardTable;
   tool: ActiveTableTool["tool"];
 }) {
   const title =
     tool === "characters" ? "캐릭터 추가/가져오기" : tool === "tasks" ? "숙제 추가" : "완료 열 추가";
+  const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
+  const [refreshMessageTone, setRefreshMessageTone] = useState<"notice" | "error">("notice");
+
+  async function refreshCharacters() {
+    if (!onRefreshCharacters || isRefreshingCharacters || !refreshableCharacterCount) return;
+
+    setRefreshMessage(null);
+    const result = await onRefreshCharacters();
+    if (result.totalCount === 0) {
+      setRefreshMessageTone("error");
+      setRefreshMessage("갱신할 가져온 캐릭터가 없습니다.");
+      return;
+    }
+    if (result.failedCount > 0) {
+      setRefreshMessageTone("error");
+      setRefreshMessage(`${result.refreshedCount}명 업데이트, ${result.failedCount}명 실패했습니다.`);
+      return;
+    }
+    setRefreshMessageTone("notice");
+    setRefreshMessage(`${result.refreshedCount}명 업데이트 완료`);
+  }
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -2820,7 +2922,27 @@ function BoardTableToolModal({
         </header>
         <div className="tool-modal-body">
           {tool === "characters" ? (
-            <CharacterImport tableId={table.id} onSaved={onSaved} />
+            <div className="board-character-tool-body">
+              <section className="board-character-refresh-panel" aria-label={`${table.name} 캐릭터 정보 일괄 업데이트`}>
+                <div>
+                  <strong>캐릭터 정보 일괄 업데이트</strong>
+                  <span>
+                    가져온 캐릭터 {refreshableCharacterCount ?? 0}명
+                  </span>
+                </div>
+                <button
+                  className="primary-button"
+                  disabled={isRefreshingCharacters || !refreshableCharacterCount}
+                  type="button"
+                  onClick={() => void refreshCharacters()}
+                >
+                  <RefreshCw aria-hidden="true" size={16} />
+                  {isRefreshingCharacters ? "업데이트 중" : "업데이트"}
+                </button>
+                {refreshMessage ? <p className={refreshMessageTone === "error" ? "error-text" : "notice-text"}>{refreshMessage}</p> : null}
+              </section>
+              <CharacterImport tableId={table.id} onSaved={onSaved} />
+            </div>
           ) : tool === "tasks" ? (
             <TaskForm tableId={table.id} onSaved={onSaved} />
           ) : (
@@ -3607,7 +3729,7 @@ export function BoardTableGrid({
       eventNotificationSentKeysRef.current.add(item.sentKey);
       const notification = new window.Notification(item.title, {
         body: item.body,
-        icon: "/image/icon/icon.png",
+        icon: "/icons/icon-192.png",
         tag: item.sentKey
       });
       notification.onclick = () => {
