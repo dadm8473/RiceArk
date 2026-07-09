@@ -2039,6 +2039,11 @@ body {
   border-bottom: 1px solid #edf1f6;
 }
 
+.board-row-label.board-grid-last-row,
+.board-check-cell.board-grid-last-row {
+  border-bottom: 0;
+}
+
 .board-check-mark {
   position: absolute;
   top: 1px;

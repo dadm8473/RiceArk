@@ -370,6 +370,12 @@ describe("matrix styles", () => {
     expect(noteTitleViewBlock).toContain("padding: 3px;");
   });
 
+  it("removes the default translucent line from the final board row", () => {
+    const finalRowBlock = styles.match(/\.board-row-label\.board-grid-last-row,\n\.board-check-cell\.board-grid-last-row\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(finalRowBlock).toContain("border-bottom: 0;");
+  });
+
   it("styles board notes like compact sticky memo cards", () => {
     const noteBlock = styles.match(/\.board-note-card\s*{[^}]+}/)?.[0] ?? "";
     const noteMenuOpenBlock = styles.match(/\.board-note-card\.menu-open\s*{[^}]+}/)?.[0] ?? "";

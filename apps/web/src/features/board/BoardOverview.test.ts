@@ -827,6 +827,27 @@ describe("BoardOverview", () => {
     expect(html).toContain("--task-color:#2563eb");
   });
 
+  it("marks only the final board row so the default bottom line can be removed", () => {
+    const secondRow: BoardAxisItem = {
+      ...board.axisItems[0]!,
+      id: "row-task-2",
+      label: "가디언 토벌",
+      sort_order: 20
+    };
+    const html = renderToStaticMarkup(
+      createElement(BoardOverview, {
+        board: {
+          ...board,
+          axisItems: [board.axisItems[0]!, secondRow, board.axisItems[1]!]
+        }
+      })
+    );
+
+    expect(html.match(/board-grid-last-row/g) ?? []).toHaveLength(2);
+    expect(html).toContain('class="board-axis-label board-row-label board-grid-last-row board-axis-edit-button"');
+    expect(html).toContain('class="board-check-cell board-grid-last-row"');
+  });
+
   it("does not carry previous reset period completions into the current board checkbox state", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-04T00:00:00.000Z"));
@@ -1661,7 +1682,7 @@ describe("BoardOverview", () => {
 
     expect(html).toContain("grid-template-columns:96px 132px");
     expect(html).toContain("min-height:18px");
-    expect(html).toContain('class="board-check-cell" style="min-height:40px');
+    expect(html).toContain('class="board-check-cell board-grid-last-row" style="min-height:40px');
   });
 
   it("applies cross-axis label sizing to every visible item on the same axis", () => {

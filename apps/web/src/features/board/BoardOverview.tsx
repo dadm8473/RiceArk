@@ -3835,12 +3835,13 @@ function renderBoardRowHeaders(
   eventNow?: Date | undefined,
   eventError?: string | null | undefined
 ): ReactNode {
-  const headers = rows.map((row) => (
+  const headers = rows.map((row, index) => (
     <BoardRowHeader
       eventError={eventError}
       eventNow={eventNow}
       rewardFilters={rewardFilters}
       eventSummary={eventSummary}
+      isLastRow={index === rows.length - 1}
       key={row.id}
       isReorderMode={isReorderMode}
       onAxisItemEdit={isReorderMode ? undefined : onAxisItemEdit}
@@ -3878,7 +3879,7 @@ function renderBoardRows(
   eventNow?: Date | undefined,
   eventError?: string | null | undefined
 ): ReactNode {
-  const renderedRows = rows.map((row) => (
+  const renderedRows = rows.map((row, index) => (
     <BoardGridRow
       key={row.id}
       cellMarksByKey={cellMarksByKey}
@@ -3889,6 +3890,7 @@ function renderBoardRows(
       rewardFilters={rewardFilters}
       eventSummary={eventSummary}
       isMarkEditMode={isMarkEditMode}
+      isLastRow={index === rows.length - 1}
       isReorderMode={isReorderMode}
       onAxisItemEdit={isReorderMode ? undefined : onAxisItemEdit}
       onCellMarkPaint={onCellMarkPaint}
@@ -3914,6 +3916,7 @@ function BoardRowHeader({
   eventError,
   eventNow,
   eventSummary,
+  isLastRow,
   isReorderMode,
   onAxisItemEdit,
   rewardFilters,
@@ -3925,6 +3928,7 @@ function BoardRowHeader({
   eventError?: string | null | undefined;
   eventNow?: Date | undefined;
   eventSummary?: LostArkEventTodaySummary | null | undefined;
+  isLastRow?: boolean | undefined;
   isReorderMode?: boolean | undefined;
   onAxisItemEdit?: ((item: BoardAxisItem) => void) | undefined;
   rewardFilters: LostArkEventRewardFilter[];
@@ -3937,7 +3941,7 @@ function BoardRowHeader({
 
   return (
     <BoardAxisLabel
-      className="board-axis-label board-row-label"
+      className={`board-axis-label board-row-label${isLastRow ? " board-grid-last-row" : ""}`}
       isReorderMode={isReorderMode}
       item={row}
       onEdit={onAxisItemEdit ? () => onAxisItemEdit(row) : undefined}
@@ -4317,6 +4321,7 @@ function BoardGridRow({
   eventNow,
   eventSummary,
   isMarkEditMode,
+  isLastRow,
   isReorderMode,
   onAxisItemEdit,
   onCellMarkPaint,
@@ -4335,6 +4340,7 @@ function BoardGridRow({
   eventNow?: Date | undefined;
   eventSummary?: LostArkEventTodaySummary | null | undefined;
   isMarkEditMode?: boolean | undefined;
+  isLastRow?: boolean | undefined;
   isReorderMode?: boolean | undefined;
   onAxisItemEdit?: ((item: BoardAxisItem) => void) | undefined;
   onCellMarkPaint?: BoardCellMarkPaintHandler | undefined;
@@ -4353,6 +4359,7 @@ function BoardGridRow({
         eventNow={eventNow}
         rewardFilters={rewardFilters}
         eventSummary={eventSummary}
+        isLastRow={isLastRow}
         isReorderMode={isReorderMode}
         onAxisItemEdit={onAxisItemEdit}
         row={row}
@@ -4368,6 +4375,7 @@ function BoardGridRow({
           completedCells={completedCells}
           eventSummary={eventSummary}
           isMarkEditMode={isMarkEditMode === true}
+          isLastRow={isLastRow === true}
           isReorderMode={isReorderMode === true}
           onCellMarkPaint={onCellMarkPaint}
           onToggle={onToggle}
@@ -4387,6 +4395,7 @@ function BoardCheckCell({
   completedCells,
   eventSummary,
   isMarkEditMode,
+  isLastRow,
   isReorderMode,
   onCellMarkPaint,
   onToggle,
@@ -4400,6 +4409,7 @@ function BoardCheckCell({
   completedCells: Set<string>;
   eventSummary?: LostArkEventTodaySummary | null | undefined;
   isMarkEditMode: boolean;
+  isLastRow: boolean;
   isReorderMode: boolean;
   onCellMarkPaint?: BoardCellMarkPaintHandler | undefined;
   onToggle: (patch: BoardCompletionPatch) => void;
@@ -4438,7 +4448,7 @@ function BoardCheckCell({
 
   return (
     <div
-      className={`board-check-cell${isMarkEditMode ? " mark-editable" : ""}`}
+      className={`board-check-cell${isLastRow ? " board-grid-last-row" : ""}${isMarkEditMode ? " mark-editable" : ""}`}
       style={cellStyle}
       onClick={isMarkEditMode && onCellMarkPaint ? () => onCellMarkPaint(row, column, mark, periodKey) : undefined}
       onPointerEnter={(event) => {
