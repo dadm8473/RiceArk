@@ -3,11 +3,11 @@ import {
   LOSTARK_CHARACTER_NAME_MAX_LENGTH,
   normalizeLostArkCharacterNameInput
 } from "@riceark/core";
-import { LoaderCircle, Search, UserPlus } from "lucide-react";
+import { Check, LoaderCircle, Search, UserPlus, X } from "lucide-react";
 import { useState } from "react";
 import { apiGet, apiPost } from "../../api/client";
 
-interface Candidate {
+export interface CharacterCandidate {
   name: string;
   serverName: string;
   className: string;
@@ -37,8 +37,16 @@ export function getCharacterSearchNameError(name: string): string | null {
   return isValidLostArkCharacterName(name) ? null : CHARACTER_SEARCH_NAME_ERROR;
 }
 
+export function getCharacterCandidateKey(character: CharacterCandidate): string {
+  return `${character.serverName}:${character.name}`;
+}
+
+export function buildCharacterCandidateSelection(candidates: CharacterCandidate[], checked: boolean): Record<string, boolean> {
+  return Object.fromEntries(candidates.map((character) => [getCharacterCandidateKey(character), checked]));
+}
+
 interface CharacterCandidateListProps {
-  candidates: Candidate[];
+  candidates: CharacterCandidate[];
   selected: Record<string, boolean>;
   onToggle: (key: string, checked: boolean) => void;
 }
@@ -57,7 +65,7 @@ export function CharacterCandidateList({ candidates, selected, onToggle }: Chara
         <span>전투력</span>
       </div>
       {candidates.map((character) => {
-        const key = `${character.serverName}:${character.name}`;
+        const key = getCharacterCandidateKey(character);
         return (
           <label className="candidate-row" key={key}>
             <input checked={Boolean(selected[key])} type="checkbox" onChange={(event) => onToggle(key, event.target.checked)} />
@@ -75,7 +83,7 @@ export function CharacterCandidateList({ candidates, selected, onToggle }: Chara
 
 interface CharacterImportPanelProps {
   name: string;
-  candidates: Candidate[];
+  candidates: CharacterCandidate[];
   selected: Record<string, boolean>;
   message?: string | null;
   messageTone?: CharacterImportMessageTone;
@@ -84,6 +92,8 @@ interface CharacterImportPanelProps {
   onNameChange: (name: string) => void;
   onSearch: () => void;
   onSave: () => void;
+  onSelectAll?: () => void;
+  onClearSelection?: () => void;
   onToggle: (key: string, checked: boolean) => void;
 }
 
@@ -98,8 +108,14 @@ export function CharacterImportPanel({
   onNameChange,
   onSearch,
   onSave,
+  onSelectAll,
+  onClearSelection,
   onToggle
 }: CharacterImportPanelProps) {
+  const selectedCount = candidates.reduce((count, character) => count + (selected[getCharacterCandidateKey(character)] ? 1 : 0), 0);
+  const allSelected = candidates.length > 0 && selectedCount === candidates.length;
+  const noneSelected = selectedCount === 0;
+
   return (
     <section className="tool-panel">
       <form
@@ -121,7 +137,13 @@ export function CharacterImportPanel({
           {searching ? "검색 중..." : "검색"}
         </button>
         {candidates.length > 0 ? (
-          <button disabled={saving} type="button" onClick={onSave} title="선택 캐릭터 등록">
+          <button
+            className="primary-button character-import-save-button"
+            disabled={saving || noneSelected}
+            type="button"
+            onClick={onSave}
+            title={noneSelected ? "등록할 캐릭터를 선택해주세요" : "선택 캐릭터 등록"}
+          >
             <UserPlus size={16} />
             {saving ? "등록 중..." : "선택 캐릭터 등록"}
           </button>
@@ -131,6 +153,21 @@ export function CharacterImportPanel({
         <p className={`status-text ${messageTone === "error" ? "error-text" : "notice-text"}`} role={messageTone === "error" ? "alert" : "status"}>
           {message}
         </p>
+      ) : null}
+      {candidates.length > 0 ? (
+        <div className="candidate-bulk-actions" aria-label="검색 캐릭터 선택 관리">
+          <span className="candidate-selection-count">
+            {selectedCount}/{candidates.length} 선택됨
+          </span>
+          <button disabled={saving || allSelected} type="button" onClick={onSelectAll} title="검색 결과 전체 선택">
+            <Check size={14} />
+            전체 선택
+          </button>
+          <button disabled={saving || noneSelected} type="button" onClick={onClearSelection} title="검색 결과 선택 해제">
+            <X size={14} />
+            선택 해제
+          </button>
+        </div>
       ) : null}
       <CharacterCandidateList candidates={candidates} selected={selected} onToggle={onToggle} />
     </section>
@@ -209,7 +246,7 @@ interface CharacterImportProps {
 
 export function CharacterImport({ tableId, onSaved }: CharacterImportProps = {}) {
   const [name, setName] = useState("");
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [candidates, setCandidates] = useState<CharacterCandidate[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [message, setMessage] = useState<CharacterImportMessage | null>(null);
   const [searching, setSearching] = useState(false);
@@ -237,9 +274,9 @@ export function CharacterImport({ tableId, onSaved }: CharacterImportProps = {})
     setSearching(true);
     setMessage(null);
     try {
-      const result = await apiGet<{ characters: Candidate[] }>(`/api/characters/search?name=${encodeURIComponent(normalizedName)}`);
+      const result = await apiGet<{ characters: CharacterCandidate[] }>(`/api/characters/search?name=${encodeURIComponent(normalizedName)}`);
       setCandidates(result.characters);
-      setSelected(Object.fromEntries(result.characters.map((character) => [`${character.serverName}:${character.name}`, true])));
+      setSelected(buildCharacterCandidateSelection(result.characters, true));
       if (result.characters.length === 0) {
         setMessage({ text: "검색 결과가 없습니다. 대표 캐릭터명을 다시 확인해주세요.", tone: "notice" });
       }
@@ -256,7 +293,7 @@ export function CharacterImport({ tableId, onSaved }: CharacterImportProps = {})
   }
 
   async function save() {
-    const characters = candidates.filter((character) => selected[`${character.serverName}:${character.name}`]);
+    const characters = candidates.filter((character) => selected[getCharacterCandidateKey(character)]);
     if (characters.length === 0) {
       setMessage({ text: "등록할 캐릭터를 하나 이상 선택해주세요.", tone: "error" });
       return;
@@ -319,8 +356,10 @@ export function CharacterImport({ tableId, onSaved }: CharacterImportProps = {})
         searching={searching}
         selected={selected}
         onNameChange={setName}
+        onClearSelection={() => setSelected(buildCharacterCandidateSelection(candidates, false))}
         onSave={() => void save()}
         onSearch={() => void search()}
+        onSelectAll={() => setSelected(buildCharacterCandidateSelection(candidates, true))}
         onToggle={(key, checked) => setSelected((current) => ({ ...current, [key]: checked }))}
       />
       <ManualCharacterCreatePanel

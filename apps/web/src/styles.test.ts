@@ -358,6 +358,18 @@ describe("matrix styles", () => {
     expect(islandLineBlock).toContain("white-space: normal;");
   });
 
+  it("keeps board table and memo title spacing compact", () => {
+    const tableSummaryBlock = styles.match(/\.board-table-summary\s*{[^}]+}/)?.[0] ?? "";
+    const checkGridBlock = styles.match(/\.board-check-grid\s*{[^}]+}/)?.[0] ?? "";
+    const noteTitleInputBlock = styles.match(/\.board-note-title-input\s*{[^}]+}/)?.[0] ?? "";
+    const noteTitleViewBlock = styles.match(/\.board-note-title-view\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(tableSummaryBlock).toContain("padding: 3px 7px;");
+    expect(checkGridBlock).toContain("margin-top: 3px;");
+    expect(noteTitleInputBlock).toContain("padding: 3px;");
+    expect(noteTitleViewBlock).toContain("padding: 3px;");
+  });
+
   it("styles board notes like compact sticky memo cards", () => {
     const noteBlock = styles.match(/\.board-note-card\s*{[^}]+}/)?.[0] ?? "";
     const noteMenuOpenBlock = styles.match(/\.board-note-card\.menu-open\s*{[^}]+}/)?.[0] ?? "";

@@ -1381,7 +1381,7 @@ body {
   box-sizing: border-box;
   width: max-content;
   min-width: 240px;
-  padding: 10px 10px 18px;
+  padding: 3px 7px;
   border: 1px solid #8f99aa;
   border-radius: 0;
   background: #ffffff;
@@ -1443,7 +1443,7 @@ body {
   flex: 1 1 0;
   min-width: 0;
   border: 0;
-  padding: 2px 4px;
+  padding: 3px;
   color: inherit;
   background: transparent;
   font: inherit;
@@ -1454,7 +1454,7 @@ body {
   flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
-  padding: 2px 4px;
+  padding: 3px;
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1723,7 +1723,7 @@ body {
   overflow: auto;
   width: max-content;
   max-width: 100%;
-  margin-top: 10px;
+  margin-top: 3px;
   border-top: 1px solid #d2d9e4;
 }
 
@@ -3950,10 +3950,48 @@ button.task-preset-card {
   animation: spin 1s linear infinite;
 }
 
+.character-import-save-button {
+  border-color: #047857;
+  color: #ffffff;
+  background: #059669;
+  box-shadow: 0 8px 18px rgb(5 150 105 / 24%);
+  font-weight: 900;
+}
+
+.character-import-save-button:hover:not(:disabled) {
+  background: #047857;
+}
+
+.candidate-bulk-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 6px 8px;
+  border: 1px solid #c7d2e1;
+  border-radius: 4px;
+  background: #f8fafc;
+}
+
+.candidate-selection-count {
+  margin-right: auto;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.candidate-bulk-actions button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .candidate-list {
   display: grid;
   gap: 6px;
-  margin: 10px 0;
+  margin: 6px 0 10px;
 }
 
 .candidate-row {
@@ -3969,6 +4007,25 @@ button.task-preset-card {
   color: #2f3a4b;
   font-size: 13px;
   font-weight: 700;
+}
+
+.app-shell[data-theme="dark"] .character-import-save-button {
+  border-color: #34d399;
+  color: #022c22;
+  background: #6ee7b7;
+}
+
+.app-shell[data-theme="dark"] .character-import-save-button:hover:not(:disabled) {
+  background: #34d399;
+}
+
+.app-shell[data-theme="dark"] .candidate-bulk-actions {
+  border-color: #475569;
+  background: #0f172a;
+}
+
+.app-shell[data-theme="dark"] .candidate-selection-count {
+  color: #cbd5e1;
 }
 
 .segmented {

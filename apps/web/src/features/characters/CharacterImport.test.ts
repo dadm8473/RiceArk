@@ -6,6 +6,7 @@ import {
   CharacterCandidateList,
   CharacterImportPanel,
   ManualCharacterCreatePanel,
+  buildCharacterCandidateSelection,
   getCharacterSearchNameError
 } from "./CharacterImport";
 
@@ -33,6 +34,34 @@ describe("CharacterCandidateList", () => {
     expect(html).toContain("2,549.41");
     expect(html).not.toContain("전투력 2,549.41");
   });
+
+  it("builds bulk selection maps for every searched character", () => {
+    const candidates = [
+      {
+        name: "냠수나이스1",
+        serverName: "루페온",
+        className: "소서리스",
+        itemLevel: "1,640.00",
+        combatPower: "2,549.41"
+      },
+      {
+        name: "냠수나이스2",
+        serverName: "아만",
+        className: "도화가",
+        itemLevel: "1,620.00",
+        combatPower: null
+      }
+    ];
+
+    expect(buildCharacterCandidateSelection(candidates, true)).toEqual({
+      "루페온:냠수나이스1": true,
+      "아만:냠수나이스2": true
+    });
+    expect(buildCharacterCandidateSelection(candidates, false)).toEqual({
+      "루페온:냠수나이스1": false,
+      "아만:냠수나이스2": false
+    });
+  });
 });
 
 describe("CharacterImportPanel", () => {
@@ -59,6 +88,43 @@ describe("CharacterImportPanel", () => {
 
     expect(html.indexOf("검색")).toBeLessThan(html.indexOf("선택 캐릭터 등록"));
     expect(html.indexOf("선택 캐릭터 등록")).toBeLessThan(html.indexOf("서버"));
+  });
+
+  it("shows bulk selection controls and a prominent save button after search results", () => {
+    const html = renderToStaticMarkup(
+      createElement(CharacterImportPanel, {
+        name: "냠수나이스1",
+        candidates: [
+          {
+            name: "냠수나이스1",
+            serverName: "아만",
+            className: "브레이커",
+            itemLevel: "1,778.33",
+            combatPower: "4,679.33"
+          },
+          {
+            name: "냠수나이스2",
+            serverName: "루페온",
+            className: "바드",
+            itemLevel: "1,640.00",
+            combatPower: null
+          }
+        ],
+        selected: { "아만:냠수나이스1": true },
+        onNameChange: vi.fn(),
+        onSearch: vi.fn(),
+        onSave: vi.fn(),
+        onSelectAll: vi.fn(),
+        onClearSelection: vi.fn(),
+        onToggle: vi.fn()
+      })
+    );
+
+    expect(html).toContain('class="primary-button character-import-save-button"');
+    expect(html).toContain("1/2 선택됨");
+    expect(html).toContain("전체 선택");
+    expect(html).toContain("선택 해제");
+    expect(html.indexOf("전체 선택")).toBeLessThan(html.indexOf("서버"));
   });
 
   it("limits search input to Lost Ark character name length", () => {
