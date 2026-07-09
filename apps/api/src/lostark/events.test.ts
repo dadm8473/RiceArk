@@ -124,6 +124,32 @@ describe("normalizeLostArkEventCalendar", () => {
     expect(summary.adventureIsland.entries[0]?.continent).toBe("로헨델");
   });
 
+  it("maps Monte Island with the API spacing to South Vern as the closest continent", () => {
+    const summary = normalizeLostArkEventCalendar(
+      [
+        {
+          CategoryName: "모험 섬",
+          ContentsName: "몬테 섬",
+          StartTimes: ["2026-06-07T19:00:00", "2026-06-07T21:00:00"],
+          Location: "몬테 섬",
+          RewardItems: [
+            {
+              Items: [
+                {
+                  Name: "골드",
+                  StartTimes: ["2026-06-07T19:00:00", "2026-06-07T21:00:00"]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      { now, rewardFilters: ["gold"] }
+    );
+
+    expect(summary.adventureIsland.entries[0]?.continent).toBe("베른 남부");
+  });
+
   it("summarizes chaos gate and field boss using game-rule times for the active day", () => {
     const summary = normalizeLostArkEventCalendar(
       [
