@@ -30,6 +30,7 @@ import {
   getBoardEventNotificationSettingsForMinuteSelection,
   getStoredBoardEventNotificationSettings,
   getRefreshableBoardCharacterIds,
+  getBoardCellMarkTooltipContent,
   normalizeBoardEventNotificationMinutes,
   parseBoardEventOptions,
   normalizeBoardZoom,
@@ -1222,8 +1223,26 @@ describe("BoardOverview", () => {
     expect(html).toContain('class="board-check-badge pin"');
     expect(html).toContain('class="board-check-badge clock"');
     expect(html).toContain('width="12" height="12"');
+    expect(html).not.toContain('title="핀"');
+    expect(html).not.toContain('title="시계"');
     expect(html).not.toContain('class="board-check-icon-overlay');
     expect(html).not.toContain("board-check-memo-dot");
+  });
+
+  it("shows board cell hover tooltip content only when a memo exists and labels it as memo", () => {
+    expect(getBoardCellMarkTooltipContent({ type: "fixed", icon: "pin", retention: "permanent", memo: null })).toBeNull();
+    expect(getBoardCellMarkTooltipContent({ type: "reserved", icon: "clock", retention: "period", memo: "" })).toBeNull();
+    expect(getBoardCellMarkTooltipContent({ type: "default", icon: "memo", retention: "permanent", memo: "   " })).toBeNull();
+    expect(getBoardCellMarkTooltipContent({ type: "default", icon: null, retention: "permanent", memo: null })).toBeNull();
+
+    expect(getBoardCellMarkTooltipContent({ type: "fixed", icon: "pin", retention: "permanent", memo: "고정파티 21시" })).toEqual({
+      title: "메모",
+      memo: "고정파티 21시"
+    });
+    expect(getBoardCellMarkTooltipContent({ type: "reserved", icon: "flag", retention: "period", memo: "이번주만 진행" })).toEqual({
+      title: "메모",
+      memo: "이번주만 진행"
+    });
   });
 
   it("renders a memo indicator on default board check cells with persistent memos", () => {

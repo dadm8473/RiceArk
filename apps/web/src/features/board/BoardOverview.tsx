@@ -291,6 +291,17 @@ const BOARD_CELL_MARK_ICON_LABELS: Record<BoardCellMarkIcon, string> = {
   tag: "태그"
 };
 
+export interface BoardCellMarkTooltipContent {
+  title: string;
+  memo: string;
+}
+
+export function getBoardCellMarkTooltipContent(mark: BoardCellMark | null | undefined): BoardCellMarkTooltipContent | null {
+  const memo = mark?.memo;
+  if (!memo?.trim()) return null;
+  return { title: "메모", memo };
+}
+
 export interface BoardCellMarkBrush {
   disabled: boolean;
   icon: BoardCellMarkIcon | null;
@@ -4466,8 +4477,7 @@ function BoardCheckCell({
   const mark = resolveBoardCellMark(cellState, periodKey);
   const isDisabledCell = mark?.type === "disabled";
   const isScheduleUnavailable = table.template_type === "lostark_event" && !getBoardScheduleRowAvailable(row.label, eventSummary);
-  const markLabel = mark?.icon ? BOARD_CELL_MARK_ICON_LABELS[mark.icon] : null;
-  const hasTooltipContent = Boolean(markLabel || mark?.memo);
+  const tooltipContent = getBoardCellMarkTooltipContent(mark);
   const cellStyle: CSSProperties = {
     minHeight: `${rowHeight}px`,
     ...(rowSeparator ? { borderBottom: rowSeparator } : {}),
@@ -4489,7 +4499,7 @@ function BoardCheckCell({
       style={cellStyle}
       onClick={isMarkEditMode && onCellMarkPaint ? () => onCellMarkPaint(row, column, mark, periodKey) : undefined}
       onPointerEnter={(event) => {
-        if (event.pointerType !== "mouse" || isMarkEditMode || isReorderMode || !hasTooltipContent) return;
+        if (event.pointerType !== "mouse" || isMarkEditMode || isReorderMode || !tooltipContent) return;
         clearTooltipTimer();
         const cellElement = event.currentTarget;
         tooltipTimerRef.current = window.setTimeout(() => {
@@ -4527,21 +4537,21 @@ function BoardCheckCell({
             type="checkbox"
           />
           {mark?.icon ? (
-            <span aria-label={`${row.label} / ${column.label} ${BOARD_CELL_MARK_ICON_LABELS[mark.icon]}`} className={`board-check-badge ${mark.icon}`} title={BOARD_CELL_MARK_ICON_LABELS[mark.icon]}>
+            <span aria-label={`${row.label} / ${column.label} ${BOARD_CELL_MARK_ICON_LABELS[mark.icon]}`} className={`board-check-badge ${mark.icon}`}>
               {renderBoardCellMarkIcon(mark.icon, 12)}
             </span>
           ) : null}
         </span>
       )}
-      {tooltipPosition && hasTooltipContent && typeof document !== "undefined"
+      {tooltipPosition && tooltipContent && typeof document !== "undefined"
         ? createPortal(
             <div
               className="board-cell-mark-tooltip"
               role="tooltip"
               style={{ left: `${tooltipPosition.x}px`, top: `${tooltipPosition.y}px` }}
             >
-              {markLabel ? <strong>{markLabel}</strong> : null}
-              {mark?.memo ? <span>{mark.memo}</span> : null}
+              <strong>{tooltipContent.title}</strong>
+              <span>{tooltipContent.memo}</span>
             </div>,
             document.body
           )
