@@ -1222,6 +1222,16 @@ describe("BoardOverview", () => {
     expect(html).not.toContain("board-check-memo-dot");
   });
 
+  it("routes default board check cell memos through the existing hover tooltip without corner marks", () => {
+    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("const hasTooltipContent = Boolean(markLabel || mark?.memo);");
+    expect(source).toContain("{mark?.memo ? <span>{mark.memo}</span> : null}");
+    expect(source).toContain('mark?.type === "fixed"');
+    expect(source).toContain('mark?.type === "reserved"');
+    expect(source).not.toContain('mark?.type === "default" ?');
+  });
+
   it("treats reserved marks from a past period as plain cells", () => {
     const html = renderToStaticMarkup(
       createElement(BoardOverview, {
@@ -1249,8 +1259,8 @@ describe("BoardOverview", () => {
   it("offers the cell mark edit mode from the table menu", () => {
     const html = renderToStaticMarkup(createElement(BoardOverview, { board }));
 
-    expect(html).toContain('aria-label="숙제 고정/예약 편집 모드 켜기"');
-    expect(html).toContain("고정/예약");
+    expect(html).toContain('aria-label="숙제 체크칸 설정 모드 켜기"');
+    expect(html).toContain("체크칸 설정");
   });
 
   it("does not render an empty board as a stretching spreadsheet", () => {
@@ -1585,7 +1595,7 @@ describe("BoardOverview", () => {
     expect(html).toContain("다시 클릭하면 해제");
   });
 
-  it("hides the brush memo input for default and disabled brushes and shows notices", () => {
+  it("shows the brush memo input for default marks and hides it for disabled brushes", () => {
     const defaultHtml = renderToStaticMarkup(
       createElement(BoardCellMarkToolbar, {
         brush: { type: "default", memo: "" },
@@ -1600,8 +1610,16 @@ describe("BoardOverview", () => {
         onBrushChange: () => undefined
       })
     );
+    const disabledHtml = renderToStaticMarkup(
+      createElement(BoardCellMarkToolbar, {
+        brush: { type: "disabled", memo: "" },
+        notice: null,
+        onBrushChange: () => undefined
+      })
+    );
 
-    expect(defaultHtml).not.toContain('aria-label="브러시 메모"');
+    expect(defaultHtml).toContain('aria-label="브러시 메모"');
+    expect(disabledHtml).not.toContain('aria-label="브러시 메모"');
     expect(noticeHtml).toContain('aria-label="브러시 메모"');
     expect(noticeHtml).toContain("초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.");
   });
@@ -1613,7 +1631,7 @@ describe("BoardOverview", () => {
     expect(source).toContain("onCellMarkPaint(row, column, mark, periodKey)");
     expect(source).not.toContain("BoardCellMarkEditModal");
     // 같은 브러시로 칠한 셀을 다시 클릭하면 해제
-    expect(source).toContain('const markType: BoardCellMarkType = isSameAsBrush ? "default" : markBrush.type;');
+    expect(source).toContain("const memoEnabled = markBrush.type !== \"disabled\";");
   });
 
   it("lets row and column items edit both height and width from item settings", () => {

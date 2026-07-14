@@ -12,7 +12,7 @@ export interface BoardCellStatePatch {
 }
 
 export interface BoardCellMark {
-  type: "fixed" | "reserved" | "disabled";
+  type: BoardCellMarkType;
   memo: string | null;
 }
 
@@ -36,17 +36,18 @@ export function applyBoardCellStatePatch(
   cellStates: BoardCellState[],
   patch: BoardCellStatePatch
 ): BoardCellState[] {
+  const memo = patch.markType === "disabled" || patch.memo === "" ? null : patch.memo;
   const nextCell: BoardCellState = {
     table_id: patch.tableId,
     row_item_id: patch.rowItemId,
     column_item_id: patch.columnItemId,
     checkbox_visible: patch.markType === "disabled" ? 0 : 1,
     mark_type: patch.markType,
-    memo: patch.markType === "fixed" || patch.markType === "reserved" ? (patch.memo === "" ? null : patch.memo) : null,
+    memo,
     mark_period_key: patch.markType === "reserved" ? (patch.periodKey ?? null) : null
   };
   const key = cellStateKey(nextCell);
-  if (patch.markType === "default") {
+  if (patch.markType === "default" && memo === null) {
     return cellStates.filter((cell) => cellStateKey(cell) !== key);
   }
 
@@ -65,6 +66,7 @@ export function resolveBoardCellMark(
 ): BoardCellMark | null {
   if (!cell) return null;
   if (cell.mark_type === "disabled") return { type: "disabled", memo: null };
+  if (cell.mark_type === "default") return cell.memo ? { type: "default", memo: cell.memo } : null;
   if (cell.mark_type === "fixed") return { type: "fixed", memo: cell.memo ?? null };
   if (cell.mark_type === "reserved") {
     if (!cell.mark_period_key || cell.mark_period_key !== currentPeriodKey) return null;

@@ -242,8 +242,8 @@ export const boardCellStatePatchSchema = z.object({
   .refine((patch) => (patch.markType === "reserved" ? patch.periodKey !== undefined : patch.periodKey === undefined), {
     message: "예약 타입에만 periodKey가 필요합니다."
   })
-  .refine((patch) => patch.markType === "fixed" || patch.markType === "reserved" || patch.memo === null || patch.memo === "", {
-    message: "메모는 고정/예약 타입에만 남길 수 있습니다."
+  .refine((patch) => patch.markType !== "disabled" || patch.memo === null || patch.memo === "", {
+    message: "비활성화 타입에는 메모를 남길 수 없습니다."
   });
 
 export const boardCellStatePatchBatchSchema = z.object({

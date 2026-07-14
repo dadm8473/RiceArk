@@ -24,7 +24,27 @@ describe("board cell state helpers", () => {
     ]);
   });
 
-  it("stores fixed marks with a memo and reserved marks with their period key", () => {
+  it("stores default and fixed memos and reserved marks with their period key", () => {
+    expect(
+      applyBoardCellStatePatch([], {
+        tableId: "table-1",
+        rowItemId: "row-1",
+        columnItemId: "column-1",
+        markType: "default",
+        memo: "상시 메모"
+      })
+    ).toEqual([
+      {
+        table_id: "table-1",
+        row_item_id: "row-1",
+        column_item_id: "column-1",
+        checkbox_visible: 1,
+        mark_type: "default",
+        memo: "상시 메모",
+        mark_period_key: null
+      }
+    ]);
+
     expect(
       applyBoardCellStatePatch([], {
         tableId: "table-1",
@@ -125,6 +145,12 @@ describe("board cell state helpers", () => {
     const base = { table_id: "table-1", row_item_id: "row-1", column_item_id: "column-1" };
 
     expect(resolveBoardCellMark(undefined, "weekly:2026-06-10")).toBeNull();
+    expect(
+      resolveBoardCellMark(
+        { ...base, checkbox_visible: 1, mark_type: "default", memo: "상시 메모", mark_period_key: null },
+        "weekly:2026-06-10"
+      )
+    ).toEqual({ type: "default", memo: "상시 메모" });
     expect(
       resolveBoardCellMark(
         { ...base, checkbox_visible: 1, mark_type: "fixed", memo: "고정파티", mark_period_key: null },

@@ -197,10 +197,14 @@ describe("board route schemas", () => {
     ).toBe(false);
   });
 
-  it("allows memos only on fixed and reserved cell marks", () => {
+  it("allows persistent memos on default, fixed, and reserved cell marks", () => {
     const base = { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1" };
 
-    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "default", memo: "메모" }).success).toBe(false);
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "default", memo: "메모" }).success).toBe(true);
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "fixed", memo: "메모" }).success).toBe(true);
+    expect(
+      boardCellStatePatchSchema.safeParse({ ...base, markType: "reserved", memo: "메모", periodKey: "weekly:2026-06-10" }).success
+    ).toBe(true);
     expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "disabled", memo: "메모" }).success).toBe(false);
     expect(
       boardCellStatePatchSchema.safeParse({ ...base, markType: "fixed", memo: "가".repeat(121) }).success

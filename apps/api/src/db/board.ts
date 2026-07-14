@@ -2403,14 +2403,14 @@ export async function saveBoardCellStatePatches(
   }
 
   const statements = merged.map((patch) => {
-    if (patch.markType === "default") {
+    const memo = patch.markType === "disabled" || patch.memo === "" ? null : patch.memo;
+    if (patch.markType === "default" && memo === null) {
       return env.DB.prepare(
         `DELETE FROM board_cell_states
          WHERE user_id = ? AND table_id = ? AND row_item_id = ? AND column_item_id = ?`
       ).bind(userId, patch.tableId, patch.rowItemId, patch.columnItemId);
     }
 
-    const memo = patch.markType === "disabled" ? null : patch.memo === "" ? null : patch.memo;
     const markPeriodKey = patch.markType === "reserved" ? (patch.periodKey ?? null) : null;
     const checkboxVisible = patch.markType === "disabled" ? 0 : 1;
     return env.DB.prepare(

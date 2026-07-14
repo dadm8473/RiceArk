@@ -271,7 +271,7 @@ const BOARD_TASK_RESET_OPTIONS: Array<{ value: BoardTaskResetType; label: string
   { value: "none", label: "초기화 안함" }
 ];
 const BOARD_CELL_MARK_OPTIONS: Array<{ value: "default" | "fixed" | "reserved" | "disabled"; label: string; description: string }> = [
-  { value: "default", label: "기본", description: "일반 체크박스로 사용합니다." },
+  { value: "default", label: "기본", description: "일반 체크박스로 사용하고 메모가 있으면 계속 유지합니다." },
   { value: "fixed", label: "고정", description: "고정파티 표시와 메모를 계속 유지합니다." },
   { value: "reserved", label: "예약", description: "이번 주기에만 표시되고 초기화 시 사라집니다." },
   { value: "disabled", label: "비활성화", description: "이 칸의 체크박스를 숨깁니다." }
@@ -1287,20 +1287,20 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
       return;
     }
 
-    const memoEnabled = markBrush.type === "fixed" || markBrush.type === "reserved";
+    const memoEnabled = markBrush.type !== "disabled";
     const brushMemo = memoEnabled && markBrush.memo.trim() ? markBrush.memo.trim() : null;
     const isSameAsBrush =
-      markBrush.type !== "default" &&
       currentMark !== null &&
       currentMark.type === markBrush.type &&
       (currentMark.memo ?? null) === brushMemo;
     const markType: BoardCellMarkType = isSameAsBrush ? "default" : markBrush.type;
+    const memo = isSameAsBrush || markType === "disabled" ? null : brushMemo;
     const patch: BoardCellStatePatch = {
       tableId: table.id,
       rowItemId: row.id,
       columnItemId: column.id,
       markType,
-      memo: markType === "fixed" || markType === "reserved" ? brushMemo : null,
+      memo,
       ...(markType === "reserved" && periodKey ? { periodKey } : {})
     };
 
@@ -2161,8 +2161,8 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
                         <button
                           className="board-table-reorder-done-button"
                           type="button"
-                          aria-label={`${table.name} 고정/예약 편집 완료`}
-                          title="고정/예약 편집 완료"
+                          aria-label={`${table.name} 체크칸 설정 완료`}
+                          title="체크칸 설정 완료"
                           onClick={() => toggleTableMarkEditMode(table)}
                           onPointerDown={(event) => {
                             event.stopPropagation();
@@ -2266,13 +2266,13 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
                         <button
                           className={isMarkEditMode ? "active" : undefined}
                           type="button"
-                          aria-label={`${table.name} 고정/예약 편집 모드 ${isMarkEditMode ? "끄기" : "켜기"}`}
+                          aria-label={`${table.name} 체크칸 설정 모드 ${isMarkEditMode ? "끄기" : "켜기"}`}
                           title={
                             tableLocked
-                              ? "잠금을 해제한 뒤 고정/예약을 설정할 수 있습니다."
+                              ? "잠금을 해제한 뒤 체크칸을 설정할 수 있습니다."
                               : isMarkEditMode
-                                ? "고정/예약 편집 완료"
-                                : "체크박스 고정/예약/비활성화 설정"
+                                ? "체크칸 설정 완료"
+                                : "체크칸 고정, 예약, 비활성화, 메모 설정"
                           }
                           disabled={tableLocked}
                           onClick={() => {
@@ -2281,7 +2281,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
                           }}
                         >
                           <Pin aria-hidden="true" size={14} />
-                          {isMarkEditMode ? "완료" : "고정/예약"}
+                          {isMarkEditMode ? "완료" : "체크칸 설정"}
                         </button>
                         <button
                           type="button"
@@ -4525,7 +4525,7 @@ export function BoardCellMarkToolbar({
   notice: string | null;
   onBrushChange: (brush: BoardCellMarkBrush) => void;
 }) {
-  const memoEnabled = brush.type === "fixed" || brush.type === "reserved";
+  const memoEnabled = brush.type !== "disabled";
   const activeOption = BOARD_CELL_MARK_OPTIONS.find((option) => option.value === brush.type);
 
   return (
