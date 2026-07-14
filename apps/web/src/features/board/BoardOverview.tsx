@@ -270,11 +270,11 @@ const BOARD_TASK_RESET_OPTIONS: Array<{ value: BoardTaskResetType; label: string
   { value: "biweekly", label: "격주" },
   { value: "none", label: "초기화 안함" }
 ];
-const BOARD_CELL_MARK_OPTIONS: Array<{ value: "default" | "fixed" | "reserved" | "disabled"; label: string; description: string }> = [
-  { value: "default", label: "기본", description: "일반 체크박스로 사용하고 메모가 있으면 계속 유지합니다." },
-  { value: "fixed", label: "고정", description: "고정파티 표시와 메모를 계속 유지합니다." },
-  { value: "reserved", label: "예약", description: "이번 주기에만 표시되고 초기화 시 사라집니다." },
-  { value: "disabled", label: "비활성화", description: "이 칸의 체크박스를 숨깁니다." }
+const BOARD_CELL_MARK_OPTIONS: Array<{ value: "default" | "fixed" | "reserved" | "disabled"; label: string; description?: string }> = [
+  { value: "default", label: "기본" },
+  { value: "fixed", label: "고정", description: "고정으로 표기할 체크 박스를 선택해주세요." },
+  { value: "reserved", label: "예약", description: "예약으로 표기할 체크 박스를 선택해주세요." },
+  { value: "disabled", label: "비활성화", description: "비활성화 할 체크 박스를 선택해주세요." }
 ];
 const BOARD_CELL_MARK_LABELS: Record<string, string> = { fixed: "고정", reserved: "예약" };
 
@@ -4527,6 +4527,7 @@ export function BoardCellMarkToolbar({
 }) {
   const memoEnabled = brush.type !== "disabled";
   const activeOption = BOARD_CELL_MARK_OPTIONS.find((option) => option.value === brush.type);
+  const activeDescription = activeOption?.description ? `${activeOption.description} ` : "";
 
   return (
     <div className="board-cell-mark-toolbar" onPointerDown={(event) => event.stopPropagation()}>
@@ -4558,7 +4559,7 @@ export function BoardCellMarkToolbar({
         ) : null}
       </div>
       <p className="cell-mark-description">
-        {notice ?? `${activeOption?.description ?? ""} 셀을 클릭하면 바로 적용되고, 같은 설정의 셀을 다시 클릭하면 해제됩니다.`}
+        {notice ?? `${activeDescription}셀을 클릭하면 바로 적용되고, 같은 설정의 셀을 다시 클릭하면 해제됩니다.`}
       </p>
     </div>
   );

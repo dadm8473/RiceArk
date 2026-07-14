@@ -1593,6 +1593,10 @@ describe("BoardOverview", () => {
     expect(html).toContain('aria-checked="true"');
     expect(html).toContain('value="고정파티 21시"');
     expect(html).toContain("다시 클릭하면 해제");
+    expect(html).toContain("고정으로 표기할 체크 박스를 선택해주세요.");
+    expect(html).toContain("예약으로 표기할 체크 박스를 선택해주세요.");
+    expect(html).toContain("비활성화 할 체크 박스를 선택해주세요.");
+    expect(html).not.toContain("일반 체크박스로 사용");
   });
 
   it("shows the brush memo input for default marks and hides it for disabled brushes", () => {
@@ -1619,6 +1623,9 @@ describe("BoardOverview", () => {
     );
 
     expect(defaultHtml).toContain('aria-label="브러시 메모"');
+    expect(defaultHtml).toContain("셀을 클릭하면 바로 적용되고, 같은 설정의 셀을 다시 클릭하면 해제됩니다.");
+    expect(defaultHtml).not.toContain("일반 체크박스로 사용");
+    expect(defaultHtml).not.toContain('title=""');
     expect(disabledHtml).not.toContain('aria-label="브러시 메모"');
     expect(noticeHtml).toContain('aria-label="브러시 메모"');
     expect(noticeHtml).toContain("초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.");
