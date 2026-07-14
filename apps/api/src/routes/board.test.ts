@@ -219,6 +219,7 @@ describe("board route schemas", () => {
     expect(boardCellStatePatchSchema.safeParse({ ...base, markIcon: "star", memo: null }).success).toBe(true);
     expect(boardCellStatePatchSchema.safeParse({ ...base, markIcon: "alert", memo: "주의" }).success).toBe(true);
     expect(boardCellStatePatchSchema.safeParse({ ...base, markIcon: null, memo: "메모만" }).success).toBe(true);
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markIcon: "check", memo: null }).success).toBe(false);
     expect(boardCellStatePatchSchema.safeParse({ ...base, markIcon: "dragon", memo: null }).success).toBe(false);
     expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "disabled", markIcon: "star", memo: null }).success).toBe(false);
   });

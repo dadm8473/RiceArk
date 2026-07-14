@@ -205,6 +205,7 @@ describe("matrix styles", () => {
     const iconWrapBlock = styles.match(/\.board-check-wrap\s*{[^}]+}/)?.[0] ?? "";
     const iconOverlayBlock = styles.match(/\.board-check-icon-overlay\s*{[^}]+}/)?.[0] ?? "";
     const checkedIconBlock = styles.match(/\.board-check-wrap\.checked \.board-check-icon-overlay\s*{[^}]+}/)?.[0] ?? "";
+    const iconOnlyButtonBlock = styles.match(/\.board-cell-mark-option\.icon-only\s*{[^}]+}/)?.[0] ?? "";
     const tooltipBlock = styles.match(/\.board-cell-mark-tooltip\s*{[^}]+}/)?.[0] ?? "";
     const markEditHoverBlock =
       styles.match(/\.board-table-summary\.mark-edit-mode \.board-check-cell:hover\s*{[^}]+}/)?.[0] ?? "";
@@ -213,6 +214,8 @@ describe("matrix styles", () => {
     expect(iconOverlayBlock).toContain("position: absolute;");
     expect(iconOverlayBlock).toContain("pointer-events: none;");
     expect(checkedIconBlock).toContain("color: #ffffff;");
+    expect(iconOnlyButtonBlock).toContain("width: 32px;");
+    expect(iconOnlyButtonBlock).toContain("padding: 0;");
     expect(tooltipBlock).toContain("position: fixed;");
     expect(tooltipBlock).toContain("width: max-content;");
     expect(tooltipBlock).toContain("transform: translateX(-50%);");

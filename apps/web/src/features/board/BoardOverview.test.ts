@@ -1605,14 +1605,17 @@ describe("BoardOverview", () => {
     );
 
     expect(html).toContain('aria-label="체크칸 아이콘"');
-    expect(html).toContain("없음");
-    expect(html).toContain("메모");
-    expect(html).toContain("핀");
-    expect(html).toContain("시계");
-    expect(html).toContain("별");
-    expect(html).toContain("주의");
-    expect(html).toContain("깃발");
-    expect(html).toContain("태그");
+    expect(html).toContain(">기본</button>");
+    expect(html).not.toContain(">없음</button>");
+    expect(html).toContain('aria-label="아이콘: 메모"');
+    expect(html).toContain('aria-label="아이콘: 핀"');
+    expect(html).toContain('aria-label="아이콘: 시계"');
+    expect(html).toContain('aria-label="아이콘: 별"');
+    expect(html).toContain('aria-label="아이콘: 주의"');
+    expect(html).toContain('aria-label="아이콘: 깃발"');
+    expect(html).toContain('aria-label="아이콘: 태그"');
+    expect(html).not.toContain(">체크</button>");
+    expect(html).toContain('stroke-width="3"');
     expect(html).toContain('aria-label="체크칸 유지 방식"');
     expect(html).toContain("계속 유지");
     expect(html).toContain("이번 주기만");

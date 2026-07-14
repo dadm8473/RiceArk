@@ -76,7 +76,7 @@ export interface BoardCompletionPatch {
   completed: boolean;
 }
 
-export type BoardCellMarkIcon = "memo" | "pin" | "clock" | "star" | "alert" | "flag" | "tag" | "check";
+export type BoardCellMarkIcon = "memo" | "pin" | "clock" | "star" | "alert" | "flag" | "tag";
 export type BoardCellMarkType = "default" | "fixed" | "reserved" | "disabled";
 
 export interface BoardCellStatePatch {

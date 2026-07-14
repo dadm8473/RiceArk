@@ -184,6 +184,12 @@ describe("board cell state helpers", () => {
     ).toEqual({ type: "default", icon: "memo", retention: "permanent", memo: "메모만" });
     expect(
       resolveBoardCellMark(
+        { ...base, checkbox_visible: 1, mark_type: "default", mark_icon: "check", memo: null, mark_period_key: null },
+        "weekly:2026-06-10"
+      )
+    ).toBeNull();
+    expect(
+      resolveBoardCellMark(
         { ...base, checkbox_visible: 1, mark_type: "reserved", mark_icon: "flag", memo: "지난주 약속", mark_period_key: "weekly:2026-06-03" },
         "weekly:2026-06-10"
       )

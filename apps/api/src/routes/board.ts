@@ -230,7 +230,7 @@ export const boardCompletionPatchSchema = z.object({
 }).strict();
 
 export const boardCellMarkTypeSchema = z.enum(["default", "fixed", "reserved", "disabled"]);
-export const boardCellMarkIconSchema = z.enum(["memo", "pin", "clock", "star", "alert", "flag", "tag", "check"]);
+export const boardCellMarkIconSchema = z.enum(["memo", "pin", "clock", "star", "alert", "flag", "tag"]);
 
 export const boardCellStatePatchSchema = z.object({
   tableId: resourceIdSchema,

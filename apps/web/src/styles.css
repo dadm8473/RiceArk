@@ -2058,7 +2058,7 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #334155;
+  color: #1f2937;
   pointer-events: none;
 }
 
@@ -2154,6 +2154,11 @@ body {
   background: #ffffff;
   font-size: 13px;
   font-weight: 800;
+}
+
+.board-cell-mark-option.icon-only {
+  width: 32px;
+  padding: 0;
 }
 
 .board-cell-mark-option:hover:not(:disabled) {

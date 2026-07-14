@@ -279,8 +279,7 @@ const BOARD_CELL_MARK_ICON_OPTIONS: Array<{ value: BoardCellMarkIcon; label: str
   { value: "star", label: "별" },
   { value: "alert", label: "주의" },
   { value: "flag", label: "깃발" },
-  { value: "tag", label: "태그" },
-  { value: "check", label: "체크" }
+  { value: "tag", label: "태그" }
 ];
 const BOARD_CELL_MARK_ICON_LABELS: Record<BoardCellMarkIcon, string> = {
   memo: "메모",
@@ -289,8 +288,7 @@ const BOARD_CELL_MARK_ICON_LABELS: Record<BoardCellMarkIcon, string> = {
   star: "별",
   alert: "주의",
   flag: "깃발",
-  tag: "태그",
-  check: "체크"
+  tag: "태그"
 };
 
 export interface BoardCellMarkBrush {
@@ -4415,14 +4413,16 @@ function BoardGridRow({
 }
 
 function renderBoardCellMarkIcon(icon: BoardCellMarkIcon, size: number) {
-  if (icon === "memo") return <StickyNote aria-hidden="true" size={size} />;
-  if (icon === "pin") return <Pin aria-hidden="true" size={size} />;
-  if (icon === "clock") return <Clock aria-hidden="true" size={size} />;
-  if (icon === "star") return <Star aria-hidden="true" size={size} />;
-  if (icon === "alert") return <AlertTriangle aria-hidden="true" size={size} />;
-  if (icon === "flag") return <Flag aria-hidden="true" size={size} />;
-  if (icon === "tag") return <Tag aria-hidden="true" size={size} />;
-  return <Check aria-hidden="true" size={size} />;
+  const iconProps = { "aria-hidden": true, size, strokeWidth: 3 };
+  if (icon === "memo") return <StickyNote {...iconProps} />;
+  if (icon === "pin") return <Pin {...iconProps} />;
+  if (icon === "clock") return <Clock {...iconProps} />;
+  if (icon === "star") return <Star {...iconProps} />;
+  if (icon === "alert") return <AlertTriangle {...iconProps} />;
+  if (icon === "flag") return <Flag {...iconProps} />;
+  if (icon === "tag") return <Tag {...iconProps} />;
+  const exhaustiveIcon: never = icon;
+  return exhaustiveIcon;
 }
 
 function BoardCheckCell({
@@ -4528,7 +4528,7 @@ function BoardCheckCell({
           />
           {mark?.icon ? (
             <span aria-label={`${row.label} / ${column.label} ${BOARD_CELL_MARK_ICON_LABELS[mark.icon]}`} className={`board-check-icon-overlay ${mark.icon}`} title={BOARD_CELL_MARK_ICON_LABELS[mark.icon]}>
-              {renderBoardCellMarkIcon(mark.icon, 11)}
+              {renderBoardCellMarkIcon(mark.icon, 13)}
             </span>
           ) : null}
         </span>
@@ -4573,20 +4573,21 @@ export function BoardCellMarkToolbar({
           aria-checked={brush.icon === null}
           onClick={() => onBrushChange({ ...brush, icon: null })}
         >
-          없음
+          기본
         </button>
         {BOARD_CELL_MARK_ICON_OPTIONS.map((option) => (
           <button
             key={option.value}
-            className={`board-cell-mark-option${brush.icon === option.value ? " active" : ""}`}
+            className={`board-cell-mark-option icon-only${brush.icon === option.value ? " active" : ""}`}
             disabled={brush.disabled}
             type="button"
             role="radio"
+            aria-label={`아이콘: ${option.label}`}
             aria-checked={brush.icon === option.value}
+            title={option.label}
             onClick={() => onBrushChange({ ...brush, icon: option.value })}
           >
-            {renderBoardCellMarkIcon(option.value, 13)}
-            {option.label}
+            {renderBoardCellMarkIcon(option.value, 16)}
           </button>
         ))}
       </div>

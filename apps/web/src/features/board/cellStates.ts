@@ -1,6 +1,6 @@
 import type { BoardCellState } from "./types";
 
-export type BoardCellMarkIcon = "memo" | "pin" | "clock" | "star" | "alert" | "flag" | "tag" | "check";
+export type BoardCellMarkIcon = "memo" | "pin" | "clock" | "star" | "alert" | "flag" | "tag";
 export type BoardCellMarkRetention = "permanent" | "period";
 export type BoardCellMarkType = "default" | "fixed" | "reserved" | "disabled";
 
@@ -21,7 +21,7 @@ export interface BoardCellMark {
   memo: string | null;
 }
 
-const BOARD_CELL_MARK_ICONS = new Set<BoardCellMarkIcon>(["memo", "pin", "clock", "star", "alert", "flag", "tag", "check"]);
+const BOARD_CELL_MARK_ICONS = new Set<BoardCellMarkIcon>(["memo", "pin", "clock", "star", "alert", "flag", "tag"]);
 
 function cellStateKey(cell: Pick<BoardCellState, "table_id" | "row_item_id" | "column_item_id">): string {
   return JSON.stringify([cell.table_id, cell.row_item_id, cell.column_item_id]);
