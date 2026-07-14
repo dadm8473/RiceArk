@@ -1090,7 +1090,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
   const [reorderTableId, setReorderTableId] = useState<string | null>(null);
   const [activeSortableId, setActiveSortableId] = useState<string | null>(null);
   const [markEditTableId, setMarkEditTableId] = useState<string | null>(null);
-  const [markBrush, setMarkBrush] = useState<BoardCellMarkBrush>({ disabled: false, icon: "pin", retention: "permanent", memo: "" });
+  const [markBrush, setMarkBrush] = useState<BoardCellMarkBrush>({ disabled: false, icon: null, retention: "permanent", memo: "" });
   const [markBrushNotice, setMarkBrushNotice] = useState<string | null>(null);
   const [boardZoom, setBoardZoom] = useState(() =>
     typeof window === "undefined" ? BOARD_ZOOM_DEFAULT : getStoredBoardZoom(window.localStorage)
@@ -2295,7 +2295,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
                               ? "잠금을 해제한 뒤 체크칸을 설정할 수 있습니다."
                               : isMarkEditMode
                                 ? "체크칸 설정 완료"
-                                : "체크칸 아이콘, 이번주만, 비활성화, 메모 설정"
+                                : "체크칸 기본/커스텀/비활성화, 이번주만, 메모 설정"
                           }
                           disabled={tableLocked}
                           onClick={() => {
@@ -4507,7 +4507,7 @@ function BoardCheckCell({
       {isDisabledCell ? (
         <span className="board-check-placeholder" aria-label={`${row.label} / ${column.label} 비활성화`} />
       ) : (
-        <span className={`board-check-wrap${isCompleted ? " checked" : ""}${mark?.icon ? " has-icon" : ""}`}>
+        <span className={`board-check-wrap${isCompleted ? " checked" : ""}${mark?.icon ? " has-badge" : ""}`}>
           <input
             aria-label={`${row.label} / ${column.label}`}
             checked={isCompleted}
@@ -4527,8 +4527,8 @@ function BoardCheckCell({
             type="checkbox"
           />
           {mark?.icon ? (
-            <span aria-label={`${row.label} / ${column.label} ${BOARD_CELL_MARK_ICON_LABELS[mark.icon]}`} className={`board-check-icon-overlay ${mark.icon}`} title={BOARD_CELL_MARK_ICON_LABELS[mark.icon]}>
-              {renderBoardCellMarkIcon(mark.icon, 13)}
+            <span aria-label={`${row.label} / ${column.label} ${BOARD_CELL_MARK_ICON_LABELS[mark.icon]}`} className={`board-check-badge ${mark.icon}`} title={BOARD_CELL_MARK_ICON_LABELS[mark.icon]}>
+              {renderBoardCellMarkIcon(mark.icon, 8)}
             </span>
           ) : null}
         </span>
@@ -4561,39 +4561,62 @@ export function BoardCellMarkToolbar({
 }) {
   const memoEnabled = !brush.disabled;
   const description = notice ?? (brush.disabled ? "비활성화된 체크칸은 체크박스를 숨깁니다." : null);
+  const activeMode = brush.disabled ? "disabled" : brush.icon ? "custom" : "default";
+  const customIcon = brush.icon ?? "pin";
 
   return (
     <div className="board-cell-mark-toolbar" onPointerDown={(event) => event.stopPropagation()}>
-      <div className="board-cell-mark-options" role="radiogroup" aria-label="체크칸 아이콘">
+      <div className="board-cell-mark-mode-options" role="radiogroup" aria-label="체크칸 모드">
         <button
-          className={`board-cell-mark-option${brush.icon === null ? " active" : ""}`}
-          disabled={brush.disabled}
+          className={`board-cell-mark-option${activeMode === "default" ? " active" : ""}`}
           type="button"
           role="radio"
-          aria-checked={brush.icon === null}
-          onClick={() => onBrushChange({ ...brush, icon: null })}
+          aria-checked={activeMode === "default"}
+          onClick={() => onBrushChange({ ...brush, disabled: false, icon: null })}
         >
           기본
         </button>
-        {BOARD_CELL_MARK_ICON_OPTIONS.map((option) => (
-          <button
-            key={option.value}
-            className={`board-cell-mark-option icon-only${brush.icon === option.value ? " active" : ""}`}
-            disabled={brush.disabled}
-            type="button"
-            role="radio"
-            aria-label={`아이콘: ${option.label}`}
-            aria-checked={brush.icon === option.value}
-            title={option.label}
-            onClick={() => onBrushChange({ ...brush, icon: option.value })}
-          >
-            {renderBoardCellMarkIcon(option.value, 16)}
-          </button>
-        ))}
+        <button
+          className={`board-cell-mark-option${activeMode === "custom" ? " active" : ""}`}
+          type="button"
+          role="radio"
+          aria-checked={activeMode === "custom"}
+          onClick={() => onBrushChange({ ...brush, disabled: false, icon: customIcon })}
+        >
+          커스텀
+        </button>
+        <button
+          className={`board-cell-mark-option danger${activeMode === "disabled" ? " active" : ""}`}
+          type="button"
+          role="radio"
+          aria-label="체크칸 비활성화"
+          aria-checked={activeMode === "disabled"}
+          onClick={() => onBrushChange({ ...brush, disabled: true })}
+        >
+          비활성화
+        </button>
       </div>
+      {activeMode === "custom" ? (
+        <div className="board-cell-mark-options" role="radiogroup" aria-label="커스텀 아이콘">
+          {BOARD_CELL_MARK_ICON_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              className={`board-cell-mark-option icon-only${brush.icon === option.value ? " active" : ""}`}
+              type="button"
+              role="radio"
+              aria-label={`아이콘: ${option.label}`}
+              aria-checked={brush.icon === option.value}
+              title={option.label}
+              onClick={() => onBrushChange({ ...brush, disabled: false, icon: option.value })}
+            >
+              {renderBoardCellMarkIcon(option.value, 16)}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="board-cell-mark-retention-options" aria-label="체크칸 기간 옵션">
         <button
-          className={`board-cell-mark-option${brush.retention === "period" ? " active" : ""}`}
+          className={`board-cell-mark-option board-cell-mark-toggle${brush.retention === "period" ? " active" : ""}`}
           disabled={brush.disabled}
           type="button"
           aria-label="이번주만"
@@ -4601,15 +4624,7 @@ export function BoardCellMarkToolbar({
           onClick={() => onBrushChange({ ...brush, retention: brush.retention === "period" ? "permanent" : "period" })}
         >
           이번주만
-        </button>
-        <button
-          className={`board-cell-mark-option${brush.disabled ? " active" : ""}`}
-          type="button"
-          aria-label="체크칸 비활성화"
-          aria-pressed={brush.disabled}
-          onClick={() => onBrushChange({ ...brush, disabled: !brush.disabled })}
-        >
-          비활성화
+          <span className="board-cell-mark-state-label">{brush.retention === "period" ? "켜짐" : "꺼짐"}</span>
         </button>
       </div>
       {memoEnabled ? (

@@ -2052,18 +2052,22 @@ body {
   height: 18px;
 }
 
-.board-check-icon-overlay {
+.board-check-badge {
   position: absolute;
-  inset: 0;
+  top: -4px;
+  right: -4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #1f2937;
-  pointer-events: none;
-}
-
-.board-check-wrap.checked .board-check-icon-overlay {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
   color: #ffffff;
+  background: #ef4444;
+  box-shadow: 0 1px 2px #991b1b66;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .board-cell-mark-tooltip {
@@ -2119,6 +2123,7 @@ body {
   margin: 0;
 }
 
+.board-cell-mark-mode-options,
 .board-cell-mark-options,
 .board-cell-mark-retention-options {
   display: flex;
@@ -2171,9 +2176,36 @@ body {
   background: #eff6ff;
 }
 
+.board-cell-mark-option.danger.active {
+  color: #991b1b;
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
 .board-cell-mark-option:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.board-cell-mark-toggle {
+  min-width: 96px;
+  justify-content: space-between;
+}
+
+.board-cell-mark-state-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: #475569;
+  background: #e2e8f0;
+  font-size: 11px;
+}
+
+.board-cell-mark-toggle.active .board-cell-mark-state-label {
+  color: #ffffff;
+  background: #2563eb;
 }
 
 .cell-mark-description {
@@ -2182,8 +2214,11 @@ body {
   font-size: 12px;
 }
 
-.app-shell[data-theme="dark"] .board-check-icon-overlay {
-  color: #cbd5e1;
+.app-shell[data-theme="dark"] .board-check-badge {
+  color: #ffffff;
+  border-color: #0f172a;
+  background: #f87171;
+  box-shadow: 0 1px 3px #00000066;
 }
 
 .app-shell[data-theme="dark"] .board-cell-mark-tooltip {
@@ -2252,10 +2287,6 @@ body {
   border-right: 2px solid #ffffff;
   border-bottom: 2px solid #ffffff;
   transform: rotate(45deg) translate(-1px, -1px);
-}
-
-.board-check-wrap.has-icon .board-check:checked::before {
-  content: none;
 }
 
 .board-check:disabled {

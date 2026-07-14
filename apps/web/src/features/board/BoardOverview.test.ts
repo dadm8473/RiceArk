@@ -1219,8 +1219,9 @@ describe("BoardOverview", () => {
 
     expect(html).not.toContain('class="board-check-mark fixed"');
     expect(html).not.toContain('class="board-check-mark reserved"');
-    expect(html).toContain('class="board-check-icon-overlay pin"');
-    expect(html).toContain('class="board-check-icon-overlay clock"');
+    expect(html).toContain('class="board-check-badge pin"');
+    expect(html).toContain('class="board-check-badge clock"');
+    expect(html).not.toContain('class="board-check-icon-overlay');
     expect(html).not.toContain("board-check-memo-dot");
   });
 
@@ -1244,8 +1245,9 @@ describe("BoardOverview", () => {
       })
     );
 
-    expect(html).toContain('class="board-check-icon-overlay memo"');
+    expect(html).toContain('class="board-check-badge memo"');
     expect(html).toContain('aria-label="쿠르잔 전선 / 냠수나이스1 메모"');
+    expect(html).not.toContain('class="board-check-icon-overlay');
     expect(html).not.toContain('class="board-check-memo-dot"');
     expect(html).not.toContain('class="board-check-mark fixed"');
     expect(html).not.toContain('class="board-check-mark reserved"');
@@ -1604,9 +1606,12 @@ describe("BoardOverview", () => {
       })
     );
 
-    expect(html).toContain('aria-label="체크칸 아이콘"');
+    expect(html).toContain('aria-label="체크칸 모드"');
     expect(html).toContain(">기본</button>");
+    expect(html).toContain(">커스텀</button>");
+    expect(html).toContain(">비활성화</button>");
     expect(html).not.toContain(">없음</button>");
+    expect(html).toContain('aria-label="커스텀 아이콘"');
     expect(html).toContain('aria-label="아이콘: 메모"');
     expect(html).toContain('aria-label="아이콘: 핀"');
     expect(html).toContain('aria-label="아이콘: 시계"');
@@ -1619,7 +1624,7 @@ describe("BoardOverview", () => {
     expect(html).toContain('aria-label="체크칸 기간 옵션"');
     expect(html).toContain('aria-label="이번주만"');
     expect(html).toContain('aria-pressed="false"');
-    expect(html).toContain(">이번주만</button>");
+    expect(html).toContain("꺼짐");
     expect(html).not.toContain("계속 유지");
     expect(html).not.toContain("이번 주기만");
     expect(html).toContain('aria-label="체크칸 비활성화"');
@@ -1656,16 +1661,21 @@ describe("BoardOverview", () => {
 
     expect(defaultHtml).toContain('aria-label="브러시 메모"');
     expect(defaultHtml).toContain("<textarea");
+    expect(defaultHtml).not.toContain('aria-label="커스텀 아이콘"');
+    expect(defaultHtml).toContain("꺼짐");
     expect(defaultHtml).not.toContain('class="cell-mark-description"');
     expect(defaultHtml).not.toContain("셀을 클릭하면 바로 적용되고");
     expect(defaultHtml).not.toContain("일반 체크박스로 사용");
     expect(defaultHtml).not.toContain('title=""');
     expect(disabledHtml).not.toContain('aria-label="브러시 메모"');
+    expect(disabledHtml).not.toContain('aria-label="커스텀 아이콘"');
     expect(disabledHtml).toContain("비활성화된 체크칸은 체크박스를 숨깁니다.");
     expect(disabledHtml).not.toContain("셀을 클릭하면 바로 적용되고");
     expect(noticeHtml).toContain('aria-label="브러시 메모"');
+    expect(noticeHtml).toContain('aria-label="커스텀 아이콘"');
     expect(noticeHtml).toContain('aria-label="이번주만"');
     expect(noticeHtml).toContain('aria-pressed="true"');
+    expect(noticeHtml).toContain("켜짐");
     expect(noticeHtml).toContain("초기화되지 않는 숙제에는 이번주만 옵션을 사용할 수 없습니다.");
     expect(noticeHtml).not.toContain("셀을 클릭하면 바로 적용되고");
   });
