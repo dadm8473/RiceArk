@@ -1298,7 +1298,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
     if (isReadOnly) return;
     setMarkBrushNotice(null);
     if (!markBrush.disabled && markBrush.retention === "period" && (!periodKey || periodKey === "none:permanent")) {
-      setMarkBrushNotice("초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.");
+      setMarkBrushNotice("초기화되지 않는 숙제에는 이번주만 옵션을 사용할 수 없습니다.");
       return;
     }
 
@@ -2295,7 +2295,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
                               ? "잠금을 해제한 뒤 체크칸을 설정할 수 있습니다."
                               : isMarkEditMode
                                 ? "체크칸 설정 완료"
-                                : "체크칸 고정, 예약, 비활성화, 메모 설정"
+                                : "체크칸 아이콘, 이번주만, 비활성화, 메모 설정"
                           }
                           disabled={tableLocked}
                           onClick={() => {
@@ -4591,26 +4591,16 @@ export function BoardCellMarkToolbar({
           </button>
         ))}
       </div>
-      <div className="board-cell-mark-retention-options" role="radiogroup" aria-label="체크칸 유지 방식">
-        <button
-          className={`board-cell-mark-option${brush.retention === "permanent" ? " active" : ""}`}
-          disabled={brush.disabled}
-          type="button"
-          role="radio"
-          aria-checked={brush.retention === "permanent"}
-          onClick={() => onBrushChange({ ...brush, retention: "permanent" })}
-        >
-          계속 유지
-        </button>
+      <div className="board-cell-mark-retention-options" aria-label="체크칸 기간 옵션">
         <button
           className={`board-cell-mark-option${brush.retention === "period" ? " active" : ""}`}
           disabled={brush.disabled}
           type="button"
-          role="radio"
-          aria-checked={brush.retention === "period"}
-          onClick={() => onBrushChange({ ...brush, retention: "period" })}
+          aria-label="이번주만"
+          aria-pressed={brush.retention === "period"}
+          onClick={() => onBrushChange({ ...brush, retention: brush.retention === "period" ? "permanent" : "period" })}
         >
-          이번 주기만
+          이번주만
         </button>
         <button
           className={`board-cell-mark-option${brush.disabled ? " active" : ""}`}

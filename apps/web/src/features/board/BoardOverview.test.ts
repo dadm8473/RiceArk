@@ -1616,9 +1616,12 @@ describe("BoardOverview", () => {
     expect(html).toContain('aria-label="아이콘: 태그"');
     expect(html).not.toContain(">체크</button>");
     expect(html).toContain('stroke-width="3"');
-    expect(html).toContain('aria-label="체크칸 유지 방식"');
-    expect(html).toContain("계속 유지");
-    expect(html).toContain("이번 주기만");
+    expect(html).toContain('aria-label="체크칸 기간 옵션"');
+    expect(html).toContain('aria-label="이번주만"');
+    expect(html).toContain('aria-pressed="false"');
+    expect(html).toContain(">이번주만</button>");
+    expect(html).not.toContain("계속 유지");
+    expect(html).not.toContain("이번 주기만");
     expect(html).toContain('aria-label="체크칸 비활성화"');
     expect(html).toContain('aria-checked="true"');
     expect(html).toContain("<textarea");
@@ -1639,7 +1642,7 @@ describe("BoardOverview", () => {
     const noticeHtml = renderToStaticMarkup(
       createElement(BoardCellMarkToolbar, {
         brush: { disabled: false, icon: "clock", retention: "period", memo: "" },
-        notice: "초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.",
+        notice: "초기화되지 않는 숙제에는 이번주만 옵션을 사용할 수 없습니다.",
         onBrushChange: () => undefined
       })
     );
@@ -1661,7 +1664,9 @@ describe("BoardOverview", () => {
     expect(disabledHtml).toContain("비활성화된 체크칸은 체크박스를 숨깁니다.");
     expect(disabledHtml).not.toContain("셀을 클릭하면 바로 적용되고");
     expect(noticeHtml).toContain('aria-label="브러시 메모"');
-    expect(noticeHtml).toContain("초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.");
+    expect(noticeHtml).toContain('aria-label="이번주만"');
+    expect(noticeHtml).toContain('aria-pressed="true"');
+    expect(noticeHtml).toContain("초기화되지 않는 숙제에는 이번주만 옵션을 사용할 수 없습니다.");
     expect(noticeHtml).not.toContain("셀을 클릭하면 바로 적용되고");
   });
 
