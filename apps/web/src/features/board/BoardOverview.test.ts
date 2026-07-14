@@ -1221,7 +1221,7 @@ describe("BoardOverview", () => {
     expect(html).not.toContain('class="board-check-mark reserved"');
     expect(html).toContain('class="board-check-badge pin"');
     expect(html).toContain('class="board-check-badge clock"');
-    expect(html).toContain('width="13" height="13"');
+    expect(html).toContain('width="12" height="12"');
     expect(html).not.toContain('class="board-check-icon-overlay');
     expect(html).not.toContain("board-check-memo-dot");
   });
