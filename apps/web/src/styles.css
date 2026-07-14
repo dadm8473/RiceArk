@@ -176,14 +176,14 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 20px;
+  padding: 7px 20px;
   border-bottom: 1px solid #cfd6e0;
   background: #ffffff;
 }
 
 .topbar h1 {
   margin: 0;
-  font-size: 20px;
+  font-size: 18px;
   letter-spacing: 0;
 }
 
@@ -191,12 +191,12 @@ body {
   display: inline-flex;
   align-items: center;
   min-width: 0;
-  gap: 10px;
+  gap: 8px;
 }
 
 .brand-icon {
-  width: 34px;
-  height: 34px;
+  width: 28px;
+  height: 28px;
   border: 1px solid #d4af37;
   border-radius: 999px;
   object-fit: cover;
@@ -208,7 +208,7 @@ body {
   display: inline-flex;
   align-items: center;
   min-width: 0;
-  gap: 18px;
+  gap: 14px;
 }
 
 .topbar-secondary {
@@ -230,8 +230,8 @@ body {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  min-height: 34px;
-  padding: 0 10px;
+  min-height: 30px;
+  padding: 0 8px;
   border: 0;
   border-bottom: 2px solid transparent;
   border-radius: 0;
@@ -251,15 +251,15 @@ body {
 }
 
 .support-link {
-  min-height: 32px;
-  padding: 0 9px;
+  min-height: 30px;
+  padding: 0 8px;
   font-size: 13px;
   font-weight: 700;
   white-space: nowrap;
 }
 
 .auth-status {
-  min-height: 36px;
+  min-height: 30px;
   display: inline-flex;
   align-items: center;
   color: #111827;
@@ -276,12 +276,13 @@ body {
 
 .profile-button {
   min-width: 0;
+  min-height: 30px;
   padding: 0 10px 0 6px;
 }
 
 .profile-avatar {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border-radius: 999px;
   object-fit: cover;
 }
@@ -1166,7 +1167,7 @@ body {
   gap: 6px;
   margin: 0 -20px 12px;
   overflow: hidden;
-  padding: 6px 20px;
+  padding: 4px 20px;
   border-bottom: 1px solid #d9e0ea;
   background: #ffffff;
 }
@@ -1176,7 +1177,7 @@ body {
   align-items: center;
   flex: 0 1 auto;
   gap: 6px;
-  min-height: 30px;
+  min-height: 28px;
   min-width: 0;
   overflow-x: auto;
 }
@@ -1188,8 +1189,8 @@ body {
 }
 
 .sheet-tab {
-  min-height: 30px;
-  padding: 0 10px;
+  min-height: 28px;
+  padding: 0 9px;
   border: 0;
   border-bottom: 2px solid transparent;
   border-radius: 0;
@@ -1210,8 +1211,8 @@ body {
   justify-content: center;
   align-self: center;
   gap: 4px;
-  height: 30px;
-  min-height: 30px;
+  height: 28px;
+  min-height: 28px;
   line-height: 1;
   padding: 0 8px;
   border: 0;
@@ -1237,7 +1238,7 @@ body {
   flex: 0 0 auto;
   gap: 4px;
   margin-left: auto;
-  min-height: 30px;
+  min-height: 28px;
   padding-left: 8px;
   background: #ffffff;
   white-space: nowrap;
@@ -1247,9 +1248,9 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  min-height: 28px;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -1270,7 +1271,7 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 28px;
+  height: 26px;
   min-width: 46px;
   color: #111827;
   font-size: 12px;
@@ -4342,7 +4343,7 @@ button.task-preset-card {
 
 .shared-rice-bin-board .sheet-tab-bar {
   margin: 0 0 12px;
-  padding: 6px 10px;
+  padding: 4px 10px;
 }
 
 .shared-rice-bin-board-full {
@@ -4357,7 +4358,7 @@ button.task-preset-card {
 
 .shared-rice-bin-board-full .sheet-tab-bar {
   margin: 0 -20px 12px;
-  padding: 6px 20px;
+  padding: 4px 20px;
 }
 
 .shared-rice-bin-board-heading {

@@ -5,23 +5,42 @@ const styles = readFileSync("apps/web/src/styles.css", "utf8");
 
 describe("matrix styles", () => {
   it("shows the app icon as a compact circular brand mark", () => {
+    const topbarBlock = styles.match(/\.topbar\s*{[^}]+}/)?.[0] ?? "";
+    const topbarHeadingBlock = styles.match(/\.topbar h1\s*{[^}]+}/)?.[0] ?? "";
     const brandBlock = styles.match(/\.brand-mark\s*{[^}]+}/)?.[0] ?? "";
     const brandIconBlock = styles.match(/\.brand-icon\s*{[^}]+}/)?.[0] ?? "";
+    const topbarPrimaryBlock = styles.match(/\.topbar-primary\s*{[^}]+}/)?.[0] ?? "";
+    const appNavButtonBlock = styles.match(/\.app-nav button\s*{[^}]+}/)?.[0] ?? "";
+    const supportLinkBlock = styles.match(/\.support-link\s*{[^}]+}/)?.[0] ?? "";
+    const authStatusBlock = styles.match(/\.auth-status\s*{[^}]+}/)?.[0] ?? "";
+    const profileButtonBlock = styles.match(/\.profile-button\s*{[^}]+}/)?.[0] ?? "";
+    const profileAvatarBlock = styles.match(/\.profile-avatar\s*{[^}]+}/)?.[0] ?? "";
 
+    expect(topbarBlock).toContain("padding: 7px 20px;");
+    expect(topbarHeadingBlock).toContain("font-size: 18px;");
     expect(brandBlock).toContain("display: inline-flex;");
     expect(brandBlock).toContain("align-items: center;");
-    expect(brandIconBlock).toContain("width: 34px;");
-    expect(brandIconBlock).toContain("height: 34px;");
+    expect(brandBlock).toContain("gap: 8px;");
+    expect(brandIconBlock).toContain("width: 28px;");
+    expect(brandIconBlock).toContain("height: 28px;");
     expect(brandIconBlock).toContain("border-radius: 999px;");
     expect(brandIconBlock).toContain("object-fit: cover;");
     expect(brandIconBlock).toContain("background: #000000;");
+    expect(topbarPrimaryBlock).toContain("gap: 14px;");
+    expect(appNavButtonBlock).toContain("min-height: 30px;");
+    expect(appNavButtonBlock).toContain("padding: 0 8px;");
+    expect(supportLinkBlock).toContain("min-height: 30px;");
+    expect(authStatusBlock).toContain("min-height: 30px;");
+    expect(profileButtonBlock).toContain("min-height: 30px;");
+    expect(profileAvatarBlock).toContain("width: 24px;");
+    expect(profileAvatarBlock).toContain("height: 24px;");
   });
 
   it("keeps the support link visually quieter than primary action buttons", () => {
     const supportLinkBlock = styles.match(/\.support-link\s*{[^}]+}/)?.[0] ?? "";
 
-    expect(supportLinkBlock).toContain("min-height: 32px;");
-    expect(supportLinkBlock).toContain("padding: 0 9px;");
+    expect(supportLinkBlock).toContain("min-height: 30px;");
+    expect(supportLinkBlock).toContain("padding: 0 8px;");
     expect(supportLinkBlock).toContain("font-size: 13px;");
   });
 
@@ -283,6 +302,7 @@ describe("matrix styles", () => {
     const floatingButtonBlock = styles.match(/\.floating-table-add-button\s*{[^}]+}/)?.[0] ?? "";
     const sheetBarBlock = styles.match(/\.sheet-tab-bar\s*{[^}]+}/)?.[0] ?? "";
     const sheetTabListBlock = styles.match(/\.sheet-tab-list\s*{[^}]+}/)?.[0] ?? "";
+    const sheetTabBlock = styles.match(/\.sheet-tab\s*{[^}]+}/)?.[0] ?? "";
     const sheetSettingsButtonBlock = styles.match(/\.sheet-settings-button\s*{[^}]+}/)?.[0] ?? "";
     const zoomControlsBlock = styles.match(/\.board-zoom-controls\s*{[^}]+}/)?.[0] ?? "";
     const zoomButtonBlock = styles.match(/\.board-zoom-controls button\s*{[^}]+}/)?.[0] ?? "";
@@ -302,22 +322,26 @@ describe("matrix styles", () => {
     expect(floatingActionsBlock).toContain("bottom: 24px;");
     expect(floatingButtonBlock).toContain("min-height: 42px;");
     expect(sheetBarBlock).toContain("border-bottom: 1px solid #d9e0ea;");
-    expect(sheetBarBlock).toContain("padding: 6px 20px;");
+    expect(sheetBarBlock).toContain("padding: 4px 20px;");
     expect(sheetBarBlock).not.toContain("padding: 8px 20px 0;");
     expect(sheetTabListBlock).toContain("flex: 0 1 auto;");
+    expect(sheetTabListBlock).toContain("min-height: 28px;");
     expect(sheetTabListBlock).not.toContain("flex: 1 1 auto;");
+    expect(sheetTabBlock).toContain("min-height: 28px;");
+    expect(sheetTabBlock).toContain("padding: 0 9px;");
     expect(zoomControlsBlock).toContain("margin-left: auto;");
     expect(zoomControlsBlock).toContain("flex: 0 0 auto;");
     expect(zoomControlsBlock).toContain("align-self: center;");
-    expect(zoomControlsBlock).toContain("min-height: 30px;");
-    expect(zoomButtonBlock).toContain("width: 28px;");
+    expect(zoomControlsBlock).toContain("min-height: 28px;");
+    expect(zoomButtonBlock).toContain("width: 26px;");
+    expect(zoomButtonBlock).toContain("height: 26px;");
     expect(zoomButtonBlock).toContain("border: 0;");
     expect(zoomValueBlock).toContain("display: inline-flex;");
     expect(zoomValueBlock).toContain("align-items: center;");
     expect(zoomValueBlock).toContain("justify-content: center;");
-    expect(zoomValueBlock).toContain("height: 28px;");
-    expect(sheetSettingsButtonBlock).toContain("height: 30px;");
-    expect(sheetSettingsButtonBlock).toContain("min-height: 30px;");
+    expect(zoomValueBlock).toContain("height: 26px;");
+    expect(sheetSettingsButtonBlock).toContain("height: 28px;");
+    expect(sheetSettingsButtonBlock).toContain("min-height: 28px;");
     expect(sheetSettingsButtonBlock).toContain("align-self: center;");
     expect(sheetSettingsButtonBlock).toContain("justify-content: center;");
     expect(sheetSettingsButtonBlock).toContain("line-height: 1;");
@@ -335,7 +359,7 @@ describe("matrix styles", () => {
     expect(fullBoardBlock).toContain("width: calc(100% + 40px);");
     expect(fullBoardBlock).toContain("background: #ffffff;");
     expect(fullBoardSheetBarBlock).toContain("margin: 0 -20px 12px;");
-    expect(fullBoardSheetBarBlock).toContain("padding: 6px 20px;");
+    expect(fullBoardSheetBarBlock).toContain("padding: 4px 20px;");
   });
 
   it("keeps shared rice bin cards and lookup buttons stable on narrow widths", () => {

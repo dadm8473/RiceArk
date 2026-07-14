@@ -121,7 +121,7 @@ export function App() {
       <header className="topbar">
         <div className="topbar-primary">
           <div className="brand-mark">
-            <img aria-hidden="true" className="brand-icon" height="34" src="/icons/icon-192.png" width="34" alt="" />
+            <img aria-hidden="true" className="brand-icon" height="28" src="/icons/icon-192.png" width="28" alt="" />
             <h1>RiceArk</h1>
           </div>
           <nav className="app-nav" aria-label="주요 기능">
