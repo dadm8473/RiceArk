@@ -4611,7 +4611,7 @@ export function BoardCellMarkToolbar({
           {BOARD_CELL_MARK_ICON_OPTIONS.map((option) => (
             <button
               key={option.value}
-              className={`board-cell-mark-option icon-only${brush.icon === option.value ? " active" : ""}`}
+              className={`board-cell-mark-option icon-only ${option.value}${brush.icon === option.value ? " active" : ""}`}
               type="button"
               role="radio"
               aria-label={`아이콘: ${option.label}`}

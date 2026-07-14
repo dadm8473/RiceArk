@@ -1639,6 +1639,9 @@ describe("BoardOverview", () => {
     expect(html).toContain('aria-label="아이콘: 주의"');
     expect(html).toContain('aria-label="아이콘: 깃발"');
     expect(html).toContain('aria-label="아이콘: 태그"');
+    expect(html).toContain('class="board-cell-mark-option icon-only memo"');
+    expect(html).toContain('class="board-cell-mark-option icon-only pin active"');
+    expect(html).toContain('class="board-cell-mark-option icon-only clock"');
     expect(html).not.toContain(">체크</button>");
     expect(html).toContain('stroke-width="3"');
     expect(html).toContain('aria-label="체크칸 기간 옵션"');

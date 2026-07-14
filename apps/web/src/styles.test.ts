@@ -237,6 +237,31 @@ describe("matrix styles", () => {
     expect(styles).toContain('.app-shell[data-theme="dark"] .board-cell-mark-option.active');
   });
 
+  it("colors custom board cell mark icons by icon type without filling the whole checkbox", () => {
+    const expectedIconColors = [
+      ["memo", "#64748b", "#e2e8f0", "#f8fafc"],
+      ["pin", "#7c3aed", "#ddd6fe", "#faf5ff"],
+      ["clock", "#d97706", "#fed7aa", "#fff7ed"],
+      ["star", "#ca8a04", "#fde68a", "#fefce8"],
+      ["alert", "#dc2626", "#fecaca", "#fef2f2"],
+      ["flag", "#059669", "#a7f3d0", "#ecfdf5"],
+      ["tag", "#0d9488", "#99f6e4", "#f0fdfa"]
+    ] as const;
+
+    for (const [icon, color, borderColor, background] of expectedIconColors) {
+      const rule =
+        styles.match(new RegExp(`\\.board-check-badge\\.${icon},\\s*\\.board-cell-mark-option\\.icon-only\\.${icon}\\s*{[^}]+}`))?.[0] ??
+        "";
+      expect(rule).toContain(`color: ${color};`);
+      expect(rule).toContain(`border-color: ${borderColor};`);
+      expect(rule).toContain(`background: ${background};`);
+    }
+
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-check-badge.pin');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-cell-mark-option.icon-only.pin');
+    expect(styles).not.toContain(".board-check-badge.checked");
+  });
+
   it("highlights draggable axis headers and dims check cells in reorder mode", () => {
     const sortableHighlightBlock =
       styles.match(/\.board-table-summary\.reorder-mode \.board-sortable-axis-label\s*{[^}]+}/)?.[0] ?? "";

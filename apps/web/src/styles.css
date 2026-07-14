@@ -2182,6 +2182,55 @@ body {
   background: #fef2f2;
 }
 
+.board-check-badge.memo,
+.board-cell-mark-option.icon-only.memo {
+  color: #64748b;
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+
+.board-check-badge.pin,
+.board-cell-mark-option.icon-only.pin {
+  color: #7c3aed;
+  border-color: #ddd6fe;
+  background: #faf5ff;
+}
+
+.board-check-badge.clock,
+.board-cell-mark-option.icon-only.clock {
+  color: #d97706;
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.board-check-badge.star,
+.board-cell-mark-option.icon-only.star {
+  color: #ca8a04;
+  border-color: #fde68a;
+  background: #fefce8;
+}
+
+.board-check-badge.alert,
+.board-cell-mark-option.icon-only.alert {
+  color: #dc2626;
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.board-check-badge.flag,
+.board-cell-mark-option.icon-only.flag {
+  color: #059669;
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+}
+
+.board-check-badge.tag,
+.board-cell-mark-option.icon-only.tag {
+  color: #0d9488;
+  border-color: #99f6e4;
+  background: #f0fdfa;
+}
+
 .board-cell-mark-option:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -2246,6 +2295,55 @@ body {
   color: #93c5fd;
   border-color: #60a5fa;
   background: #172554;
+}
+
+.app-shell[data-theme="dark"] .board-check-badge.memo,
+.app-shell[data-theme="dark"] .board-cell-mark-option.icon-only.memo {
+  color: #cbd5e1;
+  border-color: #475569;
+  background: #1e293b;
+}
+
+.app-shell[data-theme="dark"] .board-check-badge.pin,
+.app-shell[data-theme="dark"] .board-cell-mark-option.icon-only.pin {
+  color: #c4b5fd;
+  border-color: #7c3aed;
+  background: #2e1065;
+}
+
+.app-shell[data-theme="dark"] .board-check-badge.clock,
+.app-shell[data-theme="dark"] .board-cell-mark-option.icon-only.clock {
+  color: #fdba74;
+  border-color: #c2410c;
+  background: #431407;
+}
+
+.app-shell[data-theme="dark"] .board-check-badge.star,
+.app-shell[data-theme="dark"] .board-cell-mark-option.icon-only.star {
+  color: #fde68a;
+  border-color: #a16207;
+  background: #422006;
+}
+
+.app-shell[data-theme="dark"] .board-check-badge.alert,
+.app-shell[data-theme="dark"] .board-cell-mark-option.icon-only.alert {
+  color: #fca5a5;
+  border-color: #dc2626;
+  background: #450a0a;
+}
+
+.app-shell[data-theme="dark"] .board-check-badge.flag,
+.app-shell[data-theme="dark"] .board-cell-mark-option.icon-only.flag {
+  color: #86efac;
+  border-color: #059669;
+  background: #052e16;
+}
+
+.app-shell[data-theme="dark"] .board-check-badge.tag,
+.app-shell[data-theme="dark"] .board-cell-mark-option.icon-only.tag {
+  color: #5eead4;
+  border-color: #0d9488;
+  background: #042f2e;
 }
 
 .app-shell[data-theme="dark"] .board-cell-mark-toolbar {
