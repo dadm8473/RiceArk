@@ -1222,14 +1222,30 @@ describe("BoardOverview", () => {
     expect(html).not.toContain("board-check-memo-dot");
   });
 
-  it("routes default board check cell memos through the existing hover tooltip without corner marks", () => {
-    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+  it("renders a memo indicator on default board check cells with persistent memos", () => {
+    const html = renderToStaticMarkup(
+      createElement(BoardOverview, {
+        board: {
+          ...board,
+          cellStates: [
+            {
+              table_id: "table-1",
+              row_item_id: "row-task-1",
+              column_item_id: "column-character-1",
+              checkbox_visible: 1,
+              mark_type: "default",
+              memo: "상시 메모",
+              mark_period_key: null
+            }
+          ]
+        }
+      })
+    );
 
-    expect(source).toContain("const hasTooltipContent = Boolean(markLabel || mark?.memo);");
-    expect(source).toContain("{mark?.memo ? <span>{mark.memo}</span> : null}");
-    expect(source).toContain('mark?.type === "fixed"');
-    expect(source).toContain('mark?.type === "reserved"');
-    expect(source).not.toContain('mark?.type === "default" ?');
+    expect(html).toContain('class="board-check-memo-dot"');
+    expect(html).toContain('aria-label="쿠르잔 전선 / 냠수나이스1 메모"');
+    expect(html).not.toContain('class="board-check-mark fixed"');
+    expect(html).not.toContain('class="board-check-mark reserved"');
   });
 
   it("treats reserved marks from a past period as plain cells", () => {

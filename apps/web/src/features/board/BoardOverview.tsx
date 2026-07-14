@@ -4499,6 +4499,11 @@ function BoardCheckCell({
           <Clock aria-hidden="true" size={10} />
         </span>
       ) : null}
+      {mark?.type === "default" && mark.memo ? (
+        <span aria-label={`${row.label} / ${column.label} 메모`} className="board-check-memo-dot" title="메모">
+          <StickyNote aria-hidden="true" size={10} />
+        </span>
+      ) : null}
       {tooltipPosition && hasTooltipContent && typeof document !== "undefined"
         ? createPortal(
             <div

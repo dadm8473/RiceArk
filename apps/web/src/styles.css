@@ -2056,6 +2056,19 @@ body {
   pointer-events: none;
 }
 
+.board-check-memo-dot {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 11px;
+  height: 11px;
+  color: #0f766e;
+  pointer-events: none;
+}
+
 .board-check-mark.fixed {
   color: #d97706;
 }
@@ -2180,6 +2193,10 @@ body {
 
 .app-shell[data-theme="dark"] .board-check-mark.reserved {
   color: #a78bfa;
+}
+
+.app-shell[data-theme="dark"] .board-check-memo-dot {
+  color: #5eead4;
 }
 
 .app-shell[data-theme="dark"] .board-cell-mark-tooltip {
