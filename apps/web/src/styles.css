@@ -258,6 +258,13 @@ body {
   white-space: nowrap;
 }
 
+.button.support-link {
+  height: 30px;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 6px;
+}
+
 .auth-status {
   min-height: 30px;
   display: inline-flex;
@@ -276,8 +283,10 @@ body {
 
 .profile-button {
   min-width: 0;
+  height: 30px;
   min-height: 30px;
   padding: 0 10px 0 6px;
+  border-radius: 6px;
 }
 
 .profile-avatar {

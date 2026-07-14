@@ -12,6 +12,7 @@ describe("matrix styles", () => {
     const topbarPrimaryBlock = styles.match(/\.topbar-primary\s*{[^}]+}/)?.[0] ?? "";
     const appNavButtonBlock = styles.match(/\.app-nav button\s*{[^}]+}/)?.[0] ?? "";
     const supportLinkBlock = styles.match(/\.support-link\s*{[^}]+}/)?.[0] ?? "";
+    const supportButtonBlock = styles.match(/\.button\.support-link\s*{[^}]+}/)?.[0] ?? "";
     const authStatusBlock = styles.match(/\.auth-status\s*{[^}]+}/)?.[0] ?? "";
     const profileButtonBlock = styles.match(/\.profile-button\s*{[^}]+}/)?.[0] ?? "";
     const profileAvatarBlock = styles.match(/\.profile-avatar\s*{[^}]+}/)?.[0] ?? "";
@@ -29,8 +30,10 @@ describe("matrix styles", () => {
     expect(topbarPrimaryBlock).toContain("gap: 14px;");
     expect(appNavButtonBlock).toContain("min-height: 30px;");
     expect(appNavButtonBlock).toContain("padding: 0 8px;");
-    expect(supportLinkBlock).toContain("min-height: 30px;");
+    expect(supportButtonBlock).toContain("height: 30px;");
+    expect(supportButtonBlock).toContain("min-height: 30px;");
     expect(authStatusBlock).toContain("min-height: 30px;");
+    expect(profileButtonBlock).toContain("height: 30px;");
     expect(profileButtonBlock).toContain("min-height: 30px;");
     expect(profileAvatarBlock).toContain("width: 24px;");
     expect(profileAvatarBlock).toContain("height: 24px;");
@@ -38,10 +41,17 @@ describe("matrix styles", () => {
 
   it("keeps the support link visually quieter than primary action buttons", () => {
     const supportLinkBlock = styles.match(/\.support-link\s*{[^}]+}/)?.[0] ?? "";
+    const supportButtonBlock = styles.match(/\.button\.support-link\s*{[^}]+}/)?.[0] ?? "";
+    const profileButtonBlock = styles.match(/\.profile-button\s*{[^}]+}/)?.[0] ?? "";
 
-    expect(supportLinkBlock).toContain("min-height: 30px;");
-    expect(supportLinkBlock).toContain("padding: 0 8px;");
     expect(supportLinkBlock).toContain("font-size: 13px;");
+    expect(supportButtonBlock).toContain("height: 30px;");
+    expect(supportButtonBlock).toContain("min-height: 30px;");
+    expect(supportButtonBlock).toContain("padding: 0 10px;");
+    expect(supportButtonBlock).toContain("border-radius: 6px;");
+    expect(profileButtonBlock).toContain("height: 30px;");
+    expect(profileButtonBlock).toContain("min-height: 30px;");
+    expect(profileButtonBlock).toContain("border-radius: 6px;");
   });
 
   it("keeps disabled checklist cells visually neutral", () => {
