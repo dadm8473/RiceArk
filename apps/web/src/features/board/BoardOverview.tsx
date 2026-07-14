@@ -4528,7 +4528,7 @@ function BoardCheckCell({
           />
           {mark?.icon ? (
             <span aria-label={`${row.label} / ${column.label} ${BOARD_CELL_MARK_ICON_LABELS[mark.icon]}`} className={`board-check-badge ${mark.icon}`} title={BOARD_CELL_MARK_ICON_LABELS[mark.icon]}>
-              {renderBoardCellMarkIcon(mark.icon, 8)}
+              {renderBoardCellMarkIcon(mark.icon, 11)}
             </span>
           ) : null}
         </span>

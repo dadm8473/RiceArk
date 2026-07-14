@@ -211,11 +211,14 @@ describe("matrix styles", () => {
 
     expect(iconWrapBlock).toContain("position: relative;");
     expect(badgeBlock).toContain("position: absolute;");
-    expect(badgeBlock).toContain("top: -4px;");
-    expect(badgeBlock).toContain("right: -4px;");
-    expect(badgeBlock).toContain("border: 2px solid #ffffff;");
+    expect(badgeBlock).toContain("top: -6px;");
+    expect(badgeBlock).toContain("right: -6px;");
+    expect(badgeBlock).toContain("width: 16px;");
+    expect(badgeBlock).toContain("height: 16px;");
+    expect(badgeBlock).toContain("border: 2px solid #2563eb;");
     expect(badgeBlock).toContain("border-radius: 999px;");
-    expect(badgeBlock).toContain("background: #ef4444;");
+    expect(badgeBlock).toContain("color: #1d4ed8;");
+    expect(badgeBlock).toContain("background: #ffffff;");
     expect(badgeBlock).toContain("pointer-events: none;");
     expect(iconOnlyButtonBlock).toContain("width: 32px;");
     expect(iconOnlyButtonBlock).toContain("padding: 0;");

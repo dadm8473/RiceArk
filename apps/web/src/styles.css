@@ -2054,18 +2054,18 @@ body {
 
 .board-check-badge {
   position: absolute;
-  top: -4px;
-  right: -4px;
+  top: -6px;
+  right: -6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 12px;
-  height: 12px;
-  border: 2px solid #ffffff;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #2563eb;
   border-radius: 999px;
-  color: #ffffff;
-  background: #ef4444;
-  box-shadow: 0 1px 2px #991b1b66;
+  color: #1d4ed8;
+  background: #ffffff;
+  box-shadow: 0 1px 3px #0f172a40;
   pointer-events: none;
   z-index: 1;
 }
@@ -2215,9 +2215,9 @@ body {
 }
 
 .app-shell[data-theme="dark"] .board-check-badge {
-  color: #ffffff;
-  border-color: #0f172a;
-  background: #f87171;
+  color: #93c5fd;
+  border-color: #60a5fa;
+  background: #0f172a;
   box-shadow: 0 1px 3px #00000066;
 }
 
