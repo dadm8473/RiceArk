@@ -201,6 +201,7 @@ describe("board route schemas", () => {
     const base = { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1" };
 
     expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "default", memo: "메모" }).success).toBe(true);
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "default", memo: "첫 줄\n둘째 줄" }).success).toBe(true);
     expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "fixed", memo: "메모" }).success).toBe(true);
     expect(
       boardCellStatePatchSchema.safeParse({ ...base, markType: "reserved", memo: "메모", periodKey: "weekly:2026-06-10" }).success

@@ -4527,7 +4527,7 @@ export function BoardCellMarkToolbar({
 }) {
   const memoEnabled = brush.type !== "disabled";
   const activeOption = BOARD_CELL_MARK_OPTIONS.find((option) => option.value === brush.type);
-  const activeDescription = activeOption?.description ? `${activeOption.description} ` : "";
+  const description = notice ?? activeOption?.description ?? null;
 
   return (
     <div className="board-cell-mark-toolbar" onPointerDown={(event) => event.stopPropagation()}>
@@ -4547,20 +4547,19 @@ export function BoardCellMarkToolbar({
             {option.label}
           </button>
         ))}
-        {memoEnabled ? (
-          <input
-            aria-label="브러시 메모"
-            className="board-cell-mark-memo-input"
-            maxLength={120}
-            placeholder="메모 (선택, 칠하는 셀에 함께 적용)"
-            value={brush.memo}
-            onChange={(event) => onBrushChange({ ...brush, memo: event.currentTarget.value })}
-          />
-        ) : null}
       </div>
-      <p className="cell-mark-description">
-        {notice ?? `${activeDescription}셀을 클릭하면 바로 적용되고, 같은 설정의 셀을 다시 클릭하면 해제됩니다.`}
-      </p>
+      {memoEnabled ? (
+        <textarea
+          aria-label="브러시 메모"
+          className="board-cell-mark-memo-input"
+          maxLength={120}
+          placeholder="메모 (선택, 칠하는 셀에 함께 적용)"
+          rows={3}
+          value={brush.memo}
+          onChange={(event) => onBrushChange({ ...brush, memo: event.currentTarget.value })}
+        />
+      ) : null}
+      {description ? <p className="cell-mark-description">{description}</p> : null}
     </div>
   );
 }

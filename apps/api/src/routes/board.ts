@@ -236,7 +236,7 @@ export const boardCellStatePatchSchema = z.object({
   rowItemId: resourceIdSchema,
   columnItemId: resourceIdSchema,
   markType: boardCellMarkTypeSchema,
-  memo: safeText({ maxChars: 120, allowEmpty: true }).nullable(),
+  memo: safeText({ maxChars: 120, allowEmpty: true, multiline: true }).nullable(),
   periodKey: periodKeySchema.optional()
 }).strict()
   .refine((patch) => (patch.markType === "reserved" ? patch.periodKey !== undefined : patch.periodKey === undefined), {

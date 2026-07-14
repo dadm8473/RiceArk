@@ -2125,13 +2125,16 @@ body {
 }
 
 .board-cell-mark-memo-input {
-  flex: 1 1 200px;
-  min-width: 150px;
-  min-height: 32px;
-  padding: 0 8px;
+  width: 100%;
+  min-height: 72px;
+  padding: 7px 8px;
   border: 1px solid #c6cfdd;
   border-radius: 4px;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: inherit;
   font-size: 13px;
+  line-height: 1.45;
 }
 
 .board-cell-mark-option {
