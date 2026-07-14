@@ -242,10 +242,10 @@ describe("matrix styles", () => {
       ["memo", "#64748b", "#e2e8f0", "#f8fafc"],
       ["pin", "#7c3aed", "#ddd6fe", "#faf5ff"],
       ["clock", "#d97706", "#fed7aa", "#fff7ed"],
-      ["star", "#ca8a04", "#fde68a", "#fefce8"],
+      ["star", "#eab308", "#fef08a", "#fefce8"],
       ["alert", "#dc2626", "#fecaca", "#fef2f2"],
       ["flag", "#059669", "#a7f3d0", "#ecfdf5"],
-      ["tag", "#0d9488", "#99f6e4", "#f0fdfa"]
+      ["tag", "#0284c7", "#bae6fd", "#f0f9ff"]
     ] as const;
 
     for (const [icon, color, borderColor, background] of expectedIconColors) {
