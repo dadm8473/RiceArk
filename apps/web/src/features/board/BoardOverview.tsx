@@ -273,7 +273,6 @@ const BOARD_TASK_RESET_OPTIONS: Array<{ value: BoardTaskResetType; label: string
   { value: "none", label: "초기화 안함" }
 ];
 const BOARD_CELL_MARK_ICON_OPTIONS: Array<{ value: BoardCellMarkIcon; label: string }> = [
-  { value: "memo", label: "메모" },
   { value: "pin", label: "핀" },
   { value: "clock", label: "시계" },
   { value: "star", label: "별" },
@@ -307,6 +306,28 @@ export interface BoardCellMarkBrush {
   icon: BoardCellMarkIcon | null;
   retention: BoardCellMarkRetention;
   memo: string;
+}
+
+export function getBoardSheetIdFromUrl(href: string): string | null {
+  const url = new URL(href, "https://riceark.pages.dev");
+  const sheetId = url.searchParams.get("sheet");
+  return sheetId?.trim() ? sheetId : null;
+}
+
+function getBoardSheetRouteUrl(sheetId: string | null, href: string): string {
+  const url = new URL(href, "https://riceark.pages.dev");
+  url.pathname = "/";
+  url.searchParams.delete("view");
+  url.searchParams.delete("share");
+  url.searchParams.delete("sheet");
+  if (sheetId?.trim()) url.searchParams.set("sheet", sheetId);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function getBoardHistoryState(currentState: unknown): Record<string, unknown> {
+  return currentState && typeof currentState === "object" && !Array.isArray(currentState)
+    ? { ...(currentState as Record<string, unknown>), ricearkRoute: true }
+    : { ricearkRoute: true };
 }
 
 type BoardCellMarkPaintHandler = (
@@ -1067,7 +1088,9 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
   const [axisItems, setAxisItems] = useState(board.axisItems);
   const [tables, setTables] = useState(board.tables);
   const [notes, setNotes] = useState(board.notes ?? []);
-  const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
+  const [activeSheetId, setActiveSheetId] = useState<string | null>(() =>
+    isReadOnly || typeof window === "undefined" ? null : getBoardSheetIdFromUrl(window.location.href)
+  );
   const [tableName, setTableName] = useState("");
   const [tableOrientation, setTableOrientation] = useState<BoardOrientation>("custom");
   const [tableDefaultRowHeight, setTableDefaultRowHeight] = useState("40");
@@ -1127,6 +1150,31 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
     sortedSheets.find((sheet) => sheet.id === activeSheetId) ??
     sortedSheets.find((sheet) => sheet.is_default === 1) ??
     sortedSheets[0];
+
+  function handleSheetSelected(sheetId: string) {
+    setActiveSheetId(sheetId);
+    if (isReadOnly || typeof window === "undefined") return;
+
+    const nextUrl = getBoardSheetRouteUrl(sheetId, window.location.href);
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextUrl !== currentUrl) {
+      window.history.pushState(getBoardHistoryState(window.history.state), "", nextUrl);
+    }
+  }
+
+  useEffect(() => {
+    if (isReadOnly || typeof window === "undefined") return;
+
+    function handlePopState() {
+      setActiveSheetId(getBoardSheetIdFromUrl(window.location.href));
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [isReadOnly]);
+
   useEffect(() => {
     setCompletions(applyPendingBoardCompletionPatches(board.completions, pendingCompletionPatchesRef.current));
   }, [board.completions]);
@@ -2549,7 +2597,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
               type="button"
               className={`sheet-tab${sheet.id === activeSheet.id ? " active" : ""}`}
               aria-current={sheet.id === activeSheet.id ? "page" : undefined}
-              onClick={() => setActiveSheetId(sheet.id)}
+              onClick={() => handleSheetSelected(sheet.id)}
             >
               {sheet.name}
             </button>
@@ -4620,6 +4668,11 @@ export function BoardCellMarkToolbar({
               onClick={() => onBrushChange({ ...brush, disabled: false, icon: option.value })}
             >
               {renderBoardCellMarkIcon(option.value, 16)}
+              {brush.icon === option.value ? (
+                <span className="board-cell-mark-selected-indicator" aria-hidden="true">
+                  <Check size={9} strokeWidth={4} />
+                </span>
+              ) : null}
             </button>
           ))}
         </div>

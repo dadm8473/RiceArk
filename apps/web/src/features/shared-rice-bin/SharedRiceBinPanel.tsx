@@ -23,6 +23,7 @@ interface Props {
   ownerBoard?: BoardPayload | null | undefined;
   resetToLookupKey?: number | undefined;
   onSharedBoardClosed?: (() => void) | undefined;
+  onSharedBoardOpened?: ((shareId: string) => void) | undefined;
   onOwnerBoardChanged?: (() => Promise<BoardPayload | null> | void) | undefined;
   sessionStatus: SessionState["status"];
 }
@@ -80,6 +81,7 @@ export function SharedRiceBinPanel({
   ownerBoard,
   resetToLookupKey = 0,
   onSharedBoardClosed,
+  onSharedBoardOpened,
   onOwnerBoardChanged,
   sessionStatus
 }: Props) {
@@ -121,8 +123,12 @@ export function SharedRiceBinPanel({
   }, [isAuthenticated]);
 
   useEffect(() => {
-    if (!initialShareId) return;
-    void handleLookup(initialShareId);
+    if (!initialShareId) {
+      setSharedBoard(null);
+      return;
+    }
+    if (sharedBoard?.shareId === initialShareId) return;
+    void handleLookup(initialShareId, { syncHistory: false });
   }, [initialShareId]);
 
   useEffect(() => {
@@ -133,7 +139,7 @@ export function SharedRiceBinPanel({
     onSharedBoardClosed?.();
   }, [resetToLookupKey, sharedBoard, onSharedBoardClosed]);
 
-  async function handleLookup(rawInput = lookupValue) {
+  async function handleLookup(rawInput = lookupValue, options: { syncHistory?: boolean } = {}) {
     const shareId = extractSharedRiceBinId(rawInput);
     if (!shareId) {
       setError("공유 쌀통 아이디 또는 링크를 확인해주세요.");
@@ -146,6 +152,7 @@ export function SharedRiceBinPanel({
       const payload = await apiGet<BoardPayload>("/api/shared-rice-bins/" + encodeURIComponent(shareId));
       setSharedBoard({ ...payload, readOnly: true });
       setLookupValue(shareId);
+      if (options.syncHistory ?? true) onSharedBoardOpened?.(shareId);
     } catch (err) {
       setSharedBoard(null);
       setError(err instanceof Error ? err.message : "공유 쌀통을 불러오지 못했습니다.");

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Activity, Calculator, FileText } from "lucide-react";
 import { apiPatch, apiPostNoContent } from "./api/client";
 import { AdminDashboard } from "./features/admin/AdminDashboard";
@@ -8,9 +8,10 @@ import { useSession, type AuthUser } from "./features/auth/useSession";
 import { BoardOverview } from "./features/board/BoardOverview";
 import { useBoard } from "./features/board/useBoard";
 import { PatchNotesModal } from "./features/patch-notes/PatchNotesModal";
-import { extractSharedRiceBinId, SharedRiceBinPanel } from "./features/shared-rice-bin/SharedRiceBinPanel";
+import { SharedRiceBinPanel } from "./features/shared-rice-bin/SharedRiceBinPanel";
 
 const SHARE_ID_PATH_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+const SHARE_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 
 export function getAuthErrorMessage(search: string): string | null {
   const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
@@ -38,12 +39,85 @@ export function getUrlWithoutSharedRiceBinId(href: string): string {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-type AppView = "board" | "shared" | "admin";
+export type AppView = "board" | "shared" | "admin";
+
+export interface AppRouteState {
+  activeView: AppView;
+  shareId: string | null;
+  sheetId: string | null;
+}
+
+function getSharedRiceBinIdFromUrl(href: string): string | null {
+  const url = new URL(href, "https://riceark.pages.dev");
+  const queryShare = url.searchParams.get("share");
+  if (queryShare && SHARE_ID_PATTERN.test(queryShare)) return queryShare;
+
+  const pathParts = url.pathname.split("/").filter(Boolean);
+  const pathShare = pathParts.length === 2 && pathParts[0] === "shared" ? pathParts[1] : null;
+  return pathShare && SHARE_ID_PATTERN.test(pathShare) ? pathShare : null;
+}
+
+function getRelativeUrl(url: URL): string {
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+export function getAppRouteState(href: string): AppRouteState {
+  const url = new URL(href, "https://riceark.pages.dev");
+  const shareId = getSharedRiceBinIdFromUrl(href);
+  if (shareId) return { activeView: "shared", shareId, sheetId: null };
+
+  const view = url.searchParams.get("view");
+  if (view === "shared") return { activeView: "shared", shareId: null, sheetId: null };
+  if (view === "admin") return { activeView: "admin", shareId: null, sheetId: null };
+
+  const sheetId = url.searchParams.get("sheet");
+  return { activeView: "board", shareId: null, sheetId: sheetId?.trim() ? sheetId : null };
+}
+
+export function getAppRouteUrl(route: AppRouteState, href: string): string {
+  const url = new URL(href, "https://riceark.pages.dev");
+  url.pathname = "/";
+  url.searchParams.delete("view");
+  url.searchParams.delete("share");
+  url.searchParams.delete("sheet");
+
+  if (route.activeView === "shared") {
+    if (route.shareId) {
+      url.searchParams.set("share", route.shareId);
+    } else {
+      url.searchParams.set("view", "shared");
+    }
+  } else if (route.activeView === "admin") {
+    url.searchParams.set("view", "admin");
+  } else if (route.sheetId?.trim()) {
+    url.searchParams.set("sheet", route.sheetId);
+  }
+
+  return getRelativeUrl(url);
+}
+
+export function getDirectSharedRiceBinHistoryUrls(href: string): [string, string] | null {
+  const route = getAppRouteState(href);
+  if (route.activeView !== "shared" || !route.shareId) return null;
+
+  return [
+    getAppRouteUrl({ activeView: "shared", shareId: null, sheetId: null }, href),
+    getAppRouteUrl(route, href)
+  ];
+}
+
+function getHistoryState(currentState: unknown): Record<string, unknown> {
+  return currentState && typeof currentState === "object" && !Array.isArray(currentState)
+    ? { ...(currentState as Record<string, unknown>), ricearkRoute: true }
+    : { ricearkRoute: true };
+}
 
 export function App() {
   const session = useSession();
-  const [initialShareId, setInitialShareId] = useState(() => (typeof window === "undefined" ? null : extractSharedRiceBinId(window.location.href)));
-  const [activeView, setActiveView] = useState<AppView>(() => (initialShareId ? "shared" : "board"));
+  const initialRouteRef = useRef<AppRouteState>(typeof window === "undefined" ? { activeView: "board", shareId: null, sheetId: null } : getAppRouteState(window.location.href));
+  const seededSharedHistoryRef = useRef(false);
+  const [routeShareId, setRouteShareId] = useState<string | null>(() => initialRouteRef.current.shareId);
+  const [activeView, setActiveView] = useState<AppView>(() => initialRouteRef.current.activeView);
   const [sharedRiceBinLookupResetKey, setSharedRiceBinLookupResetKey] = useState(0);
   const isAdmin = session.status === "authenticated" && session.user.isAdmin === true;
   const isBoardEnabled = activeView === "board" || (activeView === "shared" && session.status === "authenticated");
@@ -58,13 +132,53 @@ export function App() {
   );
   const authErrorMessage = typeof window === "undefined" ? null : getAuthErrorMessage(window.location.search);
 
+  const applyAppRoute = (route: AppRouteState, mode: "push" | "replace" = "push") => {
+    setActiveView(route.activeView);
+    setRouteShareId(route.shareId);
+    if (typeof window === "undefined") return;
+
+    const nextUrl = getAppRouteUrl(route, window.location.href);
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextUrl === currentUrl) return;
+
+    const historyMethod = mode === "replace" ? "replaceState" : "pushState";
+    window.history[historyMethod](getHistoryState(window.history.state), "", nextUrl);
+  };
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("riceark-theme", theme);
   }, [theme]);
 
   useEffect(() => {
-    if (activeView === "admin" && !isAdmin) setActiveView("board");
+    if (typeof window === "undefined") return;
+    if (seededSharedHistoryRef.current) return;
+    const seededUrls = getDirectSharedRiceBinHistoryUrls(window.location.href);
+    if (!seededUrls) return;
+
+    seededSharedHistoryRef.current = true;
+    window.history.replaceState(getHistoryState(window.history.state), "", seededUrls[0]);
+    window.history.pushState(getHistoryState(window.history.state), "", seededUrls[1]);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    function handlePopState() {
+      const route = getAppRouteState(window.location.href);
+      setActiveView(route.activeView);
+      setRouteShareId(route.shareId);
+      setCalculatorOpen(false);
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeView === "admin" && !isAdmin) applyAppRoute({ activeView: "board", shareId: null, sheetId: null }, "replace");
   }, [activeView, isAdmin]);
 
   const handleLogout = async () => {
@@ -89,9 +203,7 @@ export function App() {
   };
 
   const clearSharedRiceBinEntryState = () => {
-    setInitialShareId(null);
-    if (typeof window === "undefined" || !extractSharedRiceBinId(window.location.href)) return;
-    window.history.replaceState(window.history.state, "", getUrlWithoutSharedRiceBinId(window.location.href));
+    applyAppRoute({ activeView: "shared", shareId: null, sheetId: null }, "replace");
   };
 
   const handleSharedBoardClosed = () => {
@@ -99,21 +211,23 @@ export function App() {
   };
 
   const handleOwnBoardSelected = () => {
-    setActiveView("board");
     setCalculatorOpen(false);
-    clearSharedRiceBinEntryState();
+    applyAppRoute({ activeView: "board", shareId: null, sheetId: null });
   };
 
   const handleSharedRiceBinSelected = () => {
     if (activeView === "shared") setSharedRiceBinLookupResetKey((key) => key + 1);
-    setActiveView("shared");
     setCalculatorOpen(false);
+    applyAppRoute({ activeView: "shared", shareId: null, sheetId: null });
   };
 
   const handleAdminSelected = () => {
-    setActiveView("admin");
     setCalculatorOpen(false);
-    clearSharedRiceBinEntryState();
+    applyAppRoute({ activeView: "admin", shareId: null, sheetId: null });
+  };
+
+  const handleSharedBoardOpened = (shareId: string) => {
+    applyAppRoute({ activeView: "shared", shareId, sheetId: null });
   };
 
   return (
@@ -179,11 +293,12 @@ export function App() {
           </>
         ) : (
           <SharedRiceBinPanel
-            initialShareId={initialShareId}
+            initialShareId={routeShareId}
             ownerBoard={session.status === "authenticated" ? board.data : null}
             resetToLookupKey={sharedRiceBinLookupResetKey}
             sessionStatus={session.status}
             onSharedBoardClosed={handleSharedBoardClosed}
+            onSharedBoardOpened={handleSharedBoardOpened}
             onOwnerBoardChanged={board.reload}
           />
         )}

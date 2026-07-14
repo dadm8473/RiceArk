@@ -1632,15 +1632,16 @@ describe("BoardOverview", () => {
     expect(html).toContain(">비활성화</button>");
     expect(html).not.toContain(">없음</button>");
     expect(html).toContain('aria-label="커스텀 아이콘"');
-    expect(html).toContain('aria-label="아이콘: 메모"');
+    expect(html).not.toContain('aria-label="아이콘: 메모"');
     expect(html).toContain('aria-label="아이콘: 핀"');
     expect(html).toContain('aria-label="아이콘: 시계"');
     expect(html).toContain('aria-label="아이콘: 별"');
     expect(html).toContain('aria-label="아이콘: 주의"');
     expect(html).toContain('aria-label="아이콘: 깃발"');
     expect(html).toContain('aria-label="아이콘: 태그"');
-    expect(html).toContain('class="board-cell-mark-option icon-only memo"');
+    expect(html).not.toContain('class="board-cell-mark-option icon-only memo"');
     expect(html).toContain('class="board-cell-mark-option icon-only pin active"');
+    expect(html).toContain('class="board-cell-mark-selected-indicator"');
     expect(html).toContain('class="board-cell-mark-option icon-only clock"');
     expect(html).not.toContain(">체크</button>");
     expect(html).toContain('stroke-width="3"');

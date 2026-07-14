@@ -2,7 +2,14 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { App, getAuthErrorMessage, getUrlWithoutSharedRiceBinId } from "./App";
+import {
+  App,
+  getAppRouteState,
+  getAppRouteUrl,
+  getAuthErrorMessage,
+  getDirectSharedRiceBinHistoryUrls,
+  getUrlWithoutSharedRiceBinId
+} from "./App";
 
 const hooks = vi.hoisted(() => ({
   useBoard: vi.fn(),
@@ -67,6 +74,50 @@ describe("getUrlWithoutSharedRiceBinId", () => {
   it("removes shared rice bin ids from query and path links while preserving the rest of the URL", () => {
     expect(getUrlWithoutSharedRiceBinId("https://riceark.pages.dev/?share=AbCdEfGhIjKlMnOpQrStUv&foo=1#memo")).toBe("/?foo=1#memo");
     expect(getUrlWithoutSharedRiceBinId("https://riceark.pages.dev/shared/AbCdEfGhIjKlMnOpQrStUv?foo=1")).toBe("/?foo=1");
+  });
+});
+
+describe("app route helpers", () => {
+  const shareId = "AbCdEfGhIjKlMnOpQrStUv";
+
+  it("maps URL state to board, shared lookup, shared detail, and admin views", () => {
+    expect(getAppRouteState("https://riceark.pages.dev/?sheet=sheet-2")).toEqual({
+      activeView: "board",
+      shareId: null,
+      sheetId: "sheet-2"
+    });
+    expect(getAppRouteState("https://riceark.pages.dev/?view=shared")).toEqual({
+      activeView: "shared",
+      shareId: null,
+      sheetId: null
+    });
+    expect(getAppRouteState(`https://riceark.pages.dev/?share=${shareId}`)).toEqual({
+      activeView: "shared",
+      shareId,
+      sheetId: null
+    });
+    expect(getAppRouteState("https://riceark.pages.dev/?view=admin")).toEqual({
+      activeView: "admin",
+      shareId: null,
+      sheetId: null
+    });
+  });
+
+  it("builds client-side URLs while preserving unrelated query parameters", () => {
+    const currentUrl = "https://riceark.pages.dev/?foo=1&share=old&sheet=old-sheet#memo";
+
+    expect(getAppRouteUrl({ activeView: "board", shareId: null, sheetId: "sheet-2" }, currentUrl)).toBe("/?foo=1&sheet=sheet-2#memo");
+    expect(getAppRouteUrl({ activeView: "shared", shareId: null, sheetId: null }, currentUrl)).toBe("/?foo=1&view=shared#memo");
+    expect(getAppRouteUrl({ activeView: "shared", shareId, sheetId: null }, currentUrl)).toBe(`/?foo=1&share=${shareId}#memo`);
+    expect(getAppRouteUrl({ activeView: "admin", shareId: null, sheetId: null }, currentUrl)).toBe("/?foo=1&view=admin#memo");
+  });
+
+  it("seeds direct shared detail links with a lookup history entry behind them", () => {
+    expect(getDirectSharedRiceBinHistoryUrls(`https://riceark.pages.dev/?foo=1&share=${shareId}#memo`)).toEqual([
+      "/?foo=1&view=shared#memo",
+      `/?foo=1&share=${shareId}#memo`
+    ]);
+    expect(getDirectSharedRiceBinHistoryUrls("https://riceark.pages.dev/?view=shared")).toBeNull();
   });
 });
 
@@ -161,7 +212,7 @@ describe("App", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain("const handleOwnBoardSelected = () =>");
-    expect(source).toMatch(/handleOwnBoardSelected[\s\S]{0,220}setActiveView\("board"\)[\s\S]{0,220}clearSharedRiceBinEntryState\(\)/);
+    expect(source).toMatch(/handleOwnBoardSelected[\s\S]{0,220}applyAppRoute\(\{ activeView: "board", shareId: null, sheetId: null \}\)/);
     expect(source).toContain('onClick={handleOwnBoardSelected}');
   });
 
