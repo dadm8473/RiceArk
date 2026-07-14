@@ -2044,37 +2044,26 @@ body {
   border-bottom: 0;
 }
 
-.board-check-mark {
+.board-check-wrap {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+}
+
+.board-check-icon-overlay {
   position: absolute;
-  top: 1px;
-  left: 1px;
+  inset: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 11px;
-  height: 11px;
+  color: #334155;
   pointer-events: none;
 }
 
-.board-check-memo-dot {
-  position: absolute;
-  top: 1px;
-  right: 1px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 11px;
-  height: 11px;
-  color: #0f766e;
-  pointer-events: none;
-}
-
-.board-check-mark.fixed {
-  color: #d97706;
-}
-
-.board-check-mark.reserved {
-  color: #7c3aed;
+.board-check-wrap.checked .board-check-icon-overlay {
+  color: #ffffff;
 }
 
 .board-cell-mark-tooltip {
@@ -2130,7 +2119,8 @@ body {
   margin: 0;
 }
 
-.board-cell-mark-options {
+.board-cell-mark-options,
+.board-cell-mark-retention-options {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -2187,16 +2177,8 @@ body {
   font-size: 12px;
 }
 
-.app-shell[data-theme="dark"] .board-check-mark.fixed {
-  color: #fbbf24;
-}
-
-.app-shell[data-theme="dark"] .board-check-mark.reserved {
-  color: #a78bfa;
-}
-
-.app-shell[data-theme="dark"] .board-check-memo-dot {
-  color: #5eead4;
+.app-shell[data-theme="dark"] .board-check-icon-overlay {
+  color: #cbd5e1;
 }
 
 .app-shell[data-theme="dark"] .board-cell-mark-tooltip {
@@ -2265,6 +2247,10 @@ body {
   border-right: 2px solid #ffffff;
   border-bottom: 2px solid #ffffff;
   transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.board-check-wrap.has-icon .board-check:checked::before {
+  content: none;
 }
 
 .board-check:disabled {

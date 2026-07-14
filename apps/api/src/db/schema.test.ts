@@ -143,6 +143,7 @@ describe("D1 schema", () => {
 
   it("stores per-cell checkmark marks with reserved period expiry keys", () => {
     expect(migration).toContain("mark_type IN ('default', 'fixed', 'reserved', 'disabled')");
+    expect(migration).toContain("mark_icon TEXT");
     expect(migration).toContain("mark_period_key TEXT");
     expect(migration).toContain("UPDATE board_cell_states SET mark_type = 'disabled' WHERE checkbox_visible = 0");
   });

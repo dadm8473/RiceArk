@@ -173,11 +173,12 @@ describe("board route schemas", () => {
     const base = { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1" };
 
     expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "default", memo: null }).success).toBe(true);
-    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "fixed", memo: "고정파티 21시" }).success).toBe(true);
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "fixed", markIcon: "pin", memo: "고정파티 21시" }).success).toBe(true);
     expect(
       boardCellStatePatchSchema.safeParse({
         ...base,
         markType: "reserved",
+        markIcon: "clock",
         memo: "이번주만 트라이",
         periodKey: "weekly:2026-06-10"
       }).success
@@ -210,6 +211,16 @@ describe("board route schemas", () => {
     expect(
       boardCellStatePatchSchema.safeParse({ ...base, markType: "fixed", memo: "가".repeat(121) }).success
     ).toBe(false);
+  });
+
+  it("accepts direct board cell mark icons and rejects unsupported icon values", () => {
+    const base = { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1", markType: "default" };
+
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markIcon: "star", memo: null }).success).toBe(true);
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markIcon: "alert", memo: "주의" }).success).toBe(true);
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markIcon: null, memo: "메모만" }).success).toBe(true);
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markIcon: "dragon", memo: null }).success).toBe(false);
+    expect(boardCellStatePatchSchema.safeParse({ ...base, markType: "disabled", markIcon: "star", memo: null }).success).toBe(false);
   });
 
   it("rejects unsafe board cell mark patches", () => {

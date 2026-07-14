@@ -201,23 +201,25 @@ describe("matrix styles", () => {
     expect(editableColumnBlock).toContain("border-bottom: 1px solid #c6cfdd;");
   });
 
-  it("draws cell mark corner icons and a content-sized hover tooltip", () => {
-    const fixedMarkBlock = styles.match(/\.board-check-mark\.fixed\s*{[^}]+}/)?.[0] ?? "";
-    const reservedMarkBlock = styles.match(/\.board-check-mark\.reserved\s*{[^}]+}/)?.[0] ?? "";
-    const memoDotBlock = styles.match(/\.board-check-memo-dot\s*{[^}]+}/)?.[0] ?? "";
+  it("draws cell mark icons inside checkboxes and a content-sized hover tooltip", () => {
+    const iconWrapBlock = styles.match(/\.board-check-wrap\s*{[^}]+}/)?.[0] ?? "";
+    const iconOverlayBlock = styles.match(/\.board-check-icon-overlay\s*{[^}]+}/)?.[0] ?? "";
+    const checkedIconBlock = styles.match(/\.board-check-wrap\.checked \.board-check-icon-overlay\s*{[^}]+}/)?.[0] ?? "";
     const tooltipBlock = styles.match(/\.board-cell-mark-tooltip\s*{[^}]+}/)?.[0] ?? "";
     const markEditHoverBlock =
       styles.match(/\.board-table-summary\.mark-edit-mode \.board-check-cell:hover\s*{[^}]+}/)?.[0] ?? "";
 
-    expect(fixedMarkBlock).toContain("color: #d97706;");
-    expect(reservedMarkBlock).toContain("color: #7c3aed;");
-    expect(memoDotBlock).toContain("right: 1px;");
-    expect(memoDotBlock).toContain("color: #0f766e;");
+    expect(iconWrapBlock).toContain("position: relative;");
+    expect(iconOverlayBlock).toContain("position: absolute;");
+    expect(iconOverlayBlock).toContain("pointer-events: none;");
+    expect(checkedIconBlock).toContain("color: #ffffff;");
     expect(tooltipBlock).toContain("position: fixed;");
     expect(tooltipBlock).toContain("width: max-content;");
     expect(tooltipBlock).toContain("transform: translateX(-50%);");
     expect(markEditHoverBlock).toContain("outline: 2px dashed #2563eb;");
-    expect(styles).toContain('.app-shell[data-theme="dark"] .board-check-memo-dot');
+    expect(styles).not.toContain(".board-check-mark.fixed");
+    expect(styles).not.toContain(".board-check-memo-dot");
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-check-icon-overlay');
     expect(styles).toContain('.app-shell[data-theme="dark"] .board-cell-mark-tooltip');
     expect(styles).toContain('.app-shell[data-theme="dark"] .board-cell-mark-option.active');
   });

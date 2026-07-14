@@ -17,7 +17,7 @@ import {
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Bell, Check, Clock, Columns3, Lock, Minus, Pencil, Pin, Plus, RefreshCw, Rows3, Save, Settings, Shuffle, StickyNote, Trash2, Unlock, UserPlus, X } from "lucide-react";
+import { AlertTriangle, Bell, Check, Clock, Columns3, Flag, Lock, Minus, Pencil, Pin, Plus, RefreshCw, Rows3, Save, Settings, Shuffle, Star, StickyNote, Tag, Trash2, Unlock, UserPlus, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -39,6 +39,8 @@ import {
   applyBoardCellStatePatch,
   resolveBoardCellMark,
   type BoardCellMark,
+  type BoardCellMarkIcon,
+  type BoardCellMarkRetention,
   type BoardCellMarkType,
   type BoardCellStatePatch
 } from "./cellStates";
@@ -270,16 +272,31 @@ const BOARD_TASK_RESET_OPTIONS: Array<{ value: BoardTaskResetType; label: string
   { value: "biweekly", label: "격주" },
   { value: "none", label: "초기화 안함" }
 ];
-const BOARD_CELL_MARK_OPTIONS: Array<{ value: "default" | "fixed" | "reserved" | "disabled"; label: string; description?: string }> = [
-  { value: "default", label: "기본" },
-  { value: "fixed", label: "고정", description: "고정으로 표기할 체크 박스를 선택해주세요." },
-  { value: "reserved", label: "예약", description: "예약으로 표기할 체크 박스를 선택해주세요." },
-  { value: "disabled", label: "비활성화", description: "비활성화 할 체크 박스를 선택해주세요." }
+const BOARD_CELL_MARK_ICON_OPTIONS: Array<{ value: BoardCellMarkIcon; label: string }> = [
+  { value: "memo", label: "메모" },
+  { value: "pin", label: "핀" },
+  { value: "clock", label: "시계" },
+  { value: "star", label: "별" },
+  { value: "alert", label: "주의" },
+  { value: "flag", label: "깃발" },
+  { value: "tag", label: "태그" },
+  { value: "check", label: "체크" }
 ];
-const BOARD_CELL_MARK_LABELS: Record<string, string> = { fixed: "고정", reserved: "예약" };
+const BOARD_CELL_MARK_ICON_LABELS: Record<BoardCellMarkIcon, string> = {
+  memo: "메모",
+  pin: "핀",
+  clock: "시계",
+  star: "별",
+  alert: "주의",
+  flag: "깃발",
+  tag: "태그",
+  check: "체크"
+};
 
 export interface BoardCellMarkBrush {
-  type: BoardCellMarkType;
+  disabled: boolean;
+  icon: BoardCellMarkIcon | null;
+  retention: BoardCellMarkRetention;
   memo: string;
 }
 
@@ -1075,7 +1092,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
   const [reorderTableId, setReorderTableId] = useState<string | null>(null);
   const [activeSortableId, setActiveSortableId] = useState<string | null>(null);
   const [markEditTableId, setMarkEditTableId] = useState<string | null>(null);
-  const [markBrush, setMarkBrush] = useState<BoardCellMarkBrush>({ type: "fixed", memo: "" });
+  const [markBrush, setMarkBrush] = useState<BoardCellMarkBrush>({ disabled: false, icon: "pin", retention: "permanent", memo: "" });
   const [markBrushNotice, setMarkBrushNotice] = useState<string | null>(null);
   const [boardZoom, setBoardZoom] = useState(() =>
     typeof window === "undefined" ? BOARD_ZOOM_DEFAULT : getStoredBoardZoom(window.localStorage)
@@ -1282,26 +1299,34 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
   ) {
     if (isReadOnly) return;
     setMarkBrushNotice(null);
-    if (markBrush.type === "reserved" && (!periodKey || periodKey === "none:permanent")) {
+    if (!markBrush.disabled && markBrush.retention === "period" && (!periodKey || periodKey === "none:permanent")) {
       setMarkBrushNotice("초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.");
       return;
     }
 
-    const memoEnabled = markBrush.type !== "disabled";
+    const memoEnabled = !markBrush.disabled;
     const brushMemo = memoEnabled && markBrush.memo.trim() ? markBrush.memo.trim() : null;
+    const brushIcon = memoEnabled ? markBrush.icon : null;
+    const markType: BoardCellMarkType = markBrush.disabled ? "disabled" : markBrush.retention === "period" ? "reserved" : "default";
     const isSameAsBrush =
       currentMark !== null &&
-      currentMark.type === markBrush.type &&
-      (currentMark.memo ?? null) === brushMemo;
-    const markType: BoardCellMarkType = isSameAsBrush ? "default" : markBrush.type;
-    const memo = isSameAsBrush || markType === "disabled" ? null : brushMemo;
+      (markBrush.disabled
+        ? currentMark.type === "disabled"
+        : currentMark.type !== "disabled" &&
+          currentMark.retention === markBrush.retention &&
+          currentMark.icon === brushIcon &&
+          (currentMark.memo ?? null) === brushMemo);
+    const nextMarkType: BoardCellMarkType = isSameAsBrush ? "default" : markType;
+    const memo = isSameAsBrush || nextMarkType === "disabled" ? null : brushMemo;
+    const markIcon = isSameAsBrush || nextMarkType === "disabled" ? null : brushIcon;
     const patch: BoardCellStatePatch = {
       tableId: table.id,
       rowItemId: row.id,
       columnItemId: column.id,
-      markType,
+      markType: nextMarkType,
+      markIcon,
       memo,
-      ...(markType === "reserved" && periodKey ? { periodKey } : {})
+      ...(nextMarkType === "reserved" && periodKey ? { periodKey } : {})
     };
 
     setCellStates((current) => applyBoardCellStatePatch(current, patch));
@@ -4389,6 +4414,17 @@ function BoardGridRow({
   );
 }
 
+function renderBoardCellMarkIcon(icon: BoardCellMarkIcon, size: number) {
+  if (icon === "memo") return <StickyNote aria-hidden="true" size={size} />;
+  if (icon === "pin") return <Pin aria-hidden="true" size={size} />;
+  if (icon === "clock") return <Clock aria-hidden="true" size={size} />;
+  if (icon === "star") return <Star aria-hidden="true" size={size} />;
+  if (icon === "alert") return <AlertTriangle aria-hidden="true" size={size} />;
+  if (icon === "flag") return <Flag aria-hidden="true" size={size} />;
+  if (icon === "tag") return <Tag aria-hidden="true" size={size} />;
+  return <Check aria-hidden="true" size={size} />;
+}
+
 function BoardCheckCell({
   cellState,
   column,
@@ -4426,10 +4462,11 @@ function BoardCheckCell({
   const columnSeparator = getSeparatorBorder(column);
   const periodKey = getBoardCellPeriodKey(row, column);
   const completedKey = periodKey ? cellPeriodKey(row.id, column.id, periodKey) : null;
+  const isCompleted = completedKey ? completedCells.has(completedKey) : false;
   const mark = resolveBoardCellMark(cellState, periodKey);
   const isDisabledCell = mark?.type === "disabled";
   const isScheduleUnavailable = table.template_type === "lostark_event" && !getBoardScheduleRowAvailable(row.label, eventSummary);
-  const markLabel = mark && mark.type !== "disabled" ? BOARD_CELL_MARK_LABELS[mark.type] : null;
+  const markLabel = mark?.icon ? BOARD_CELL_MARK_ICON_LABELS[mark.icon] : null;
   const hasTooltipContent = Boolean(markLabel || mark?.memo);
   const cellStyle: CSSProperties = {
     minHeight: `${rowHeight}px`,
@@ -4470,40 +4507,32 @@ function BoardCheckCell({
       {isDisabledCell ? (
         <span className="board-check-placeholder" aria-label={`${row.label} / ${column.label} 비활성화`} />
       ) : (
-        <input
-          aria-label={`${row.label} / ${column.label}`}
-          checked={completedKey ? completedCells.has(completedKey) : false}
-          className="board-check"
-          disabled={readOnly || !periodKey || isReorderMode || isMarkEditMode || isScheduleUnavailable}
-          onChange={(event) => {
-            if (!periodKey) return;
-            onToggle({
-              tableId: table.id,
-              rowItemId: row.id,
-              columnItemId: column.id,
-              periodKey,
-              completed: event.currentTarget.checked
-            });
-          }}
-          style={colorStyle}
-          type="checkbox"
-        />
+        <span className={`board-check-wrap${isCompleted ? " checked" : ""}${mark?.icon ? " has-icon" : ""}`}>
+          <input
+            aria-label={`${row.label} / ${column.label}`}
+            checked={isCompleted}
+            className="board-check"
+            disabled={readOnly || !periodKey || isReorderMode || isMarkEditMode || isScheduleUnavailable}
+            onChange={(event) => {
+              if (!periodKey) return;
+              onToggle({
+                tableId: table.id,
+                rowItemId: row.id,
+                columnItemId: column.id,
+                periodKey,
+                completed: event.currentTarget.checked
+              });
+            }}
+            style={colorStyle}
+            type="checkbox"
+          />
+          {mark?.icon ? (
+            <span aria-label={`${row.label} / ${column.label} ${BOARD_CELL_MARK_ICON_LABELS[mark.icon]}`} className={`board-check-icon-overlay ${mark.icon}`} title={BOARD_CELL_MARK_ICON_LABELS[mark.icon]}>
+              {renderBoardCellMarkIcon(mark.icon, 11)}
+            </span>
+          ) : null}
+        </span>
       )}
-      {mark?.type === "fixed" ? (
-        <span aria-label={`${row.label} / ${column.label} 고정`} className="board-check-mark fixed" title="고정">
-          <Pin aria-hidden="true" size={10} />
-        </span>
-      ) : null}
-      {mark?.type === "reserved" ? (
-        <span aria-label={`${row.label} / ${column.label} 예약`} className="board-check-mark reserved" title="예약">
-          <Clock aria-hidden="true" size={10} />
-        </span>
-      ) : null}
-      {mark?.type === "default" && mark.memo ? (
-        <span aria-label={`${row.label} / ${column.label} 메모`} className="board-check-memo-dot" title="메모">
-          <StickyNote aria-hidden="true" size={10} />
-        </span>
-      ) : null}
       {tooltipPosition && hasTooltipContent && typeof document !== "undefined"
         ? createPortal(
             <div
@@ -4530,28 +4559,67 @@ export function BoardCellMarkToolbar({
   notice: string | null;
   onBrushChange: (brush: BoardCellMarkBrush) => void;
 }) {
-  const memoEnabled = brush.type !== "disabled";
-  const activeOption = BOARD_CELL_MARK_OPTIONS.find((option) => option.value === brush.type);
-  const description = notice ?? activeOption?.description ?? null;
+  const memoEnabled = !brush.disabled;
+  const description = notice ?? (brush.disabled ? "비활성화된 체크칸은 체크박스를 숨깁니다." : null);
 
   return (
     <div className="board-cell-mark-toolbar" onPointerDown={(event) => event.stopPropagation()}>
-      <div className="board-cell-mark-options" role="radiogroup" aria-label="체크마크 브러시">
-        {BOARD_CELL_MARK_OPTIONS.map((option) => (
+      <div className="board-cell-mark-options" role="radiogroup" aria-label="체크칸 아이콘">
+        <button
+          className={`board-cell-mark-option${brush.icon === null ? " active" : ""}`}
+          disabled={brush.disabled}
+          type="button"
+          role="radio"
+          aria-checked={brush.icon === null}
+          onClick={() => onBrushChange({ ...brush, icon: null })}
+        >
+          없음
+        </button>
+        {BOARD_CELL_MARK_ICON_OPTIONS.map((option) => (
           <button
             key={option.value}
-            className={`board-cell-mark-option${brush.type === option.value ? " active" : ""}`}
+            className={`board-cell-mark-option${brush.icon === option.value ? " active" : ""}`}
+            disabled={brush.disabled}
             type="button"
             role="radio"
-            aria-checked={brush.type === option.value}
-            title={option.description}
-            onClick={() => onBrushChange({ ...brush, type: option.value })}
+            aria-checked={brush.icon === option.value}
+            onClick={() => onBrushChange({ ...brush, icon: option.value })}
           >
-            {option.value === "fixed" ? <Pin aria-hidden="true" size={13} /> : null}
-            {option.value === "reserved" ? <Clock aria-hidden="true" size={13} /> : null}
+            {renderBoardCellMarkIcon(option.value, 13)}
             {option.label}
           </button>
         ))}
+      </div>
+      <div className="board-cell-mark-retention-options" role="radiogroup" aria-label="체크칸 유지 방식">
+        <button
+          className={`board-cell-mark-option${brush.retention === "permanent" ? " active" : ""}`}
+          disabled={brush.disabled}
+          type="button"
+          role="radio"
+          aria-checked={brush.retention === "permanent"}
+          onClick={() => onBrushChange({ ...brush, retention: "permanent" })}
+        >
+          계속 유지
+        </button>
+        <button
+          className={`board-cell-mark-option${brush.retention === "period" ? " active" : ""}`}
+          disabled={brush.disabled}
+          type="button"
+          role="radio"
+          aria-checked={brush.retention === "period"}
+          onClick={() => onBrushChange({ ...brush, retention: "period" })}
+        >
+          이번 주기만
+        </button>
+        <button
+          className={`board-cell-mark-option${brush.disabled ? " active" : ""}`}
+          type="button"
+          aria-label="체크칸 비활성화"
+          aria-pressed={brush.disabled}
+          onClick={() => onBrushChange({ ...brush, disabled: !brush.disabled })}
+        >
+          비활성화
+        </button>
       </div>
       {memoEnabled ? (
         <textarea

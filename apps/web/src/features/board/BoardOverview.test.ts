@@ -1179,7 +1179,7 @@ describe("BoardOverview", () => {
     expect(html).not.toContain('aria-label="쿠르잔 전선 / 냠수나이스1" class="board-check"');
   });
 
-  it("renders fixed and reserved corner marks on marked cells", () => {
+  it("renders legacy fixed and reserved marks as icons inside board check cells", () => {
     const secondCharacter: BoardAxisItem = {
       ...board.axisItems[1]!,
       id: "column-character-2",
@@ -1217,8 +1217,10 @@ describe("BoardOverview", () => {
       })
     );
 
-    expect(html).toContain('class="board-check-mark fixed"');
-    expect(html).toContain('class="board-check-mark reserved"');
+    expect(html).not.toContain('class="board-check-mark fixed"');
+    expect(html).not.toContain('class="board-check-mark reserved"');
+    expect(html).toContain('class="board-check-icon-overlay pin"');
+    expect(html).toContain('class="board-check-icon-overlay clock"');
     expect(html).not.toContain("board-check-memo-dot");
   });
 
@@ -1242,8 +1244,9 @@ describe("BoardOverview", () => {
       })
     );
 
-    expect(html).toContain('class="board-check-memo-dot"');
+    expect(html).toContain('class="board-check-icon-overlay memo"');
     expect(html).toContain('aria-label="쿠르잔 전선 / 냠수나이스1 메모"');
+    expect(html).not.toContain('class="board-check-memo-dot"');
     expect(html).not.toContain('class="board-check-mark fixed"');
     expect(html).not.toContain('class="board-check-mark reserved"');
   });
@@ -1592,28 +1595,32 @@ describe("BoardOverview", () => {
     expect(html).not.toContain("체크박스 표시 대상");
   });
 
-  it("renders the cell mark brush toolbar with type options and a shared memo input", () => {
+  it("renders the cell mark brush toolbar with direct icon, retention, disabled, and memo controls", () => {
     const html = renderToStaticMarkup(
       createElement(BoardCellMarkToolbar, {
-        brush: { type: "fixed", memo: "고정파티 21시\n2줄 메모" },
+        brush: { disabled: false, icon: "pin", retention: "permanent", memo: "고정파티 21시\n2줄 메모" },
         notice: null,
         onBrushChange: () => undefined
       })
     );
 
-    expect(html).toContain('aria-label="체크마크 브러시"');
-    expect(html).toContain("기본");
-    expect(html).toContain("고정");
-    expect(html).toContain("예약");
-    expect(html).toContain("비활성화");
+    expect(html).toContain('aria-label="체크칸 아이콘"');
+    expect(html).toContain("없음");
+    expect(html).toContain("메모");
+    expect(html).toContain("핀");
+    expect(html).toContain("시계");
+    expect(html).toContain("별");
+    expect(html).toContain("주의");
+    expect(html).toContain("깃발");
+    expect(html).toContain("태그");
+    expect(html).toContain('aria-label="체크칸 유지 방식"');
+    expect(html).toContain("계속 유지");
+    expect(html).toContain("이번 주기만");
+    expect(html).toContain('aria-label="체크칸 비활성화"');
     expect(html).toContain('aria-checked="true"');
     expect(html).toContain("<textarea");
     expect(html).not.toContain("<input");
-    expect(html).toMatch(/class="board-cell-mark-options"[\s\S]*<\/div><textarea/);
     expect(html).toContain("고정파티 21시\n2줄 메모");
-    expect(html).toContain("고정으로 표기할 체크 박스를 선택해주세요.");
-    expect(html).toContain("예약으로 표기할 체크 박스를 선택해주세요.");
-    expect(html).toContain("비활성화 할 체크 박스를 선택해주세요.");
     expect(html).not.toContain("셀을 클릭하면 바로 적용되고");
     expect(html).not.toContain("일반 체크박스로 사용");
   });
@@ -1621,21 +1628,21 @@ describe("BoardOverview", () => {
   it("shows the brush memo input for default marks and hides it for disabled brushes", () => {
     const defaultHtml = renderToStaticMarkup(
       createElement(BoardCellMarkToolbar, {
-        brush: { type: "default", memo: "" },
+        brush: { disabled: false, icon: null, retention: "permanent", memo: "" },
         notice: null,
         onBrushChange: () => undefined
       })
     );
     const noticeHtml = renderToStaticMarkup(
       createElement(BoardCellMarkToolbar, {
-        brush: { type: "reserved", memo: "" },
+        brush: { disabled: false, icon: "clock", retention: "period", memo: "" },
         notice: "초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.",
         onBrushChange: () => undefined
       })
     );
     const disabledHtml = renderToStaticMarkup(
       createElement(BoardCellMarkToolbar, {
-        brush: { type: "disabled", memo: "" },
+        brush: { disabled: true, icon: null, retention: "permanent", memo: "" },
         notice: null,
         onBrushChange: () => undefined
       })
@@ -1648,7 +1655,7 @@ describe("BoardOverview", () => {
     expect(defaultHtml).not.toContain("일반 체크박스로 사용");
     expect(defaultHtml).not.toContain('title=""');
     expect(disabledHtml).not.toContain('aria-label="브러시 메모"');
-    expect(disabledHtml).toContain("비활성화 할 체크 박스를 선택해주세요.");
+    expect(disabledHtml).toContain("비활성화된 체크칸은 체크박스를 숨깁니다.");
     expect(disabledHtml).not.toContain("셀을 클릭하면 바로 적용되고");
     expect(noticeHtml).toContain('aria-label="브러시 메모"');
     expect(noticeHtml).toContain("초기화되지 않는 숙제에는 예약을 설정할 수 없습니다.");
@@ -1662,7 +1669,8 @@ describe("BoardOverview", () => {
     expect(source).toContain("onCellMarkPaint(row, column, mark, periodKey)");
     expect(source).not.toContain("BoardCellMarkEditModal");
     // 같은 브러시로 칠한 셀을 다시 클릭하면 해제
-    expect(source).toContain("const memoEnabled = markBrush.type !== \"disabled\";");
+    expect(source).toContain("const memoEnabled = !markBrush.disabled;");
+    expect(source).toContain('const markType: BoardCellMarkType = markBrush.disabled ? "disabled" : markBrush.retention === "period" ? "reserved" : "default";');
   });
 
   it("lets row and column items edit both height and width from item settings", () => {

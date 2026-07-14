@@ -76,6 +76,7 @@ export interface BoardCompletionPatch {
   completed: boolean;
 }
 
+export type BoardCellMarkIcon = "memo" | "pin" | "clock" | "star" | "alert" | "flag" | "tag" | "check";
 export type BoardCellMarkType = "default" | "fixed" | "reserved" | "disabled";
 
 export interface BoardCellStatePatch {
@@ -83,6 +84,7 @@ export interface BoardCellStatePatch {
   rowItemId: string;
   columnItemId: string;
   markType: BoardCellMarkType;
+  markIcon?: BoardCellMarkIcon | null | undefined;
   memo: string | null;
   periodKey?: string | undefined;
 }
@@ -2404,7 +2406,8 @@ export async function saveBoardCellStatePatches(
 
   const statements = merged.map((patch) => {
     const memo = patch.markType === "disabled" || patch.memo === "" ? null : patch.memo;
-    if (patch.markType === "default" && memo === null) {
+    const markIcon = patch.markType === "disabled" ? null : (patch.markIcon ?? null);
+    if (patch.markType === "default" && memo === null && markIcon === null) {
       return env.DB.prepare(
         `DELETE FROM board_cell_states
          WHERE user_id = ? AND table_id = ? AND row_item_id = ? AND column_item_id = ?`
@@ -2415,11 +2418,12 @@ export async function saveBoardCellStatePatches(
     const checkboxVisible = patch.markType === "disabled" ? 0 : 1;
     return env.DB.prepare(
       `INSERT INTO board_cell_states
-         (id, user_id, table_id, row_item_id, column_item_id, checkbox_visible, mark_type, memo, mark_period_key, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         (id, user_id, table_id, row_item_id, column_item_id, checkbox_visible, mark_type, mark_icon, memo, mark_period_key, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
        ON CONFLICT(table_id, row_item_id, column_item_id)
        DO UPDATE SET checkbox_visible = excluded.checkbox_visible,
                      mark_type = excluded.mark_type,
+                     mark_icon = excluded.mark_icon,
                      memo = excluded.memo,
                      mark_period_key = excluded.mark_period_key,
                      updated_at = CURRENT_TIMESTAMP`
@@ -2431,6 +2435,7 @@ export async function saveBoardCellStatePatches(
       patch.columnItemId,
       checkboxVisible,
       patch.markType,
+      markIcon,
       memo,
       markPeriodKey
     );

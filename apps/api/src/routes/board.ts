@@ -230,20 +230,22 @@ export const boardCompletionPatchSchema = z.object({
 }).strict();
 
 export const boardCellMarkTypeSchema = z.enum(["default", "fixed", "reserved", "disabled"]);
+export const boardCellMarkIconSchema = z.enum(["memo", "pin", "clock", "star", "alert", "flag", "tag", "check"]);
 
 export const boardCellStatePatchSchema = z.object({
   tableId: resourceIdSchema,
   rowItemId: resourceIdSchema,
   columnItemId: resourceIdSchema,
   markType: boardCellMarkTypeSchema,
+  markIcon: boardCellMarkIconSchema.nullable().optional(),
   memo: safeText({ maxChars: 120, allowEmpty: true, multiline: true }).nullable(),
   periodKey: periodKeySchema.optional()
 }).strict()
   .refine((patch) => (patch.markType === "reserved" ? patch.periodKey !== undefined : patch.periodKey === undefined), {
     message: "예약 타입에만 periodKey가 필요합니다."
   })
-  .refine((patch) => patch.markType !== "disabled" || patch.memo === null || patch.memo === "", {
-    message: "비활성화 타입에는 메모를 남길 수 없습니다."
+  .refine((patch) => patch.markType !== "disabled" || ((patch.memo === null || patch.memo === "") && (patch.markIcon === null || patch.markIcon === undefined)), {
+    message: "비활성화 타입에는 아이콘이나 메모를 남길 수 없습니다."
   });
 
 export const boardCellStatePatchBatchSchema = z.object({
