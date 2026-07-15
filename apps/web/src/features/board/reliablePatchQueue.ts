@@ -242,6 +242,7 @@ export class ReliablePatchQueue<T, K> {
       this.immediateWakeRequested = true;
       return;
     }
+    this.immediateWakeRequested = false;
     void this.startWorker();
   }
 

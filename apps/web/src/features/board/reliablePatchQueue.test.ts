@@ -814,6 +814,33 @@ describe("ReliablePatchQueue", () => {
     expect(queue.getPendingSnapshot()).toEqual([]);
   });
 
+  it("does not carry a pre-auth focus wake across an idle auth retry", async () => {
+    const authAttempt = deferred<SendOutcome<string>>();
+    const authError = new ApiClientError(401, "unauthorized", "Login required");
+    const send = vi
+      .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()
+      .mockImplementationOnce(async () => authAttempt.promise)
+      .mockResolvedValueOnce({ type: "retry", error: new Error("busy"), retryAfterMs: 30_000 })
+      .mockImplementation(async (patches) => accepted(patches));
+    const { queue } = makeQueue({ send });
+    queue.enqueue({ key: "a", value: true });
+    await vi.advanceTimersByTimeAsync(PATCH_QUEUE_DEBOUNCE_MS);
+
+    eventTarget.dispatchEvent(new Event("focus"));
+    authAttempt.resolve({ type: "auth", error: authError });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    queue.retry();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(send).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+  });
+
   it.each(["synchronous", "microtask"] as const)(
     "honors a %s retry requested from onAuthPause immediately after the worker stops",
     async (retryTiming) => {
