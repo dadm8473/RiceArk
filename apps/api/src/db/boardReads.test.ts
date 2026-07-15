@@ -6,6 +6,7 @@ import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { Env } from "../env";
 import type {
   BoardBootstrapPayload,
+  BoardDisplaySettings,
   BoardSheetManifest,
   BoardSheetManifestItem,
   BoardSheetPayload,
@@ -13,7 +14,12 @@ import type {
   BoardVersionSummary
 } from "./boardReads";
 import { loadBoard, loadBoardVersionSummary, type BoardVersionSummary as BoardModuleVersionSummary } from "./board";
-import { loadBoardBootstrap, loadBoardManifest, loadBoardSheet } from "./boardReads";
+import {
+  BoardSnapshotConflictError,
+  loadBoardBootstrap,
+  loadBoardManifest,
+  loadBoardSheet
+} from "./boardReads";
 
 interface CapturedStatement {
   sql: string;
@@ -646,10 +652,19 @@ describe("sheet-aware board read contracts", () => {
   });
 
   it("shares the manifest snapshot field types with bootstrap and legacy board imports", () => {
+    expectTypeOf<BoardDisplaySettings>().toEqualTypeOf<{
+      show_display_name: number;
+      show_server_name: number;
+      show_class_name: number;
+      show_item_level: number;
+      show_combat_power: number;
+    }>();
+    expectTypeOf<BoardBootstrapPayload["settings"]>().toEqualTypeOf<BoardDisplaySettings>();
     expectTypeOf<BoardBootstrapPayload["manifest"]["version"]>().toEqualTypeOf<
       BoardVersionSummary["manifestVersion"]
     >();
     expectTypeOf<BoardBootstrapPayload["manifest"]["sheets"]>().toEqualTypeOf<BoardVersionSummary["sheets"]>();
+    expectTypeOf<BoardVersionSummary["settings"]>().toEqualTypeOf<BoardDisplaySettings>();
     expectTypeOf<BoardModuleVersionSummary>().toEqualTypeOf<BoardVersionSummary>();
     expectTypeOf<BoardVersionSummary["periodFingerprint"]>().toEqualTypeOf<"">();
   });
@@ -696,8 +711,10 @@ describe("sheet-aware board reads", () => {
       expect(requested.manifest.sheets.find((sheet) => sheet.id === requested.activeSheet.sheet.id)?.version).toBe(
         requested.activeSheet.sheet.content_version
       );
-      expect(statements).toHaveLength(9);
-      expect(statements.filter((statement) => statement.sql.includes("FROM user_settings"))).toHaveLength(1);
+      expect(statements).toHaveLength(8);
+      const manifestStatements = statements.filter((statement) => statement.sql.includes("WITH manifest AS"));
+      expect(manifestStatements).toHaveLength(2);
+      expect(statements.filter((statement) => statement.sql.includes("user_settings"))).toEqual(manifestStatements);
 
       statements.length = 0;
       await expect(loadBoardBootstrap(env, "user-1", "sheet-foreign")).resolves.toMatchObject({
@@ -716,6 +733,50 @@ describe("sheet-aware board reads", () => {
         activeSheet: { sheet: { id: "sheet-first" } }
       });
     });
+  });
+
+  it("returns display settings from the final bootstrap fence without a separate settings read", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
+    const database = createBoardReadDatabase();
+    seedEstablishedBoard(database);
+    let changed = false;
+    const { env, statements } = createSqliteReadEnv(database, {
+      afterExecute({ statement }) {
+        if (changed || !statement.sql.includes("FROM board_tables\n       JOIN sheets")) return;
+        changed = true;
+        database
+          .prepare(
+            `UPDATE user_settings
+             SET show_display_name = 0,
+                 show_server_name = 0,
+                 show_class_name = 1,
+                 show_item_level = 0,
+                 show_combat_power = 1
+             WHERE user_id = ?`
+          )
+          .run("user-1");
+      }
+    });
+
+    try {
+      const payload = await loadBoardBootstrap(env, "user-1", "sheet-active");
+
+      expect(payload.settings).toEqual({
+        show_display_name: 0,
+        show_server_name: 0,
+        show_class_name: 1,
+        show_item_level: 0,
+        show_combat_power: 1
+      });
+      expect(statements).toHaveLength(8);
+      const manifestStatements = statements.filter((statement) => statement.sql.includes("WITH manifest AS"));
+      expect(manifestStatements).toHaveLength(2);
+      expect(statements.filter((statement) => statement.sql.includes("user_settings"))).toEqual(manifestStatements);
+      expect(statements.filter((statement) => statement.sql.includes("FROM board_tables\n       JOIN sheets"))).toHaveLength(1);
+    } finally {
+      database.close();
+    }
   });
 
   it("loads only rows reachable through the selected owned sheet", async () => {
@@ -831,8 +892,15 @@ describe("sheet-aware board reads", () => {
     });
 
     try {
-      await expect(loadBoardSheet(env, "user-1", "sheet-active")).rejects.toThrow(/stable board sheet snapshot/i);
+      const conflict = loadBoardSheet(env, "user-1", "sheet-active");
+      await expect(conflict).rejects.toBeInstanceOf(BoardSnapshotConflictError);
+      await expect(conflict).rejects.toThrow("Unable to read a stable board sheet snapshot");
       expect(statements.filter((statement) => statement.sql.includes("FROM board_tables\n       JOIN sheets"))).toHaveLength(3);
+      expect(
+        statements.filter((statement) =>
+          statement.sql.includes("FROM sheets\n     WHERE id = ? AND user_id = ?")
+        )
+      ).toHaveLength(6);
     } finally {
       database.close();
     }
@@ -880,12 +948,18 @@ describe("sheet-aware board reads", () => {
     });
 
     try {
-      await expect(loadBoardBootstrap(env, "user-1", "sheet-active")).rejects.toThrow(
-        /stable board bootstrap snapshot/i
-      );
+      const conflict = loadBoardBootstrap(env, "user-1", "sheet-active");
+      await expect(conflict).rejects.toBeInstanceOf(BoardSnapshotConflictError);
+      await expect(conflict).rejects.toThrow("Unable to read a stable board bootstrap snapshot");
       expect(statements.filter((statement) => statement.sql.includes("FROM board_tables\n       JOIN sheets"))).toHaveLength(3);
-      expect(statements.filter((statement) => statement.sql.includes("WITH manifest AS"))).toHaveLength(6);
-      expect(statements.filter((statement) => statement.sql.includes("FROM user_settings"))).toHaveLength(1);
+      expect(
+        statements.filter((statement) =>
+          statement.sql.includes("FROM sheets\n     WHERE id = ? AND user_id = ?")
+        )
+      ).toHaveLength(3);
+      const manifestStatements = statements.filter((statement) => statement.sql.includes("WITH manifest AS"));
+      expect(manifestStatements).toHaveLength(6);
+      expect(statements.filter((statement) => statement.sql.includes("user_settings"))).toEqual(manifestStatements);
     } finally {
       database.close();
     }
@@ -1160,8 +1234,8 @@ describe("sheet-aware board reads", () => {
         show_item_level: 1,
         show_combat_power: 0
       });
-      expect(statements).toHaveLength(19);
-      expect(statements.length).toBeLessThanOrEqual(19);
+      expect(statements).toHaveLength(18);
+      expect(statements.length).toBeLessThanOrEqual(18);
       expect(statements.every((statement) => statement.values.length < 100)).toBe(true);
       expect(statements.filter((statement) => statement.sql.includes("INSERT INTO board_axis_items"))).toHaveLength(2);
       expect(statements.some((statement) => statement.sql.includes("FROM json_each"))).toBe(true);
@@ -1220,10 +1294,39 @@ describe("sheet-aware board reads", () => {
       await expect(loadBoardVersionSummary(env, "user-1")).resolves.toEqual({
         manifestVersion: manifest.version,
         sheets: manifest.sheets,
-        periodFingerprint: ""
+        periodFingerprint: "",
+        settings: {
+          show_display_name: 1,
+          show_server_name: 1,
+          show_class_name: 0,
+          show_item_level: 1,
+          show_combat_power: 0
+        }
       });
       expect(statements).toHaveLength(1);
       expect(statements[0]?.sql).toContain("WITH manifest AS");
+      expect(statements[0]?.sql).toContain("user_settings");
+      expect(statements[0]?.sql).not.toMatch(/SELECT\s+\*/i);
+    });
+  });
+
+  it("uses display setting defaults in a one-statement version summary when settings are absent", async () => {
+    await withEstablishedBoard(async ({ database, env, statements }) => {
+      database.prepare("DELETE FROM user_settings WHERE user_id = ?").run("user-1");
+
+      await expect(loadBoardVersionSummary(env, "user-1")).resolves.toMatchObject({
+        manifestVersion: 9,
+        periodFingerprint: "",
+        settings: {
+          show_display_name: 1,
+          show_server_name: 0,
+          show_class_name: 0,
+          show_item_level: 1,
+          show_combat_power: 0
+        }
+      });
+      expect(statements).toHaveLength(1);
+      expect(statements[0]?.sql).toContain("user_settings");
       expect(statements[0]?.sql).not.toMatch(/SELECT\s+\*/i);
     });
   });

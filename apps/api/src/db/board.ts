@@ -39,7 +39,10 @@ import {
   type GuardedBoardCellStatePayloadRow,
   type GuardedBoardCompletionPayloadRow
 } from "./boardBulkSql";
-import type { BoardVersionSummary as CanonicalBoardVersionSummary } from "./boardReads";
+import type {
+  BoardDisplaySettings,
+  BoardVersionSummary as CanonicalBoardVersionSummary
+} from "./boardReads";
 
 export type { BoardVersionSummary } from "./boardReads";
 
@@ -469,7 +472,7 @@ const DEFAULT_BOARD_DISPLAY_SETTINGS = {
   show_class_name: 0,
   show_item_level: 1,
   show_combat_power: 0
-};
+} satisfies BoardDisplaySettings;
 
 function serializeBoardDisplaySettings(settings: BoardDisplaySettingsInput | null | undefined): string | null {
   return settings ? JSON.stringify(settings) : null;
@@ -1641,18 +1644,29 @@ export async function loadBoardVersionSummary(
        ) AS manifest_version
      )
      SELECT manifest.manifest_version,
+            COALESCE(user_settings.show_display_name, 1) AS show_display_name,
+            COALESCE(user_settings.show_server_name, 0) AS show_server_name,
+            COALESCE(user_settings.show_class_name, 0) AS show_class_name,
+            COALESCE(user_settings.show_item_level, 1) AS show_item_level,
+            COALESCE(user_settings.show_combat_power, 0) AS show_combat_power,
             sheets.id,
             sheets.name,
             sheets.sort_order,
             sheets.is_default,
             sheets.content_version AS version
      FROM manifest
+     LEFT JOIN user_settings ON user_settings.user_id = ?1
      LEFT JOIN sheets ON sheets.user_id = ?1
      ORDER BY sheets.sort_order, sheets.name`
   )
     .bind(userId)
     .all<{
       manifest_version: number;
+      show_display_name: number;
+      show_server_name: number;
+      show_class_name: number;
+      show_item_level: number;
+      show_combat_power: number;
       id: string | null;
       name: string | null;
       sort_order: number | null;
@@ -1660,8 +1674,9 @@ export async function loadBoardVersionSummary(
       version: number | null;
     }>();
 
+  const firstRow = rows.results[0];
   return {
-    manifestVersion: rows.results[0]?.manifest_version ?? 0,
+    manifestVersion: firstRow?.manifest_version ?? 0,
     sheets: rows.results.flatMap((sheet) => {
       if (sheet.id === null) return [];
       if (
@@ -1682,7 +1697,16 @@ export async function loadBoardVersionSummary(
         }
       ];
     }),
-    periodFingerprint: ""
+    periodFingerprint: "",
+    settings: firstRow
+      ? {
+          show_display_name: firstRow.show_display_name,
+          show_server_name: firstRow.show_server_name,
+          show_class_name: firstRow.show_class_name,
+          show_item_level: firstRow.show_item_level,
+          show_combat_power: firstRow.show_combat_power
+        }
+      : { ...DEFAULT_BOARD_DISPLAY_SETTINGS }
   };
 }
 

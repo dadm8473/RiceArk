@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { ApiClientError } from "../../api/client";
 import {
@@ -23,7 +23,7 @@ import {
   reportBoardReloadErrorIfCurrent,
   shouldReloadForBoardBroadcast
 } from "./useBoard";
-import type { BoardPayload } from "./types";
+import type { BoardDisplaySettings, BoardPayload } from "./types";
 
 const emptyBoard: BoardPayload = {
   userId: "user-1",
@@ -41,6 +41,8 @@ const emptyBoard: BoardPayload = {
   cellStates: [],
   completions: []
 };
+
+expectTypeOf<BoardPayload["settings"]>().toEqualTypeOf<BoardDisplaySettings>();
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -105,6 +107,21 @@ describe("formatBoardError", () => {
       "daily:2026-06-05|weekly:2026-06-03"
     );
     expect(buildBoardVersionKey(summary, board, new Date("2026-06-05T03:00:00.000Z"))).toContain(
+      "daily:2026-06-05|weekly:2026-06-03"
+    );
+  });
+
+  it("sorts unique reset period keys independently of task input order", () => {
+    const board = {
+      axisItems: [
+        { kind: "task", task_reset_rule_json: '{"type":"weekly","weekday":3,"hour":6,"timezone":"Asia/Seoul"}' },
+        { kind: "task", task_reset_rule_json: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}' },
+        { kind: "custom", task_reset_rule_json: null },
+        { kind: "task", task_reset_rule_json: '{"type":"weekly","weekday":3,"hour":6,"timezone":"Asia/Seoul"}' }
+      ]
+    };
+
+    expect(buildLocalBoardPeriodFingerprint(board, new Date("2026-06-05T03:00:00.000Z"))).toBe(
       "daily:2026-06-05|weekly:2026-06-03"
     );
   });
@@ -186,6 +203,57 @@ describe("formatBoardError", () => {
     });
 
     expect(buildBoardVersionKey(afterStalePoll, board)).toBe(acknowledgedKey);
+  });
+
+  it("replaces provided display settings and preserves them when later updates omit settings", () => {
+    const initialSettings: BoardDisplaySettings = {
+      show_display_name: 1,
+      show_server_name: 0,
+      show_class_name: 0,
+      show_item_level: 1,
+      show_combat_power: 0
+    };
+    const incomingSettings: BoardDisplaySettings = {
+      show_display_name: 0,
+      show_server_name: 1,
+      show_class_name: 1,
+      show_item_level: 0,
+      show_combat_power: 1
+    };
+    const initial = mergeBoardVersionSummary(null, {
+      manifestVersion: 8,
+      sheets: [{ id: "sheet-1", version: 7 }],
+      periodFingerprint: "current-period",
+      settings: initialSettings
+    });
+    const afterSettingsSummary = mergeBoardVersionSummary(initial, {
+      manifestVersion: 6,
+      sheets: [{ id: "sheet-1", version: 5 }],
+      periodFingerprint: "stale-period",
+      settings: incomingSettings
+    });
+
+    expect(afterSettingsSummary).toEqual({
+      manifestVersion: 8,
+      sheets: [{ id: "sheet-1", version: 7 }],
+      periodFingerprint: "stale-period",
+      settings: incomingSettings
+    });
+
+    const afterMutation = mergeBoardVersionSummary(afterSettingsSummary, {
+      manifestVersion: 9,
+      sheets: [{ id: "sheet-1", version: 8 }]
+    });
+    expect(afterMutation.settings).toEqual(incomingSettings);
+
+    const afterStaleSummaryWithoutSettings = mergeBoardVersionSummary(afterMutation, {
+      manifestVersion: 7,
+      sheets: [{ id: "sheet-1", version: 6 }],
+      periodFingerprint: "older-period"
+    });
+    expect(afterStaleSummaryWithoutSettings.settings).toEqual(incomingSettings);
+    expect(afterStaleSummaryWithoutSettings.manifestVersion).toBe(9);
+    expect(afterStaleSummaryWithoutSettings.sheets).toEqual([{ id: "sheet-1", version: 8 }]);
   });
 });
 

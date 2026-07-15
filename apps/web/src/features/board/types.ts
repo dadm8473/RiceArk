@@ -96,17 +96,19 @@ export interface BoardMutationVersions {
   manifestVersion?: number;
 }
 
+export interface BoardDisplaySettings {
+  show_display_name: number;
+  show_server_name: number;
+  show_class_name: number;
+  show_item_level: number;
+  show_combat_power: number;
+}
+
 export interface BoardPayload {
   userId: string;
   readOnly?: boolean | undefined;
   shareId?: string | undefined;
-  settings: {
-    show_display_name: number;
-    show_server_name: number;
-    show_class_name: number;
-    show_item_level: number;
-    show_combat_power: number;
-  };
+  settings: BoardDisplaySettings;
   sheets: BoardSheet[];
   tables: BoardTable[];
   notes: BoardNote[];

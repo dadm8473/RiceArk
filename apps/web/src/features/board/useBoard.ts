@@ -3,7 +3,7 @@ import { getPeriodKey, type ResetRule } from "@riceark/core";
 import { ApiClientError, apiGet } from "../../api/client";
 import { applyBoardCompletionPatch, type BoardCompletionPatch } from "./completions";
 import { applyBoardCellStatePatch, type BoardCellStatePatch } from "./cellStates";
-import type { BoardMutationVersions, BoardPayload } from "./types";
+import type { BoardDisplaySettings, BoardMutationVersions, BoardPayload } from "./types";
 import { attachBoardQueueLifecycle, createBoardCompletionQueue, type BoardPatchApi } from "./useBoardCompletionQueue";
 import { createBoardCellStateQueue } from "./useBoardCellStateQueue";
 import { ReliablePatchQueueFlushError } from "./reliablePatchQueue";
@@ -26,10 +26,12 @@ export interface BoardVersionSummary {
   manifestVersion: number;
   sheets: Array<{ id: string; version: number }>;
   periodFingerprint: string;
+  settings?: BoardDisplaySettings | undefined;
 }
 
 type BoardVersionUpdate = Pick<BoardMutationVersions, "sheets" | "manifestVersion"> & {
   periodFingerprint?: string | undefined;
+  settings?: BoardDisplaySettings | undefined;
 };
 
 export function mergeBoardVersionSummary(
@@ -40,13 +42,15 @@ export function mergeBoardVersionSummary(
   for (const sheet of incoming.sheets) {
     sheetVersions.set(sheet.id, Math.max(sheetVersions.get(sheet.id) ?? 0, sheet.version));
   }
+  const settings = incoming.settings ?? current?.settings;
   return {
     manifestVersion: Math.max(current?.manifestVersion ?? 0, incoming.manifestVersion ?? 0),
     sheets: [...sheetVersions].map(([id, version]) => ({ id, version })),
     periodFingerprint:
       incoming.periodFingerprint !== undefined
         ? incoming.periodFingerprint
-        : (current?.periodFingerprint ?? "")
+        : (current?.periodFingerprint ?? ""),
+    ...(settings === undefined ? {} : { settings })
   };
 }
 
@@ -843,7 +847,7 @@ export function buildLocalBoardPeriodFingerprint(
       // Invalid legacy reset rules should not make lightweight version checks fail.
     }
   }
-  return [...periodKeys].join("|");
+  return [...periodKeys].sort().join("|");
 }
 
 export function buildBoardVersionKey(
