@@ -90,4 +90,24 @@ describe("AuthMenu", () => {
 
     expect(html).toContain("다크모드(Beta)");
   });
+
+  it("shows retry and discard logout commands only while logout is blocked", () => {
+    const baseProps = {
+      menuOpen: true,
+      status: "authenticated" as const,
+      user: { id: "user-1", displayName: "쌀먹도사", avatarUrl: null },
+      onLogout: vi.fn(),
+      onRetryLogout: vi.fn(),
+      onDiscardLogout: vi.fn()
+    };
+    const normalHtml = renderToStaticMarkup(createElement(AuthMenu, baseProps));
+    const blockedHtml = renderToStaticMarkup(createElement(AuthMenu, { ...baseProps, logoutBlocked: true }));
+
+    expect(normalHtml).not.toContain("저장 재시도 후 로그아웃");
+    expect(normalHtml).not.toContain("변경사항 삭제 후 로그아웃");
+    expect(blockedHtml).toContain("변경사항을 저장하지 못했습니다");
+    expect(blockedHtml).toContain("저장 재시도 후 로그아웃");
+    expect(blockedHtml).toContain("변경사항 삭제 후 로그아웃");
+    expect(blockedHtml).not.toContain(">로그아웃<");
+  });
 });

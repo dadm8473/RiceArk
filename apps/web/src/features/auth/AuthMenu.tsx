@@ -1,4 +1,4 @@
-import { Check, ChevronDown, LogOut, Moon, Pencil, Sun, UserCircle, X } from "lucide-react";
+import { Check, ChevronDown, LogOut, Moon, Pencil, RefreshCw, Sun, Trash2, UserCircle, X } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import type { AuthUser } from "./useSession";
 
@@ -11,12 +11,15 @@ interface AuthMenuProps {
   status: AuthMenuStatus;
   user?: AuthUser | null;
   menuOpen: boolean;
+  logoutBlocked?: boolean;
   logoutPending?: boolean;
   theme?: AppTheme;
   onToggleMenu?: () => void;
   onThemeToggle?: () => void;
   onDisplayNameSave?: ((displayName: string) => Promise<void>) | undefined;
+  onDiscardLogout?: (() => void) | undefined;
   onLogout: () => void;
+  onRetryLogout?: (() => void) | undefined;
 }
 
 function getAvatarInitial(user: AuthUser): string {
@@ -27,12 +30,15 @@ export function AuthMenu({
   status,
   user,
   menuOpen,
+  logoutBlocked = false,
   logoutPending = false,
   theme = "light",
   onToggleMenu,
   onThemeToggle,
   onDisplayNameSave,
-  onLogout
+  onDiscardLogout,
+  onLogout,
+  onRetryLogout
 }: AuthMenuProps) {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -107,7 +113,7 @@ export function AuthMenu({
         <ChevronDown aria-hidden="true" size={16} />
       </button>
       {menuOpen ? (
-        <div className="profile-menu" role="menu">
+        <div className={`profile-menu${logoutBlocked ? " profile-menu-recovery" : ""}`} role="menu">
           {editingName ? (
             <form className="profile-name-edit" onSubmit={submitNameEdit}>
               <input
@@ -146,10 +152,24 @@ export function AuthMenu({
             {theme === "dark" ? <Sun aria-hidden="true" size={16} /> : <Moon aria-hidden="true" size={16} />}
             {theme === "dark" ? "라이트모드" : "다크모드(Beta)"}
           </button>
-          <button disabled={logoutPending} role="menuitem" type="button" onClick={onLogout}>
-            <LogOut aria-hidden="true" size={16} />
-            {logoutPending ? "로그아웃 중..." : "로그아웃"}
-          </button>
+          {logoutBlocked ? (
+            <>
+              <p className="profile-logout-warning" role="alert">변경사항을 저장하지 못했습니다. 다시 시도하거나 변경사항을 삭제해주세요.</p>
+              <button disabled={logoutPending} role="menuitem" type="button" onClick={onRetryLogout}>
+                <RefreshCw aria-hidden="true" size={16} />
+                저장 재시도 후 로그아웃
+              </button>
+              <button disabled={logoutPending} role="menuitem" type="button" onClick={onDiscardLogout}>
+                <Trash2 aria-hidden="true" size={16} />
+                변경사항 삭제 후 로그아웃
+              </button>
+            </>
+          ) : (
+            <button disabled={logoutPending} role="menuitem" type="button" onClick={onLogout}>
+              <LogOut aria-hidden="true" size={16} />
+              {logoutPending ? "로그아웃 중..." : "로그아웃"}
+            </button>
+          )}
         </div>
       ) : null}
     </div>

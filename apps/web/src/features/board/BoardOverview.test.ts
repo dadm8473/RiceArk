@@ -126,6 +126,17 @@ describe("BoardOverview", () => {
     expect(source).not.toContain("shared-readonly-badge");
   });
 
+  it("delegates completion and cell-state persistence to owner-scoped enqueue callbacks", () => {
+    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("enqueueCompletion");
+    expect(source).toContain("enqueueCellState");
+    expect(source).not.toContain("useBoardCompletionQueue");
+    expect(source).not.toContain('apiPatch("/api/board/cell-states"');
+    expect(source).not.toContain("pendingCompletionPatchesRef");
+    expect(source).not.toMatch(/handleCellMarkPaint[\s\S]{0,2200}refreshBoard\(\)/);
+  });
+
   it("builds note save requests from only the fields the user changed", () => {
     const note = {
       id: "note-1",

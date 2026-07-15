@@ -19,7 +19,6 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { AlertTriangle, Bell, Check, Clock, Columns3, Flag, Lock, Minus, Pencil, Pin, Plus, RefreshCw, Rows3, Save, Settings, Shuffle, Star, StickyNote, Tag, Trash2, Unlock, UserPlus, X } from "lucide-react";
 import {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -46,7 +45,6 @@ import {
 } from "./cellStates";
 import {
   applyBoardCompletionPatch,
-  applyPendingBoardCompletionPatches,
   getBoardCellPeriodKey,
   type BoardCompletionPatch
 } from "./completions";
@@ -64,10 +62,11 @@ import {
   type BoardTableLayoutPointerStart
 } from "./tableLayout";
 import type { BoardAxis, BoardAxisItem, BoardCellState, BoardNote, BoardOrientation, BoardPayload, BoardSheet, BoardTable } from "./types";
-import { useBoardCompletionQueue } from "./useBoardCompletionQueue";
 
 interface Props {
   board: BoardPayload;
+  enqueueCellState?: ((patch: BoardCellStatePatch) => void) | undefined;
+  enqueueCompletion?: ((patch: BoardCompletionPatch) => void) | undefined;
   onBoardChanged?: () => Promise<BoardPayload | null> | void;
   readOnly?: boolean | undefined;
 }
@@ -1075,15 +1074,15 @@ function isBoardTableLocked(table: BoardTable): boolean {
   return table.locked === 1;
 }
 
-export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props) {
+export function BoardOverview({
+  board,
+  enqueueCellState,
+  enqueueCompletion,
+  onBoardChanged,
+  readOnly = false
+}: Props) {
   const isReadOnly = readOnly || board.readOnly === true;
   const [completions, setCompletions] = useState(board.completions);
-  const pendingCompletionPatchesRef = useRef<BoardCompletionPatch[]>([]);
-  const handlePendingCompletionPatchesChange = useCallback((patches: BoardCompletionPatch[]) => {
-    pendingCompletionPatchesRef.current = patches;
-    setCompletions((current) => applyPendingBoardCompletionPatches(current, patches));
-  }, []);
-  const { enqueue } = useBoardCompletionQueue({ onPendingPatchesChange: handlePendingCompletionPatchesChange });
   const [cellStates, setCellStates] = useState(board.cellStates);
   const [axisItems, setAxisItems] = useState(board.axisItems);
   const [tables, setTables] = useState(board.tables);
@@ -1176,7 +1175,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
   }, [isReadOnly]);
 
   useEffect(() => {
-    setCompletions(applyPendingBoardCompletionPatches(board.completions, pendingCompletionPatchesRef.current));
+    setCompletions(board.completions);
   }, [board.completions]);
 
   useEffect(() => {
@@ -1337,14 +1336,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
   function handleCompletionToggle(patch: BoardCompletionPatch) {
     if (isReadOnly) return;
     setCompletions((current) => applyBoardCompletionPatch(current, patch));
-    enqueue(patch);
-  }
-
-  async function handleCellStatesSave(patches: BoardCellStatePatch[]) {
-    if (patches.length === 0) return;
-
-    await apiPatch("/api/board/cell-states", { patches });
-    setCellStates((current) => patches.reduce((next, patch) => applyBoardCellStatePatch(next, patch), current));
+    enqueueCompletion?.(patch);
   }
 
   function handleCellMarkPaint(
@@ -1387,10 +1379,7 @@ export function BoardOverview({ board, onBoardChanged, readOnly = false }: Props
     };
 
     setCellStates((current) => applyBoardCellStatePatch(current, patch));
-    void apiPatch("/api/board/cell-states", { patches: [patch] }).catch(async (err) => {
-      setFormError(err instanceof Error ? err.message : "체크마크 설정을 저장하지 못했습니다.");
-      await refreshBoard();
-    });
+    enqueueCellState?.(patch);
   }
 
   async function handleAxisItemSave(

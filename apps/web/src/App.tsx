@@ -13,6 +13,49 @@ import { SharedRiceBinPanel } from "./features/shared-rice-bin/SharedRiceBinPane
 const SHARE_ID_PATH_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const SHARE_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 
+export type DurableLogoutMode = "normal" | "retry" | "discard";
+
+export class DurableLogoutError extends Error {
+  constructor(
+    public readonly stage: "flush" | "logout",
+    public readonly cause: unknown
+  ) {
+    super(`Durable logout failed during ${stage}`);
+    this.name = "DurableLogoutError";
+  }
+}
+
+export async function runDurableLogout({
+  mode,
+  flushPendingWrites,
+  retryPendingWrites,
+  discardPendingWrites,
+  logout
+}: {
+  mode: DurableLogoutMode;
+  flushPendingWrites: () => Promise<void>;
+  retryPendingWrites: () => void;
+  discardPendingWrites: () => void;
+  logout: () => Promise<void>;
+}): Promise<void> {
+  if (mode === "retry") retryPendingWrites();
+  if (mode === "discard") {
+    discardPendingWrites();
+  } else {
+    try {
+      await flushPendingWrites();
+    } catch (error) {
+      throw new DurableLogoutError("flush", error);
+    }
+  }
+
+  try {
+    await logout();
+  } catch (error) {
+    throw new DurableLogoutError("logout", error);
+  }
+}
+
 export function getAuthErrorMessage(search: string): string | null {
   const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
   if (params.get("authError") !== "oauth_unavailable") return null;
@@ -123,11 +166,16 @@ export function App() {
   const isAdmin = isAuthenticated && session.user.isAdmin === true;
   const isBoardEnabled = isAuthenticated && (activeView === "board" || activeView === "shared");
   const isBoardPollingEnabled = isAuthenticated && activeView === "board";
-  const board = useBoard({ enabled: isBoardEnabled, pollingEnabled: isBoardPollingEnabled });
+  const board = useBoard({
+    enabled: isBoardEnabled,
+    pollingEnabled: isBoardPollingEnabled,
+    userId: isAuthenticated ? session.user.id : null
+  });
   const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [patchNotesOpen, setPatchNotesOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
+  const [logoutBlocked, setLogoutBlocked] = useState(false);
   const [theme, setTheme] = useState<AppTheme>(() =>
     getStoredAppTheme(typeof window === "undefined" ? null : window.localStorage)
   );
@@ -183,17 +231,30 @@ export function App() {
     if (!isAdmin) applyAppRoute({ activeView: "board", shareId: null, sheetId: null }, "replace");
   }, [activeView, isAdmin, session.status]);
 
-  const handleLogout = async () => {
+  const attemptLogout = async (mode: DurableLogoutMode) => {
     setLogoutPending(true);
     setAuthMenuOpen(false);
+    setLogoutBlocked(false);
     try {
-      await apiPostNoContent("/api/auth/logout");
+      await runDurableLogout({
+        mode,
+        flushPendingWrites: board.flushPendingWrites,
+        retryPendingWrites: board.retryPendingWrites,
+        discardPendingWrites: board.discardPendingWrites,
+        logout: () => apiPostNoContent("/api/auth/logout")
+      });
       window.location.assign("/");
     } catch (err) {
       setLogoutPending(false);
+      setAuthMenuOpen(true);
+      setLogoutBlocked(err instanceof DurableLogoutError && err.stage === "flush");
       console.error(err);
     }
   };
+
+  const handleLogout = () => void attemptLogout("normal");
+  const handleRetryLogout = () => void attemptLogout("retry");
+  const handleDiscardLogout = () => void attemptLogout("discard");
 
   const handleThemeToggle = () => {
     setTheme((current) => (current === "dark" ? "light" : "dark"));
@@ -268,13 +329,16 @@ export function App() {
             문의하기
           </a>
           <AuthMenu
+            logoutBlocked={logoutBlocked}
             logoutPending={logoutPending}
             menuOpen={authMenuOpen}
             status={session.status}
             theme={theme}
             user={session.user}
             onDisplayNameSave={handleDisplayNameSave}
+            onDiscardLogout={handleDiscardLogout}
             onLogout={handleLogout}
+            onRetryLogout={handleRetryLogout}
             onThemeToggle={handleThemeToggle}
             onToggleMenu={() => setAuthMenuOpen((open) => !open)}
           />
@@ -302,7 +366,14 @@ export function App() {
             <>
               {board.error ? <p className="error-text">{board.error}</p> : null}
               {!board.data && !board.error ? <p>로스트아크 숙제 체크리스트를 불러오는 중입니다.</p> : null}
-              {board.data ? <BoardOverview board={board.data} onBoardChanged={board.reload} /> : null}
+              {board.data ? (
+                <BoardOverview
+                  board={board.data}
+                  enqueueCellState={board.enqueueCellState}
+                  enqueueCompletion={board.enqueueCompletion}
+                  onBoardChanged={board.reload}
+                />
+              ) : null}
             </>
           ) : null
         ) : (

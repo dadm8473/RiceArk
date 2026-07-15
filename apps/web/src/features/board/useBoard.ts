@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getPeriodKey, type ResetRule } from "@riceark/core";
 import { ApiClientError, apiGet } from "../../api/client";
-import type { BoardPayload } from "./types";
+import { applyBoardCompletionPatch, type BoardCompletionPatch } from "./completions";
+import { applyBoardCellStatePatch, type BoardCellStatePatch } from "./cellStates";
+import type { BoardMutationVersions, BoardPayload } from "./types";
+import { attachBoardQueueLifecycle, createBoardCompletionQueue, type BoardPatchApi } from "./useBoardCompletionQueue";
+import { createBoardCellStateQueue } from "./useBoardCellStateQueue";
 
 export const BOARD_VERSION_CHECK_INTERVAL_MS = 120_000;
 export const BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS = BOARD_VERSION_CHECK_INTERVAL_MS;
@@ -19,6 +23,225 @@ export interface BoardVersionSummary {
   manifestVersion: number;
   sheets: Array<{ id: string; version: number }>;
   periodFingerprint: string;
+}
+
+type BoardVersionUpdate = Pick<BoardMutationVersions, "sheets" | "manifestVersion"> & {
+  periodFingerprint?: string | undefined;
+};
+
+export function mergeBoardVersionSummary(
+  current: BoardVersionSummary | null,
+  incoming: BoardVersionUpdate
+): BoardVersionSummary {
+  const sheetVersions = new Map(current?.sheets.map(({ id, version }) => [id, version]) ?? []);
+  for (const sheet of incoming.sheets) {
+    sheetVersions.set(sheet.id, Math.max(sheetVersions.get(sheet.id) ?? 0, sheet.version));
+  }
+  return {
+    manifestVersion: Math.max(current?.manifestVersion ?? 0, incoming.manifestVersion ?? 0),
+    sheets: [...sheetVersions].map(([id, version]) => ({ id, version })),
+    periodFingerprint:
+      incoming.periodFingerprint !== undefined
+        ? incoming.periodFingerprint
+        : (current?.periodFingerprint ?? "")
+  };
+}
+
+export interface BoardWriteSnapshot {
+  data: BoardPayload | null;
+  hasPendingWrites: boolean;
+  pendingWriteError: string | null;
+}
+
+interface BoardQueueControl<T> {
+  enqueue: (patch: T) => void;
+  flush: () => Promise<void>;
+  retry: () => void;
+  discard: () => T[];
+  dispose: () => T[];
+  getPendingSnapshot: () => T[];
+}
+
+interface BoardWriteCoordinatorOptions {
+  attachLifecycle?: boolean | undefined;
+  onChange?: ((snapshot: BoardWriteSnapshot) => void) | undefined;
+  onVersions?: ((versions: BoardMutationVersions) => void) | undefined;
+  patch?: BoardPatchApi | undefined;
+  queueOverrides?: {
+    completion?: Partial<BoardQueueControl<BoardCompletionPatch>> | undefined;
+    cellState?: Partial<BoardQueueControl<BoardCellStatePatch>> | undefined;
+  } | undefined;
+}
+
+export interface BoardWriteCoordinator {
+  readonly userId: string;
+  setAuthoritativeBase: (payload: BoardPayload) => void;
+  getAuthoritativeBase: () => BoardPayload | null;
+  getVisibleData: () => BoardPayload | null;
+  getSnapshot: () => BoardWriteSnapshot;
+  enqueueCompletion: (patch: BoardCompletionPatch) => void;
+  enqueueCellState: (patch: BoardCellStatePatch) => void;
+  flushPendingWrites: () => Promise<void>;
+  retryPendingWrites: () => void;
+  discardPendingWrites: () => void;
+  discardAndDispose: () => void;
+}
+
+function applyBoardWriteOverlays(
+  base: BoardPayload | null,
+  completionPatches: BoardCompletionPatch[],
+  cellStatePatches: BoardCellStatePatch[]
+): BoardPayload | null {
+  if (!base) return null;
+  return {
+    ...base,
+    completions: completionPatches.reduce(
+      (completions, patch) => applyBoardCompletionPatch(completions, patch),
+      base.completions
+    ),
+    cellStates: cellStatePatches.reduce(
+      (cellStates, patch) => applyBoardCellStatePatch(cellStates, patch),
+      base.cellStates
+    )
+  };
+}
+
+function formatPendingWriteError(error: unknown): string {
+  return error instanceof Error ? error.message : "변경사항을 저장하지 못했습니다.";
+}
+
+export function createBoardWriteCoordinator(
+  userId: string,
+  options: BoardWriteCoordinatorOptions = {}
+): BoardWriteCoordinator {
+  let authoritativeBase: BoardPayload | null = null;
+  let pendingCompletions: BoardCompletionPatch[] = [];
+  let pendingCellStates: BoardCellStatePatch[] = [];
+  let pendingWriteError: string | null = null;
+  let disposed = false;
+
+  const getVisibleData = () => applyBoardWriteOverlays(authoritativeBase, pendingCompletions, pendingCellStates);
+  const getSnapshot = (): BoardWriteSnapshot => ({
+    data: getVisibleData(),
+    hasPendingWrites: pendingCompletions.length > 0 || pendingCellStates.length > 0,
+    pendingWriteError
+  });
+  const emit = () => options.onChange?.(getSnapshot());
+  const reportPermanentFailure = (message: string) => {
+    pendingWriteError = message;
+    emit();
+  };
+  const reportAuthPause = (error: ApiClientError) => {
+    pendingWriteError = error.message;
+    emit();
+  };
+
+  const completionQueue = createBoardCompletionQueue({
+    ...(options.patch ? { patch: options.patch } : {}),
+    onPendingChange: (patches) => {
+      pendingCompletions = patches;
+      emit();
+    },
+    onAccepted: (patches) => {
+      if (disposed) return;
+      if (authoritativeBase) {
+        authoritativeBase = {
+          ...authoritativeBase,
+          completions: patches.reduce(
+            (completions, patch) => applyBoardCompletionPatch(completions, patch),
+            authoritativeBase.completions
+          )
+        };
+      }
+      pendingWriteError = null;
+      emit();
+    },
+    onPermanentFailure: (outcome) => reportPermanentFailure(outcome.message),
+    onAuthPause: reportAuthPause,
+    ...(options.onVersions ? { onVersions: options.onVersions } : {})
+  });
+  const cellStateQueue = createBoardCellStateQueue({
+    ...(options.patch ? { patch: options.patch } : {}),
+    onPendingChange: (patches) => {
+      pendingCellStates = patches;
+      emit();
+    },
+    onAccepted: (patches) => {
+      if (disposed) return;
+      if (authoritativeBase) {
+        authoritativeBase = {
+          ...authoritativeBase,
+          cellStates: patches.reduce(
+            (cellStates, patch) => applyBoardCellStatePatch(cellStates, patch),
+            authoritativeBase.cellStates
+          )
+        };
+      }
+      pendingWriteError = null;
+      emit();
+    },
+    onPermanentFailure: (outcome) => reportPermanentFailure(outcome.message),
+    onAuthPause: reportAuthPause,
+    ...(options.onVersions ? { onVersions: options.onVersions } : {})
+  });
+  Object.assign(completionQueue, options.queueOverrides?.completion);
+  Object.assign(cellStateQueue, options.queueOverrides?.cellState);
+  const detachLifecycle = options.attachLifecycle === false
+    ? () => undefined
+    : attachBoardQueueLifecycle({ queues: [completionQueue, cellStateQueue] });
+
+  const discardPendingWrites = () => {
+    completionQueue.discard();
+    cellStateQueue.discard();
+    pendingCompletions = [];
+    pendingCellStates = [];
+    pendingWriteError = null;
+    emit();
+  };
+
+  return {
+    userId,
+    setAuthoritativeBase: (payload) => {
+      if (disposed) return;
+      authoritativeBase = payload;
+      emit();
+    },
+    getAuthoritativeBase: () => authoritativeBase,
+    getVisibleData,
+    getSnapshot,
+    enqueueCompletion: (patch) => completionQueue.enqueue(patch),
+    enqueueCellState: (patch) => cellStateQueue.enqueue(patch),
+    flushPendingWrites: async () => {
+      const results = await Promise.allSettled([completionQueue.flush(), cellStateQueue.flush()]);
+      const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failure) {
+        pendingWriteError = formatPendingWriteError(failure.reason);
+        emit();
+        throw failure.reason;
+      }
+    },
+    retryPendingWrites: () => {
+      pendingWriteError = null;
+      completionQueue.retry();
+      cellStateQueue.retry();
+      emit();
+    },
+    discardPendingWrites,
+    discardAndDispose: () => {
+      if (disposed) return;
+      disposed = true;
+      detachLifecycle();
+      completionQueue.discard();
+      cellStateQueue.discard();
+      completionQueue.dispose();
+      cellStateQueue.dispose();
+      authoritativeBase = null;
+      pendingCompletions = [];
+      pendingCellStates = [];
+      pendingWriteError = null;
+      emit();
+    }
+  };
 }
 
 interface BoardPeriodFingerprintSource {
@@ -231,16 +454,22 @@ export function buildBoardVersionKey(
 
 export function useBoard({
   enabled = true,
-  pollingEnabled = enabled
-}: { enabled?: boolean | undefined; pollingEnabled?: boolean | undefined } = {}) {
+  pollingEnabled = enabled,
+  userId = null
+}: { enabled?: boolean | undefined; pollingEnabled?: boolean | undefined; userId?: string | null | undefined } = {}) {
   const [data, setData] = useState<BoardPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hasPendingWrites, setHasPendingWrites] = useState(false);
+  const [pendingWriteError, setPendingWriteError] = useState<string | null>(null);
   const dataRef = useRef<BoardPayload | null>(null);
+  const enabledRef = useRef(enabled);
+  const coordinatorRef = useRef<BoardWriteCoordinator | null>(null);
   const versionKeyRef = useRef<string | null>(null);
   const lastVersionSummaryRef = useRef<BoardVersionSummary | null>(null);
   const lastActivityAtRef = useRef(Date.now());
   const pollingClientIdRef = useRef<string | null>(null);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  enabledRef.current = enabled;
 
   function setBoardData(payload: BoardPayload | null) {
     dataRef.current = payload;
@@ -249,43 +478,89 @@ export function useBoard({
 
   async function refreshVersionKey(boardForFingerprint: BoardPayload | null = dataRef.current) {
     const summary = await apiGet<BoardVersionSummary>("/api/board/versions");
-    lastVersionSummaryRef.current = summary;
-    versionKeyRef.current = buildBoardVersionKey(summary, boardForFingerprint);
-    return summary;
+    const merged = mergeBoardVersionSummary(lastVersionSummaryRef.current, summary);
+    lastVersionSummaryRef.current = merged;
+    versionKeyRef.current = buildBoardVersionKey(merged, boardForFingerprint);
+    return merged;
   }
 
+  const handleMutationVersions = useCallback((versions: BoardMutationVersions) => {
+    const summary = mergeBoardVersionSummary(lastVersionSummaryRef.current, versions);
+    lastVersionSummaryRef.current = summary;
+    const versionKey = buildBoardVersionKey(summary, dataRef.current);
+    versionKeyRef.current = versionKey;
+    const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
+    pollingClientIdRef.current = clientId;
+    broadcastChannelRef.current?.postMessage({
+      sourceId: clientId,
+      type: "board-reload",
+      summary,
+      versionKey
+    } satisfies BoardPollingBroadcastMessage);
+  }, []);
+
+  useEffect(() => {
+    const previous = coordinatorRef.current;
+    if (previous) {
+      previous.discardAndDispose();
+      coordinatorRef.current = null;
+    }
+    setBoardData(null);
+    setHasPendingWrites(false);
+    setPendingWriteError(null);
+    versionKeyRef.current = null;
+    lastVersionSummaryRef.current = null;
+    if (!userId) return;
+
+    const coordinator = createBoardWriteCoordinator(userId, {
+      onChange: (snapshot) => {
+        setHasPendingWrites(snapshot.hasPendingWrites);
+        setPendingWriteError(snapshot.pendingWriteError);
+        setBoardData(enabledRef.current ? snapshot.data : null);
+      },
+      onVersions: handleMutationVersions
+    });
+    coordinatorRef.current = coordinator;
+    return () => {
+      if (coordinatorRef.current === coordinator) coordinatorRef.current = null;
+      coordinator.discardAndDispose();
+    };
+  }, [handleMutationVersions, userId]);
+
   const reload = useCallback(async (options: { refreshVersion?: boolean } = {}) => {
-    if (!enabled) return dataRef.current;
+    const coordinator = coordinatorRef.current;
+    if (!enabled || !coordinator || coordinator.userId !== userId) return dataRef.current;
     setError(null);
     try {
       const payload = await apiGet<BoardPayload>("/api/board");
-      setBoardData(payload);
+      if (coordinatorRef.current !== coordinator) return dataRef.current;
+      coordinator.setAuthoritativeBase(payload);
       const shouldRefreshVersion = options.refreshVersion ?? pollingEnabled;
       if (shouldRefreshVersion) void refreshVersionKey(payload).catch(() => {
         // Version checks are an optimization; the full board payload remains authoritative.
       });
-      return payload;
+      return coordinator.getVisibleData();
     } catch (err) {
       setError(formatBoardError(err));
       throw err;
     }
-  }, [enabled, pollingEnabled]);
+  }, [enabled, pollingEnabled, userId]);
 
   useEffect(() => {
     let active = true;
     setError(null);
-    if (!enabled) {
+    const coordinator = coordinatorRef.current;
+    if (!enabled || !userId || !coordinator || coordinator.userId !== userId) {
       setBoardData(null);
-      versionKeyRef.current = null;
-      lastVersionSummaryRef.current = null;
       return () => {
         active = false;
       };
     }
+    setBoardData(coordinator.getVisibleData());
     apiGet<BoardPayload>("/api/board")
       .then((payload) => {
-        if (active) {
-          setBoardData(payload);
+        if (active && coordinatorRef.current === coordinator) {
+          coordinator.setAuthoritativeBase(payload);
           if (pollingEnabled) void refreshVersionKey(payload).catch(() => {
             // Version checks are an optimization; the loaded board can still be used.
           });
@@ -297,7 +572,7 @@ export function useBoard({
     return () => {
       active = false;
     };
-  }, [enabled]);
+  }, [enabled, userId]);
 
   useEffect(() => {
     if (!enabled || !pollingEnabled) return;
@@ -323,8 +598,9 @@ export function useBoard({
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       if (!claimBoardPollingLeadership(storage, clientId)) return;
       try {
-        const summary = await apiGet<BoardVersionSummary>("/api/board/versions");
+        const responseSummary = await apiGet<BoardVersionSummary>("/api/board/versions");
         if (!active) return;
+        const summary = mergeBoardVersionSummary(lastVersionSummaryRef.current, responseSummary);
         const nextVersionKey = buildBoardVersionKey(summary, dataRef.current);
         lastVersionSummaryRef.current = summary;
         if (versionKeyRef.current && versionKeyRef.current !== nextVersionKey) {
@@ -396,7 +672,7 @@ export function useBoard({
   }, [enabled, pollingEnabled, reload]);
 
   useEffect(() => {
-    if (!enabled || !pollingEnabled) return;
+    if (!userId) return;
     if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") return;
     const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
     pollingClientIdRef.current = clientId;
@@ -405,15 +681,16 @@ export function useBoard({
     channel.onmessage = (event: MessageEvent<BoardPollingBroadcastMessage>) => {
       const message = event.data;
       if (!message || message.sourceId === clientId) return;
-      lastVersionSummaryRef.current = message.summary;
-      versionKeyRef.current = message.versionKey;
+      const summary = mergeBoardVersionSummary(lastVersionSummaryRef.current, message.summary);
+      lastVersionSummaryRef.current = summary;
+      versionKeyRef.current = buildBoardVersionKey(summary, dataRef.current);
       if (message.type === "board-reload") void reload({ refreshVersion: false });
     };
     return () => {
       if (broadcastChannelRef.current === channel) broadcastChannelRef.current = null;
       channel.close();
     };
-  }, [enabled, pollingEnabled, reload]);
+  }, [reload, userId]);
 
   useEffect(() => {
     if (!enabled || !pollingEnabled) return;
@@ -453,5 +730,34 @@ export function useBoard({
     };
   }, [enabled, data]);
 
-  return { data, error, reload };
+  const enqueueCompletion = useCallback((patch: BoardCompletionPatch) => {
+    coordinatorRef.current?.enqueueCompletion(patch);
+  }, []);
+  const enqueueCellState = useCallback((patch: BoardCellStatePatch) => {
+    coordinatorRef.current?.enqueueCellState(patch);
+  }, []);
+  const flushPendingWrites = useCallback(async () => {
+    await coordinatorRef.current?.flushPendingWrites();
+  }, []);
+  const retryPendingWrites = useCallback(() => {
+    coordinatorRef.current?.retryPendingWrites();
+  }, []);
+  const discardPendingWrites = useCallback(() => {
+    coordinatorRef.current?.discardPendingWrites();
+  }, []);
+
+  const matchesCurrentUser = Boolean(userId && coordinatorRef.current?.userId === userId);
+
+  return {
+    data: matchesCurrentUser ? data : null,
+    error,
+    reload,
+    enqueueCompletion,
+    enqueueCellState,
+    flushPendingWrites,
+    retryPendingWrites,
+    discardPendingWrites,
+    hasPendingWrites: matchesCurrentUser ? hasPendingWrites : false,
+    pendingWriteError: matchesCurrentUser ? pendingWriteError : null
+  };
 }

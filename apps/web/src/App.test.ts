@@ -8,7 +8,8 @@ import {
   getAppRouteUrl,
   getAuthErrorMessage,
   getDirectSharedRiceBinHistoryUrls,
-  getUrlWithoutSharedRiceBinId
+  getUrlWithoutSharedRiceBinId,
+  runDurableLogout
 } from "./App";
 
 const hooks = vi.hoisted(() => ({
@@ -17,6 +18,7 @@ const hooks = vi.hoisted(() => ({
     dependencies: readonly unknown[] | undefined;
   }>,
   useBoard: vi.fn(),
+  BoardOverview: vi.fn(),
   useSession: vi.fn()
 }));
 
@@ -31,7 +33,10 @@ vi.mock("react", async (importOriginal) => {
 });
 
 vi.mock("./features/board/BoardOverview", () => ({
-  BoardOverview: () => "board overview"
+  BoardOverview: (props: unknown) => {
+    hooks.BoardOverview(props);
+    return "board overview";
+  }
 }));
 
 vi.mock("./features/shared-rice-bin/SharedRiceBinPanel", () => ({
@@ -168,12 +173,99 @@ describe("app route helpers", () => {
   });
 });
 
+describe("runDurableLogout", () => {
+  it("flushes pending writes before calling logout", async () => {
+    const order: string[] = [];
+
+    await runDurableLogout({
+      mode: "normal",
+      flushPendingWrites: async () => {
+        order.push("flush");
+      },
+      retryPendingWrites: () => order.push("retry"),
+      discardPendingWrites: () => order.push("discard"),
+      logout: async () => {
+        order.push("logout");
+      }
+    });
+
+    expect(order).toEqual(["flush", "logout"]);
+  });
+
+  it("does not call logout when flushing fails", async () => {
+    const logout = vi.fn(async () => undefined);
+
+    await expect(
+      runDurableLogout({
+        mode: "normal",
+        flushPendingWrites: async () => {
+          throw new Error("offline");
+        },
+        retryPendingWrites: vi.fn(),
+        discardPendingWrites: vi.fn(),
+        logout
+      })
+    ).rejects.toMatchObject({ stage: "flush" });
+
+    expect(logout).not.toHaveBeenCalled();
+  });
+
+  it("resumes queues before retrying the flush and logout", async () => {
+    const order: string[] = [];
+
+    await runDurableLogout({
+      mode: "retry",
+      retryPendingWrites: () => order.push("retry"),
+      flushPendingWrites: async () => {
+        order.push("flush");
+      },
+      discardPendingWrites: () => order.push("discard"),
+      logout: async () => {
+        order.push("logout");
+      }
+    });
+
+    expect(order).toEqual(["retry", "flush", "logout"]);
+  });
+
+  it("discards only on the explicit discard path and still reports logout API failure", async () => {
+    const discardPendingWrites = vi.fn();
+    const logoutError = new Error("logout unavailable");
+
+    await expect(
+      runDurableLogout({
+        mode: "discard",
+        retryPendingWrites: vi.fn(),
+        flushPendingWrites: vi.fn(async () => undefined),
+        discardPendingWrites,
+        logout: async () => {
+          throw logoutError;
+        }
+      })
+    ).rejects.toMatchObject({ stage: "logout", cause: logoutError });
+
+    expect(discardPendingWrites).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("App", () => {
   beforeEach(() => {
     hooks.effects.length = 0;
     hooks.useBoard.mockClear();
+    hooks.BoardOverview.mockClear();
     hooks.useSession.mockClear();
-    hooks.useBoard.mockReturnValue({ data: board, error: null, reload: vi.fn() });
+    hooks.useBoard.mockReturnValue({
+      data: board,
+      error: null,
+      reload: vi.fn(),
+      enqueueCompletion: vi.fn(),
+      enqueueCellState: vi.fn(),
+      flushPendingWrites: vi.fn(async () => undefined),
+      retryPendingWrites: vi.fn(),
+      discardPendingWrites: vi.fn(),
+      hasPendingWrites: false,
+      pendingWriteError: null
+    });
     hooks.useSession.mockReturnValue({ status: "anonymous", user: null, error: null });
   });
 
@@ -192,6 +284,28 @@ describe("App", () => {
 
     expect(html).toContain("board overview");
     expect(html).not.toContain("legacy checklist matrix");
+  });
+
+  it("passes reliable write enqueue callbacks into the owner board", () => {
+    const enqueueCompletion = vi.fn();
+    const enqueueCellState = vi.fn();
+    hooks.useBoard.mockReturnValue({
+      ...hooks.useBoard(),
+      data: board,
+      enqueueCompletion,
+      enqueueCellState
+    });
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-1", displayName: "RiceArk", avatarUrl: null, isAdmin: false },
+      error: null
+    });
+
+    renderToStaticMarkup(createElement(App));
+
+    expect(hooks.BoardOverview).toHaveBeenCalledWith(
+      expect.objectContaining({ enqueueCompletion, enqueueCellState })
+    );
   });
 
   it("does not load the legacy dashboard payload for the board-only main screen", () => {
@@ -265,13 +379,13 @@ describe("App", () => {
 
     renderToStaticMarkup(createElement(App));
 
-    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: false, pollingEnabled: false });
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: false, pollingEnabled: false, userId: null });
   });
 
   it("disables the owner board read and polling for anonymous sessions", () => {
     renderToStaticMarkup(createElement(App));
 
-    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: false, pollingEnabled: false });
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: false, pollingEnabled: false, userId: null });
   });
 
   it("renders a neutral session state instead of board loading while checking", () => {
@@ -316,7 +430,7 @@ describe("App", () => {
 
     renderToStaticMarkup(createElement(App));
 
-    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: true, pollingEnabled: true });
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: true, pollingEnabled: true, userId: "user-1" });
   });
 
   it("retains the authenticated owner read without polling on the shared view", () => {
@@ -329,7 +443,7 @@ describe("App", () => {
 
     renderToStaticMarkup(createElement(App));
 
-    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: true, pollingEnabled: false });
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: true, pollingEnabled: false, userId: "user-1" });
   });
 
   it("waits for session resolution before redirecting a non-admin direct admin route", () => {
@@ -371,7 +485,7 @@ describe("App", () => {
     const html = renderToStaticMarkup(createElement(App));
     runLatestEffect();
 
-    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: false, pollingEnabled: false });
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: false, pollingEnabled: false, userId: "user-admin" });
     expect(browser.replaceState).not.toHaveBeenCalled();
     expect(html).toContain("admin dashboard");
     expect(html).not.toContain("shared rice bin panel");

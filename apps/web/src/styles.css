@@ -404,11 +404,26 @@ body {
   font-size: 12px;
 }
 
+.profile-menu-recovery {
+  width: 260px;
+}
+
+.profile-logout-warning {
+  margin: 6px 8px 2px;
+  color: #b42318;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .app-shell[data-theme="dark"] .profile-name-edit {
   border-color: #334155;
 }
 
 .app-shell[data-theme="dark"] .profile-name-edit-error {
+  color: #fca5a5;
+}
+
+.app-shell[data-theme="dark"] .profile-logout-warning {
   color: #fca5a5;
 }
 
