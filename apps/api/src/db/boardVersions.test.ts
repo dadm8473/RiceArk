@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import {
   buildBoardMutationVersions,
@@ -33,6 +34,65 @@ function createEnv(): { env: Parameters<typeof bumpBoardManifestVersionStatement
   return { env, statements };
 }
 
+function createVersionDatabase(): DatabaseSync {
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE board_manifest_versions (
+      user_id TEXT PRIMARY KEY,
+      version INTEGER NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE sheets (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      content_version INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE board_tables (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      sheet_id TEXT NOT NULL
+    );
+    CREATE TABLE board_notes (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      sheet_id TEXT NOT NULL
+    );
+    CREATE TABLE characters (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL
+    );
+    CREATE TABLE board_axis_items (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      table_id TEXT NOT NULL,
+      character_id TEXT
+    );
+  `);
+  return database;
+}
+
+function executeStatement(database: DatabaseSync, statement: CapturedStatement): Record<string, unknown>[] {
+  return database.prepare(statement.sql).all(...(statement.values as string[]));
+}
+
+function captureStatement(
+  build: (env: Parameters<typeof bumpBoardManifestVersionStatement>[0]) => void
+): CapturedStatement {
+  const { env, statements } = createEnv();
+  build(env);
+  return statements[0]!;
+}
+
+function withVersionDatabase(test: (database: DatabaseSync) => void): void {
+  const database = createVersionDatabase();
+  try {
+    test(database);
+  } finally {
+    database.close();
+  }
+}
+
 describe("board mutation versions", () => {
   it("returns the bumped manifest version", () => {
     const { env, statements } = createEnv();
@@ -45,6 +105,7 @@ describe("board mutation versions", () => {
         sql: expect.stringContaining("RETURNING user_id, version")
       })
     ]);
+    expect(statements[0]?.sql).toContain("board_manifest_versions.version + 1");
   });
 
   it("returns an owned bumped sheet version", () => {
@@ -91,10 +152,102 @@ describe("board mutation versions", () => {
 
     expect(statements[0]).toMatchObject({ values: ["user-1", "user-1", "user-1", "character-1"] });
     expect(statements[0]?.sql).toContain("JOIN board_axis_items");
+    expect(statements[0]?.sql).toContain("JOIN characters");
     expect(statements[0]?.sql).toContain("board_axis_items.character_id = ?");
     expect(statements[0]?.sql).toContain("SELECT DISTINCT board_tables.sheet_id");
     expect(statements[0]?.sql.match(/user_id = \?/g)).toHaveLength(3);
     expect(statements[0]?.sql).toContain("RETURNING id, content_version AS version");
+  });
+
+  it("does not bump a sheet for an axis item that references a foreign character", () => {
+    const database = createVersionDatabase();
+    try {
+      database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-1", "user-1");
+      database.prepare("INSERT INTO board_tables (id, user_id, sheet_id) VALUES (?, ?, ?)").run("table-1", "user-1", "sheet-1");
+      database.prepare("INSERT INTO characters (id, user_id) VALUES (?, ?)").run("character-2", "user-2");
+      database.prepare("INSERT INTO board_axis_items (id, user_id, table_id, character_id) VALUES (?, ?, ?, ?)")
+        .run("axis-1", "user-1", "table-1", "character-2");
+      const { env, statements } = createEnv();
+
+      bumpBoardSheetVersionsForCharacterStatement(env, "user-1", "character-2");
+
+      expect(executeStatement(database, statements[0]!)).toEqual([]);
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("sheet-1")).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  describe("executed statements", () => {
+    it("returns manifest versions 1 then 2 from the manifest UPSERT", () => {
+      withVersionDatabase((database) => {
+        const statement = captureStatement((env) => bumpBoardManifestVersionStatement(env, "user-1"));
+
+        expect(executeStatement(database, statement)).toEqual([{ user_id: "user-1", version: 1 }]);
+        expect(executeStatement(database, statement)).toEqual([{ user_id: "user-1", version: 2 }]);
+      });
+    });
+
+    it("returns the incremented version for an owned sheet", () => {
+      withVersionDatabase((database) => {
+        database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-1", "user-1");
+        const statement = captureStatement((env) => bumpBoardSheetVersionStatement(env, "user-1", "sheet-1"));
+
+        expect(executeStatement(database, statement)).toEqual([{ id: "sheet-1", version: 1 }]);
+      });
+    });
+
+    it("updates only one owned sheet for duplicate, foreign, unknown, and empty table targets", () => {
+      withVersionDatabase((database) => {
+        database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-1", "user-1");
+        database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-2", "user-2");
+        database.prepare("INSERT INTO board_tables (id, user_id, sheet_id) VALUES (?, ?, ?)").run("table-1", "user-1", "sheet-1");
+        database.prepare("INSERT INTO board_tables (id, user_id, sheet_id) VALUES (?, ?, ?)").run("table-2", "user-2", "sheet-2");
+        const targets = captureStatement((env) =>
+          bumpBoardSheetVersionsForTablesStatement(env, "user-1", ["table-1", "table-1", "table-2", "missing"])
+        );
+        const emptyTargets = captureStatement((env) => bumpBoardSheetVersionsForTablesStatement(env, "user-1", []));
+
+        expect(executeStatement(database, targets)).toEqual([{ id: "sheet-1", version: 1 }]);
+        expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("sheet-2")).toEqual({ content_version: 0 });
+        expect(executeStatement(database, emptyTargets)).toEqual([]);
+        expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("sheet-1")).toEqual({ content_version: 1 });
+      });
+    });
+
+    it("updates an owned note sheet but not a foreign note sheet", () => {
+      withVersionDatabase((database) => {
+        database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-1", "user-1");
+        database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-2", "user-2");
+        database.prepare("INSERT INTO board_notes (id, user_id, sheet_id) VALUES (?, ?, ?)").run("note-1", "user-1", "sheet-1");
+        database.prepare("INSERT INTO board_notes (id, user_id, sheet_id) VALUES (?, ?, ?)").run("note-2", "user-2", "sheet-2");
+        const ownedNote = captureStatement((env) => bumpBoardSheetVersionForNoteStatement(env, "user-1", "note-1"));
+        const foreignNote = captureStatement((env) => bumpBoardSheetVersionForNoteStatement(env, "user-1", "note-2"));
+
+        expect(executeStatement(database, ownedNote)).toEqual([{ id: "sheet-1", version: 1 }]);
+        expect(executeStatement(database, foreignNote)).toEqual([]);
+        expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("sheet-2")).toEqual({ content_version: 0 });
+      });
+    });
+
+    it("updates a sheet for an owned character reference but not a malformed foreign reference", () => {
+      withVersionDatabase((database) => {
+        database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-1", "user-1");
+        database.prepare("INSERT INTO board_tables (id, user_id, sheet_id) VALUES (?, ?, ?)").run("table-1", "user-1", "sheet-1");
+        database.prepare("INSERT INTO characters (id, user_id) VALUES (?, ?)").run("character-1", "user-1");
+        database.prepare("INSERT INTO characters (id, user_id) VALUES (?, ?)").run("character-2", "user-2");
+        database.prepare("INSERT INTO board_axis_items (id, user_id, table_id, character_id) VALUES (?, ?, ?, ?)")
+          .run("axis-1", "user-1", "table-1", "character-1");
+        database.prepare("INSERT INTO board_axis_items (id, user_id, table_id, character_id) VALUES (?, ?, ?, ?)")
+          .run("axis-2", "user-1", "table-1", "character-2");
+        const ownedCharacter = captureStatement((env) => bumpBoardSheetVersionsForCharacterStatement(env, "user-1", "character-1"));
+        const foreignCharacter = captureStatement((env) => bumpBoardSheetVersionsForCharacterStatement(env, "user-1", "character-2"));
+
+        expect(executeStatement(database, ownedCharacter)).toEqual([{ id: "sheet-1", version: 1 }]);
+        expect(executeStatement(database, foreignCharacter)).toEqual([]);
+        expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("sheet-1")).toEqual({ content_version: 1 });
+      });
+    });
   });
 
   it("builds sorted deduplicated mutation versions and omits an undefined manifest version", () => {

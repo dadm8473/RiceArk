@@ -17,7 +17,7 @@ export function bumpBoardManifestVersionStatement(env: Env, userId: string) {
     `INSERT INTO board_manifest_versions (user_id, version, updated_at)
      VALUES (?, 1, CURRENT_TIMESTAMP)
      ON CONFLICT(user_id) DO UPDATE
-     SET version = version + 1,
+     SET version = board_manifest_versions.version + 1,
          updated_at = CURRENT_TIMESTAMP
      RETURNING user_id, version`
   ).bind(userId);
@@ -77,6 +77,9 @@ export function bumpBoardSheetVersionsForCharacterStatement(env: Env, userId: st
          JOIN board_axis_items
            ON board_axis_items.table_id = board_tables.id
           AND board_axis_items.user_id = board_tables.user_id
+         JOIN characters
+           ON characters.id = board_axis_items.character_id
+          AND characters.user_id = board_axis_items.user_id
          WHERE board_tables.user_id = ?
            AND board_axis_items.user_id = ?
            AND board_axis_items.character_id = ?
