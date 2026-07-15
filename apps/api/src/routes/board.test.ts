@@ -721,19 +721,29 @@ describe("board mutation routes", () => {
     options: { invalidTargets?: boolean; lockedTable?: boolean; missingTable?: boolean; rejectBatch?: boolean } = {}
   ) {
     const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
+    const prepared: Array<{ sql: string }> = [];
 
     const execute = (statement: { sql: string; values: unknown[] }) => {
       const sql = statement.sql.replace(/\s+/g, " ").trim();
-      if (sql.startsWith("UPDATE sheets") && sql.includes("content_version = content_version + 1")) {
-        const tableIds = statement.values
-          .filter((value): value is string => typeof value === "string" && value.startsWith("["))
-          .flatMap((value) => JSON.parse(value) as string[]);
+      if (sql.includes("UPDATE sheets") && sql.includes("content_version = content_version + 1")) {
+        if (!sql.startsWith("WITH")) {
+          const tableIds = statement.values
+            .filter((value): value is string => typeof value === "string" && value.startsWith("["))
+            .flatMap((value) => JSON.parse(value) as string[]);
+          return {
+            success: true,
+            meta: { changes: tableIds.includes("table-2") ? 2 : 1 },
+            results: tableIds.includes("table-2")
+              ? [{ id: "sheet-1", version: 4 }, { id: "sheet-2", version: 8 }]
+              : [{ id: "sheet-1", version: 4 }]
+          };
+        }
+        const payload = JSON.parse(String(statement.values[1])) as Array<Record<string, unknown>>;
+        const sheetIds = [...new Set(payload.map((row) => String(row.sheet_id)))];
         return {
           success: true,
-          meta: { changes: tableIds.includes("table-2") ? 2 : 1 },
-          results: tableIds.includes("table-2")
-            ? [{ id: "sheet-1", version: 4 }, { id: "sheet-2", version: 8 }]
-            : [{ id: "sheet-1", version: 4 }]
+          meta: { changes: sheetIds.length },
+          results: sheetIds.map((id) => ({ id, version: id === "sheet-2" ? 8 : 4 }))
         };
       }
       if (sql.startsWith("UPDATE board_tables") && sql.includes("json_each")) {
@@ -744,9 +754,18 @@ describe("board mutation routes", () => {
         const ids = JSON.parse(String(statement.values[0])) as string[];
         return { success: true, meta: { changes: ids.length }, results: ids.map((id) => ({ id })) };
       }
-      if (sql.includes("RETURNING table_id AS id")) {
-        const id = statement.values.includes("table-2") ? "table-2" : "table-1";
-        return { success: true, meta: { changes: 1 }, results: [{ id }] };
+      if (sql.includes("RETURNING table_id AS tableId")) {
+        const payload = JSON.parse(String(statement.values[1])) as Array<Record<string, unknown>>;
+        const rows = payload
+          .filter((row) => !sql.includes("INSERT INTO board_cell_states") || row.delete_state === 0)
+          .filter((row) => !sql.includes("DELETE FROM board_cell_states") || row.delete_state === 1 && row.cell_state_exists === 1)
+          .map((row) => ({
+            tableId: row.table_id,
+            rowItemId: row.row_item_id,
+            columnItemId: row.column_item_id,
+            ...(row.period_key ? { periodKey: row.period_key } : {})
+          }));
+        return { success: true, meta: { changes: rows.length }, results: rows };
       }
       if (/\bRETURNING id\b/.test(sql)) {
         const id = sql.startsWith("INSERT INTO")
@@ -763,6 +782,7 @@ describe("board mutation routes", () => {
       ...routeEnv,
       DB: {
         prepare(sql: string) {
+          prepared.push({ sql });
           return {
             sql,
             values: [] as unknown[],
@@ -815,31 +835,21 @@ describe("board mutation routes", () => {
               if (sql.includes("SELECT id, visible") && sql.includes("FROM board_axis_items")) {
                 return { results: [{ id: "axis-1", visible: 1 }, { id: "axis-2", visible: 1 }] };
               }
-              if (sql.includes("JOIN board_axis_items row_items")) {
-                if (options.invalidTargets) return { results: [] };
-                return {
-                  results: [
-                    {
-                      tableId: "table-1",
-                      rowItemId: "row-1",
-                      columnItemId: "column-1",
-                      rowKind: "task",
-                      columnKind: "character",
-                      rowTaskResetRuleJson: '{"type":"none"}',
-                      columnTaskResetRuleJson: null
-                    },
-                    {
-                      tableId: "table-2",
-                      rowItemId: "row-2",
-                      columnItemId: "column-2",
-                      rowKind: "task",
-                      columnKind: "character",
-                      rowTaskResetRuleJson: '{"type":"none"}',
-                      columnTaskResetRuleJson: null
-                    }
-                  ]
-                };
-              }
+              if (sql.includes("SELECT input.ordinal")) return {
+                results: (JSON.parse(String(this.values[1])) as Array<Record<string, unknown>>).map((row, ordinal) => ({
+                  ordinal,
+                  tableId: row.table_id,
+                  rowItemId: row.row_item_id,
+                  columnItemId: row.column_item_id,
+                  eligible: options.invalidTargets ? 0 : 1,
+                  sheetId: options.invalidTargets ? null : row.table_id === "table-2" ? "sheet-2" : "sheet-1",
+                  rowKind: options.invalidTargets ? null : "task",
+                  columnKind: options.invalidTargets ? null : "character",
+                  rowTaskResetRuleJson: options.invalidTargets ? null : '{"type":"none"}',
+                  columnTaskResetRuleJson: null,
+                  cellStateExists: 0
+                }))
+              };
               return { results: [] };
             },
             async run() {
@@ -857,7 +867,7 @@ describe("board mutation routes", () => {
       }
     };
 
-    return { env, batches };
+    return { env, batches, prepared };
   }
 
   it.each([
@@ -1216,6 +1226,126 @@ describe("board mutation routes", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ ok: true, versions: { sheets: [] } });
       expect(batches).toEqual([]);
+    }
+  );
+
+  it("returns object-shaped completion and cell-state rejected keys", async () => {
+    const { env } = createRemainingMutationRouteEnv({ invalidTargets: true });
+    const completionKey = {
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      periodKey: "none:permanent"
+    };
+    const completion = await app.request(
+      "/api/board/completions",
+      {
+        method: "PATCH",
+        headers: { Cookie: "riceark_session=test-token", "Content-Type": "application/json" },
+        body: JSON.stringify({ patches: [{ ...completionKey, completed: true }] })
+      },
+      env
+    );
+    expect(completion.status).toBe(400);
+    expect(await completion.json()).toEqual({
+      error: {
+        code: "invalid_board_completion_target",
+        message: "Board completion target is not available",
+        rejectedKeys: [completionKey]
+      }
+    });
+
+    const cellKey = { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1" };
+    const cell = await app.request(
+      "/api/board/cell-states",
+      {
+        method: "PATCH",
+        headers: { Cookie: "riceark_session=test-token", "Content-Type": "application/json" },
+        body: JSON.stringify({ patches: [{ ...cellKey, markType: "fixed", memo: "memo" }] })
+      },
+      env
+    );
+    expect(cell.status).toBe(400);
+    expect(await cell.json()).toEqual({
+      error: {
+        code: "invalid_board_cell_state_target",
+        message: "셀 표시 상태를 바꿀 수 없는 항목입니다.",
+        rejectedKeys: [cellKey]
+      }
+    });
+  });
+
+  it.each([
+    { path: "/api/board/completions", expectedStatements: 5, cellState: false },
+    { path: "/api/board/cell-states", expectedStatements: 6, cellState: true }
+  ])("keeps a 200-row two-sheet request at the exact statement budget for $path", async ({ path, expectedStatements, cellState }) => {
+    const { env, prepared, batches } = createRemainingMutationRouteEnv();
+    const patches = Array.from({ length: 200 }, (_, index) => ({
+      tableId: index < 100 ? "table-1" : "table-2",
+      rowItemId: `row-${index}`,
+      columnItemId: `column-${index}`,
+      ...(cellState
+        ? { markType: "fixed", memo: `memo-${index}` }
+        : { periodKey: "none:permanent", completed: index % 2 === 0 })
+    }));
+
+    const response = await app.request(
+      path,
+      {
+        method: "PATCH",
+        headers: { Cookie: "riceark_session=test-token", "Content-Type": "application/json" },
+        body: JSON.stringify({ patches })
+      },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(prepared).toHaveLength(expectedStatements);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(cellState ? 4 : 3);
+    expect(batches[0]?.every((statement) => statement.values.length === 2)).toBe(true);
+  });
+
+  it.each(["/api/board/completions", "/api/board/cell-states"])(
+    "performs authentication only for an empty request at %s",
+    async (path) => {
+      const { env, prepared, batches } = createRemainingMutationRouteEnv();
+      const response = await app.request(
+        path,
+        {
+          method: "PATCH",
+          headers: { Cookie: "riceark_session=test-token", "Content-Type": "application/json" },
+          body: JSON.stringify({ patches: [] })
+        },
+        env
+      );
+
+      expect(response.status).toBe(200);
+      expect(prepared).toHaveLength(1);
+      expect(prepared[0]?.sql).toContain("FROM sessions");
+      expect(batches).toEqual([]);
+    }
+  );
+
+  it.each(["/api/board/completions", "/api/board/cell-states"])(
+    "returns retryable 500 for an incomplete guarded batch at %s",
+    async (path) => {
+      const { env } = createRemainingMutationRouteEnv({ rejectBatch: true });
+      const patch = path.endsWith("completions")
+        ? { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1", periodKey: "none:permanent", completed: true }
+        : { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1", markType: "fixed", memo: null };
+      const response = await app.request(
+        path,
+        {
+          method: "PATCH",
+          headers: { Cookie: "riceark_session=test-token", "Content-Type": "application/json" },
+          body: JSON.stringify({ patches: [patch] })
+        },
+        env
+      );
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: { code: "internal_error", message: "Internal server error" } });
     }
   );
 

@@ -431,11 +431,24 @@ function seedSqliteAxisPair(database: DatabaseSync, tableId: string, suffix: str
   return { rowId, columnId };
 }
 
+function seedSqliteBulkAxisPairs(
+  database: DatabaseSync,
+  tableId: string,
+  prefix: string,
+  count: number
+): Array<{ rowId: string; columnId: string }> {
+  return Array.from({ length: count }, (_, index) => seedSqliteAxisPair(database, tableId, `${prefix}-${index}`));
+}
+
 function createSqliteD1Env(
   database: DatabaseSync,
   options: {
     interleaveDeletePreflights?: boolean;
     beforeBatch?: (statements: SqliteD1Statement[], database: DatabaseSync) => void;
+    reverseReturningRows?: boolean;
+    malformedResultIndex?: number;
+    malformedPreflight?: boolean;
+    extraBatchResult?: boolean;
   } = {}
 ) {
   const preparedSql: string[] = [];
@@ -463,7 +476,11 @@ function createSqliteD1Env(
       return row;
     },
     async all() {
-      return { results: database.prepare(sql).all(...values) };
+      const results = database.prepare(sql).all(...values);
+      if (options.malformedPreflight && sql.includes("SELECT input.ordinal") && results[0]) {
+        results[0] = { ...results[0], tableId: "wrong-table" };
+      }
+      return { results };
     },
     async run() {
       const result = database.prepare(sql).run(...values);
@@ -483,15 +500,23 @@ function createSqliteD1Env(
           options.beforeBatch?.(statements, database);
           database.exec("BEGIN IMMEDIATE");
           try {
-            const results = statements.map((statement) => {
+            const results = statements.map((statement, index) => {
               const prepared = database.prepare(statement.sql);
               if (/^\s*SELECT\b/i.test(statement.sql) || /\bRETURNING\b/i.test(statement.sql)) {
                 const rows = prepared.all(...statement.values);
+                if (options.reverseReturningRows) rows.reverse();
+                if (options.malformedResultIndex === index) {
+                  return { success: true, meta: { changes: rows.length }, results: [{ malformed: true }] };
+                }
                 return { success: true, meta: { changes: rows.length }, results: rows };
               }
               const result = prepared.run(...statement.values);
+              if (options.malformedResultIndex === index) {
+                return { success: true, meta: { changes: Number(result.changes) }, results: [{ malformed: true }] };
+              }
               return { success: true, meta: { changes: Number(result.changes) }, results: [] };
             });
+            if (options.extraBatchResult) results.push({ success: true, meta: { changes: 0 }, results: [] });
             database.exec("COMMIT");
             return results;
           } catch (error) {
@@ -1185,34 +1210,44 @@ describe("board db defaults", () => {
               return null;
             },
             async all() {
-              if (sql.includes("SELECT board_tables.id AS tableId")) {
-                return {
-                  results: [
-                    {
-                      tableId: "table-1",
-                      rowItemId: "row-task-1",
-                      columnItemId: "column-character-1",
-                      rowKind: "task",
-                      columnKind: "character",
-                      rowTaskResetRuleJson: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}',
-                      columnTaskResetRuleJson: null
-                    }
-                  ]
-                };
-              }
+              if (sql.includes("SELECT input.ordinal")) return {
+                results: (JSON.parse(String(this.values[1])) as Array<Record<string, unknown>>).map((row, ordinal) => ({
+                  ordinal,
+                  tableId: row.table_id,
+                  rowItemId: row.row_item_id,
+                  columnItemId: row.column_item_id,
+                  eligible: 1,
+                  sheetId: "sheet-1",
+                  rowKind: "task",
+                  columnKind: "character",
+                  rowTaskResetRuleJson: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}',
+                  columnTaskResetRuleJson: null,
+                  cellStateExists: 0
+                }))
+              };
               return { results: [] };
             }
           };
         },
         async batch(statements: Array<{ sql: string; values: unknown[] }>) {
           batches.push(statements);
-          return statements.map((statement) => ({
-            success: true,
-            meta: { changes: 1 },
-            results: statement.sql.includes("UPDATE sheets")
+          return statements.map((statement) => {
+            const rows = JSON.parse(String(statement.values[1])) as Array<Record<string, unknown>>;
+            const keyRows = rows.map((row) => ({
+              tableId: row.table_id,
+              rowItemId: row.row_item_id,
+              columnItemId: row.column_item_id,
+              ...(row.period_key ? { periodKey: row.period_key } : {})
+            }));
+            const results = statement.sql.includes("UPDATE sheets")
               ? [{ id: "sheet-1", version: 4 }]
-              : [{ id: "table-1" }]
-          }));
+              : statement.sql.includes("INSERT INTO board_cell_completions") && statement.sql.includes("RETURNING")
+                ? keyRows
+                : statement.sql.includes("INSERT INTO board_cell_states")
+                  ? keyRows.filter((_, index) => rows[index]?.delete_state === 0)
+                  : [];
+            return { success: true, meta: { changes: results.length }, results };
+          });
         }
       }
     } as unknown as Parameters<typeof saveBoardCompletionPatches>[0];
@@ -2986,6 +3021,292 @@ describe("board db defaults", () => {
     expect(batchCalls).toBe(0);
   });
 
+  it("writes 200 completion patches across two sheets with four DB statements and one version per sheet", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A", "B"]);
+      const pairs = [
+        ...seedSqliteBulkAxisPairs(database, "table-A", "A", 100),
+        ...seedSqliteBulkAxisPairs(database, "table-B", "B", 100)
+      ];
+      const patches = pairs.map((pair, index) => ({
+        tableId: index < 100 ? "table-A" : "table-B",
+        rowItemId: pair.rowId,
+        columnItemId: pair.columnId,
+        periodKey: "none:permanent",
+        completed: index % 2 === 0
+      }));
+      const { env, batches, preparedSql } = createSqliteD1Env(database);
+
+      await expect(saveBoardCompletionPatches(env, "user-1", patches)).resolves.toEqual({
+        ok: true,
+        versions: { sheets: [{ id: "A", version: 1 }, { id: "B", version: 1 }] }
+      });
+
+      expect(preparedSql).toHaveLength(4);
+      expect(batches).toHaveLength(1);
+      expect(batches[0]).toHaveLength(3);
+      expect(batches[0]?.every((statement) => statement.values.length === 2)).toBe(true);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM board_cell_completions").get()).toEqual({ count: 201 });
+      expect(database.prepare("SELECT id, content_version FROM sheets ORDER BY id").all()).toEqual([
+        { id: "A", content_version: 1 },
+        { id: "B", content_version: 1 }
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("returns only the invalid completion key and performs no batch writes", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      const pairs = seedSqliteBulkAxisPairs(database, "table-A", "bulk", 200);
+      database.prepare("UPDATE board_axis_items SET visible = 0 WHERE id = ?").run(pairs[137]!.columnId);
+      const patches = pairs.map((pair, index) => ({
+        tableId: "table-A",
+        rowItemId: pair.rowId,
+        columnItemId: pair.columnId,
+        periodKey: "none:permanent",
+        completed: true
+      }));
+      const { env, batches, preparedSql } = createSqliteD1Env(database);
+
+      await expect(saveBoardCompletionPatches(env, "user-1", patches)).resolves.toEqual({
+        ok: false,
+        rejectedKeys: [{
+          tableId: "table-A",
+          rowItemId: pairs[137]!.rowId,
+          columnItemId: pairs[137]!.columnId,
+          periodKey: "none:permanent"
+        }]
+      });
+      expect(preparedSql).toHaveLength(1);
+      expect(batches).toHaveLength(0);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM board_cell_completions").get()).toEqual({ count: 1 });
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = 'A'").get()).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("handles mixed cell-state delete, absent delete, and upsert with five DB statements", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      const [absent, upsert] = seedSqliteBulkAxisPairs(database, "table-A", "mixed", 2);
+      const { env, batches, preparedSql } = createSqliteD1Env(database);
+
+      await expect(saveBoardCellStatePatches(env, "user-1", [
+        { tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column", markType: "default", memo: null },
+        { tableId: "table-A", rowItemId: absent!.rowId, columnItemId: absent!.columnId, markType: "default", memo: "" },
+        { tableId: "table-A", rowItemId: upsert!.rowId, columnItemId: upsert!.columnId, markType: "reserved", markIcon: "clock", memo: "soon", periodKey: "none:permanent" }
+      ])).resolves.toEqual({ ok: true, versions: { sheets: [{ id: "A", version: 1 }] } });
+
+      expect(preparedSql).toHaveLength(5);
+      expect(batches[0]).toHaveLength(4);
+      expect(batches[0]?.every((statement) => statement.values.length === 2)).toBe(true);
+      expect(database.prepare(
+        "SELECT row_item_id, mark_type, mark_icon, memo, mark_period_key FROM board_cell_states ORDER BY row_item_id"
+      ).all()).toEqual([{ row_item_id: upsert!.rowId, mark_type: "reserved", mark_icon: "clock", memo: "soon", mark_period_key: "none:permanent" }]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("applies only the latest duplicate logical key", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      const { env, batches } = createSqliteD1Env(database);
+
+      await expect(saveBoardCompletionPatches(env, "user-1", [
+        { tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column", periodKey: "none:permanent", completed: false },
+        { tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column", periodKey: "none:permanent", completed: true }
+      ])).resolves.toEqual({ ok: true, versions: { sheets: [{ id: "A", version: 1 }] } });
+
+      expect(JSON.parse(String(batches[0]?.[0]?.values[1]))).toHaveLength(1);
+      expect(database.prepare("SELECT completed FROM board_cell_completions").get()).toEqual({ completed: 1 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("writes 200 cell-state patches across two sheets with five DB statements", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A", "B"]);
+      const pairs = [
+        ...seedSqliteBulkAxisPairs(database, "table-A", "state-A", 100),
+        ...seedSqliteBulkAxisPairs(database, "table-B", "state-B", 100)
+      ];
+      const { env, batches, preparedSql } = createSqliteD1Env(database, { reverseReturningRows: true });
+      const patches = pairs.map((pair, index) => ({
+        tableId: index < 100 ? "table-A" : "table-B",
+        rowItemId: pair.rowId,
+        columnItemId: pair.columnId,
+        markType: "fixed" as const,
+        memo: `memo-${index}`
+      }));
+
+      await expect(saveBoardCellStatePatches(env, "user-1", patches)).resolves.toEqual({
+        ok: true,
+        versions: { sheets: [{ id: "A", version: 1 }, { id: "B", version: 1 }] }
+      });
+      expect(preparedSql).toHaveLength(5);
+      expect(batches[0]).toHaveLength(4);
+      expect(batches[0]?.every((statement) => statement.values.length === 2)).toBe(true);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM board_cell_states").get()).toEqual({ count: 201 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects locked, foreign-sheet, deleted, moved, hidden, and swapped-axis targets before writing", async () => {
+    const cases: Array<{ name: string; mutate: (database: DatabaseSync) => void }> = [
+      { name: "locked", mutate: (database) => database.prepare("UPDATE board_tables SET locked = 1 WHERE id = 'table-A'").run() },
+      { name: "foreign sheet", mutate: (database) => {
+        database.prepare("INSERT INTO users (id) VALUES ('user-2')").run();
+        database.prepare("UPDATE sheets SET user_id = 'user-2' WHERE id = 'A'").run();
+      } },
+      { name: "deleted", mutate: (database) => database.prepare("DELETE FROM board_axis_items WHERE id = 'axis-row'").run() },
+      { name: "moved", mutate: (database) => database.prepare("UPDATE board_axis_items SET table_id = 'table-B' WHERE id = 'axis-row'").run() },
+      { name: "hidden", mutate: (database) => database.prepare("UPDATE board_axis_items SET visible = 0 WHERE id = 'axis-column'").run() },
+      { name: "swapped", mutate: (database) => {
+        database.prepare("UPDATE board_axis_items SET axis = 'column' WHERE id = 'axis-row'").run();
+        database.prepare("UPDATE board_axis_items SET axis = 'row' WHERE id = 'axis-column'").run();
+      } }
+    ];
+
+    for (const testCase of cases) {
+      const database = createBoardMutationDatabase();
+      try {
+        seedSqliteBoard(database, ["A", "B"]);
+        testCase.mutate(database);
+        const { env, batches, preparedSql } = createSqliteD1Env(database);
+        await expect(saveBoardCompletionPatches(env, "user-1", [{
+          tableId: "table-A",
+          rowItemId: "axis-row",
+          columnItemId: "axis-column",
+          periodKey: "none:permanent",
+          completed: true
+        }]), testCase.name).resolves.toEqual({
+          ok: false,
+          rejectedKeys: [{ tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column", periodKey: "none:permanent" }]
+        });
+        expect(preparedSql, testCase.name).toHaveLength(1);
+        expect(batches, testCase.name).toHaveLength(0);
+      } finally {
+        database.close();
+      }
+    }
+  });
+
+  it("returns precise stale completion and reserved-state keys", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T03:00:00.000Z"));
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      database.prepare("UPDATE board_axis_items SET task_reset_rule_json = ? WHERE id = 'axis-row'")
+        .run('{"type":"daily","hour":6,"timezone":"Asia/Seoul"}');
+      const { env, batches } = createSqliteD1Env(database);
+
+      await expect(saveBoardCompletionPatches(env, "user-1", [{
+        tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column",
+        periodKey: "daily:2026-07-14", completed: true
+      }])).resolves.toEqual({
+        ok: false,
+        rejectedKeys: [{ tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column", periodKey: "daily:2026-07-14" }]
+      });
+      await expect(saveBoardCellStatePatches(env, "user-1", [{
+        tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column",
+        markType: "reserved", memo: null, periodKey: "daily:2026-07-14"
+      }])).resolves.toEqual({
+        ok: false,
+        rejectedKeys: [{ tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column" }]
+      });
+      expect(batches).toHaveLength(0);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rolls back when a reset-rule snapshot changes before the batch", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      const { env } = createSqliteD1Env(database, {
+        beforeBatch(_statements, currentDatabase) {
+          currentDatabase.prepare("UPDATE board_axis_items SET task_reset_rule_json = ? WHERE id = 'axis-row'")
+            .run('{"type":"daily","hour":6,"timezone":"Asia/Seoul"}');
+        }
+      });
+
+      await expect(saveBoardCompletionPatches(env, "user-1", [{
+        tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column",
+        periodKey: "none:permanent", completed: true
+      }])).rejects.toThrow("did not return every required row");
+      expect(database.prepare("SELECT completed FROM board_cell_completions").get()).toEqual({ completed: 0 });
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = 'A'").get()).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rolls back after the preflight reset boundary expires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2020-01-01T03:00:00.000Z"));
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      database.prepare("UPDATE board_axis_items SET task_reset_rule_json = ? WHERE id = 'axis-row'")
+        .run('{"type":"daily","hour":6,"timezone":"Asia/Seoul"}');
+      const { env } = createSqliteD1Env(database);
+
+      await expect(saveBoardCompletionPatches(env, "user-1", [{
+        tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column",
+        periodKey: "daily:2020-01-01", completed: true
+      }])).rejects.toThrow("did not return every required row");
+      expect(database.prepare("SELECT completed FROM board_cell_completions").get()).toEqual({ completed: 0 });
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = 'A'").get()).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("treats malformed mutation and version results as incomplete batches", async () => {
+    for (const malformedResultIndex of [0, 1, 2]) {
+      const database = createBoardMutationDatabase();
+      try {
+        seedSqliteBoard(database, ["A"]);
+        const { env } = createSqliteD1Env(database, { malformedResultIndex });
+        await expect(saveBoardCompletionPatches(env, "user-1", [{
+          tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column",
+          periodKey: "none:permanent", completed: true
+        }])).rejects.toThrow("did not return every required row");
+      } finally {
+        database.close();
+      }
+    }
+  });
+
+  it("treats mismatched preflight keys and extra batch results as incomplete", async () => {
+    for (const options of [{ malformedPreflight: true }, { extraBatchResult: true }]) {
+      const database = createBoardMutationDatabase();
+      try {
+        seedSqliteBoard(database, ["A"]);
+        const { env } = createSqliteD1Env(database, options);
+        await expect(saveBoardCompletionPatches(env, "user-1", [{
+          tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column",
+          periodKey: "none:permanent", completed: true
+        }])).rejects.toThrow("did not return every required row");
+      } finally {
+        database.close();
+      }
+    }
+  });
+
   it("executes non-default cell-state insert and upsert bindings in SQLite", async () => {
     const database = createBoardMutationDatabase();
     try {
@@ -3148,7 +3469,7 @@ describe("board db defaults", () => {
             completed: true
           }
         ])
-      ).resolves.toBeNull();
+      ).rejects.toThrow("did not return every required row");
       expect(database.prepare("SELECT table_id, completed FROM board_cell_completions ORDER BY table_id").all()).toEqual([
         { table_id: "table-A", completed: 0 }
       ]);
@@ -3192,7 +3513,7 @@ describe("board db defaults", () => {
             memo: "new"
           }
         ])
-      ).resolves.toBeNull();
+      ).rejects.toThrow("did not return every required row");
       expect(database.prepare("SELECT table_id, mark_type, memo FROM board_cell_states ORDER BY table_id").all()).toEqual([
         { table_id: "table-A", mark_type: "default", memo: null }
       ]);
@@ -3228,7 +3549,7 @@ describe("board db defaults", () => {
             memo: null
           }
         ])
-      ).resolves.toBeNull();
+      ).rejects.toThrow("did not return every required row");
       expect(database.prepare("SELECT id FROM board_cell_states").all()).toEqual([{ id: "cell-state" }]);
       expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("A")).toEqual({ content_version: 0 });
     } finally {

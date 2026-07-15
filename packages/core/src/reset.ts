@@ -25,6 +25,10 @@ function startOfWeek(shiftedKst: Date, weekday: number): Date {
   return new Date(date.getTime() - diff * DAY_MS);
 }
 
+function fromKstShiftedDate(date: Date, resetHour: number): Date {
+  return new Date(date.getTime() - KST_OFFSET_MS + resetHour * 60 * 60 * 1000);
+}
+
 export function getPeriodKey(rule: ResetRule, now: Date = new Date()): string {
   if (rule.type === "none") {
     return "none:permanent";
@@ -52,4 +56,13 @@ export function getPeriodKey(rule: ResetRule, now: Date = new Date()): string {
   const daysSinceAnchor = Math.floor((shifted.getTime() - anchor.getTime()) / DAY_MS);
   const intervalStart = Math.floor(daysSinceAnchor / rule.intervalDays) * rule.intervalDays;
   return `custom:${dateKey(new Date(anchor.getTime() + intervalStart * DAY_MS))}`;
+}
+
+export function getNextResetBoundary(rule: ResetRule, now: Date = new Date()): Date | null {
+  if (rule.type === "none") return null;
+
+  const periodDate = parseDateKey(getPeriodKey(rule, now).split(":", 2)[1]!);
+  const intervalDays =
+    rule.type === "daily" ? 1 : rule.type === "weekly" ? 7 : rule.type === "biweekly" ? 14 : rule.intervalDays;
+  return fromKstShiftedDate(new Date(periodDate.getTime() + intervalDays * DAY_MS), rule.hour);
 }

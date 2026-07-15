@@ -1,5 +1,6 @@
 import {
   boardCompletionKey,
+  getNextResetBoundary,
   getPeriodKey,
   normalizeCharacterSelection,
   type BoardAxis,
@@ -25,6 +26,18 @@ import {
   type BoardMutationResult,
   type BoardSheetVersion
 } from "./boardVersions";
+import {
+  buildBoardCellStatePayloadRows,
+  buildBoardCompletionPayloadRows,
+  prepareBoardBulkPreflightStatement,
+  prepareBoardCellStateWriteStatements,
+  prepareBoardCompletionWriteStatements,
+  type BoardBulkPreflightRow,
+  type BoardCellStatePayloadRow,
+  type BoardCompletionPayloadRow,
+  type GuardedBoardCellStatePayloadRow,
+  type GuardedBoardCompletionPayloadRow
+} from "./boardBulkSql";
 
 export const DEFAULT_SHEET_NAME = "기본";
 export const DEFAULT_TABLE_NAME = "숙제";
@@ -166,6 +179,17 @@ export interface BoardCellStatePatch {
   markIcon?: BoardCellMarkIcon | null | undefined;
   memo: string | null;
   periodKey?: string | undefined;
+}
+
+export type BoardCompletionRejectedKey = Pick<
+  BoardCompletionPatch,
+  "tableId" | "rowItemId" | "columnItemId" | "periodKey"
+>;
+export type BoardCellStateRejectedKey = Pick<BoardCellStatePatch, "tableId" | "rowItemId" | "columnItemId">;
+
+export interface BoardBulkMutationRejection<K extends object> {
+  ok: false;
+  rejectedKeys: K[];
 }
 
 export interface CreateBoardSheetInput {
@@ -441,14 +465,6 @@ export function canApplyBoardTableSettingsUpdate(
     displayOptionsJson === current.display_options_json &&
     eventOptionsJson === current.event_options_json
   );
-}
-
-async function isBoardTableLocked(env: Env, userId: string, tableId: string): Promise<boolean | null> {
-  const table = await env.DB.prepare("SELECT locked FROM board_tables WHERE id = ? AND user_id = ?")
-    .bind(tableId, userId)
-    .first<{ locked: number }>();
-  if (!table) return null;
-  return table.locked === 1;
 }
 
 function getAxisForRole(table: { row_role: BoardAxisRole; column_role: BoardAxisRole }, role: BoardAxisRole): BoardAxis {
@@ -2720,59 +2736,51 @@ export async function saveBoardCompletionPatches(
   env: Env,
   userId: string,
   patches: BoardCompletionPatch[]
-): Promise<BoardMutationResult | null> {
+): Promise<BoardMutationResult | BoardBulkMutationRejection<BoardCompletionRejectedKey>> {
   const merged = mergeBoardCompletionPatches(patches);
   if (merged.length === 0) return { ok: true, versions: buildBoardMutationVersions([]) };
-  const authorizedTargets = await loadAuthorizedBoardCompletionTargets(env, userId, merged);
-  if (findUnauthorizedBoardCompletionPatches(merged, authorizedTargets).length > 0) {
-    return null;
-  }
-  if (findBoardCompletionPatchesOutsideCurrentPeriod(merged, authorizedTargets).length > 0) {
-    return null;
+  const rows = buildBoardCompletionPayloadRows(merged);
+  const preflight = await loadBoardBulkPreflight(env, userId, rows);
+  const now = new Date();
+  const targets = preflight.map(preflightTarget);
+  const invalidOrdinals = new Set<number>();
+  preflight.forEach((row, ordinal) => {
+    if (row.eligible !== 1) invalidOrdinals.add(ordinal);
+  });
+  const outsideCurrentPeriod = findBoardCompletionPatchesOutsideCurrentPeriod(merged, targets, now);
+  const outsideKeys = new Set(outsideCurrentPeriod.map((patch) => boardCompletionKey(patch)));
+  merged.forEach((patch, ordinal) => {
+    if (outsideKeys.has(boardCompletionKey(patch))) invalidOrdinals.add(ordinal);
+  });
+  if (invalidOrdinals.size > 0) {
+    return {
+      ok: false,
+      rejectedKeys: [...invalidOrdinals].sort((a, b) => a - b).map((ordinal) => completionRejectedKey(merged[ordinal]!))
+    };
   }
 
-  const tableIds = unique(merged.map((patch) => patch.tableId));
-  const tableIdsJson = JSON.stringify(tableIds);
-  const statements = merged.map((patch) =>
-    env.DB.prepare(
-      `INSERT INTO board_cell_completions
-         (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
-       SELECT ?1, ?2, board_tables.id, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP
-       FROM board_tables
-       WHERE board_tables.id = ?7 AND board_tables.user_id = ?8 AND board_tables.locked = 0
-         AND NOT EXISTS (
-           SELECT 1
-           FROM json_each(?9) AS requested
-           WHERE NOT EXISTS (
-             SELECT 1
-             FROM board_tables AS target
-             WHERE target.id = requested.value
-               AND target.user_id = ?8
-               AND target.locked = 0
-           )
-         )
-       ON CONFLICT(user_id, table_id, row_item_id, column_item_id, period_key)
-       DO UPDATE SET completed = excluded.completed, updated_at = CURRENT_TIMESTAMP
-       RETURNING table_id AS id`
-    ).bind(
-      crypto.randomUUID(),
-      userId,
-      patch.rowItemId,
-      patch.columnItemId,
-      patch.periodKey,
-      patch.completed ? 1 : 0,
-      patch.tableId,
-      userId,
-      tableIdsJson
-    )
-  );
-
-  const results = await env.DB.batch([...statements, bumpBoardSheetVersionsForTables(env, userId, tableIds)]);
-  const everyCompletionReturned = merged.every((patch, index) => returnedMutationId(results[index], patch.tableId));
-  const anyCompletionReturned = merged.some((patch, index) => returnedMutationId(results[index], patch.tableId));
-  const sheetVersions = returnedSheetVersions(results.at(-1));
-  if (!anyCompletionReturned && sheetVersions?.length === 0) return null;
-  if (!sheetVersions || sheetVersions.length === 0 || !everyCompletionReturned) return incompleteBoardMutation();
+  const guardedRows: GuardedBoardCompletionPayloadRow[] = rows.map((row, ordinal) => ({
+    ...row,
+    ...preflightGuardSnapshot(preflight[ordinal]!, now)
+  }));
+  const payloadJson = JSON.stringify(guardedRows);
+  let results: unknown[];
+  try {
+    results = await env.DB.batch(prepareBoardCompletionWriteStatements(env, userId, payloadJson));
+  } catch (error) {
+    if (isBoardBulkGuardAssertionError(error)) return incompleteBoardMutation();
+    throw error;
+  }
+  if (results.length !== 3 || !results.every(isSuccessfulBatchResult) || !hasEmptyBatchRows(results[1])) {
+    return incompleteBoardMutation();
+  }
+  const returnedKeys = returnedObjectKeySet(results[0], completionRowKey);
+  const expectedKeys = new Set(guardedRows.map(completionPayloadKey));
+  const sheetVersions = returnedSheetVersions(results[2]);
+  const expectedSheetIds = new Set(guardedRows.map((row) => row.sheet_id));
+  if (!sameStringSet(returnedKeys, expectedKeys) || !hasExactSheetVersions(sheetVersions, expectedSheetIds)) {
+    return incompleteBoardMutation();
+  }
   return { ok: true, versions: buildBoardMutationVersions(sheetVersions) };
 }
 
@@ -2781,126 +2789,211 @@ export async function saveBoardCellStatePatch(
   userId: string,
   patch: BoardCellStatePatch
 ): Promise<BoardMutationResult | null> {
-  return saveBoardCellStatePatches(env, userId, [patch]);
+  const result = await saveBoardCellStatePatches(env, userId, [patch]);
+  return result.ok === false ? null : result;
 }
 
 export async function saveBoardCellStatePatches(
   env: Env,
   userId: string,
   patches: BoardCellStatePatch[]
-): Promise<BoardMutationResult | null> {
+): Promise<BoardMutationResult | BoardBulkMutationRejection<BoardCellStateRejectedKey>> {
   const merged = mergeBoardCellStatePatches(patches);
   if (merged.length === 0) return { ok: true, versions: buildBoardMutationVersions([]) };
-  const lockedTableIds = new Set<string>();
-  for (const tableId of unique(merged.map((patch) => patch.tableId))) {
-    if ((await isBoardTableLocked(env, userId, tableId)) === true) lockedTableIds.add(tableId);
-  }
-  if (merged.some((patch) => lockedTableIds.has(patch.tableId))) {
-    return null;
-  }
-
-  const authorizedTargets = await loadAuthorizedBoardCompletionTargets(
-    env,
-    userId,
-    merged.map((patch) => ({
-      ...patch,
-      periodKey: "daily:2000-01-01",
-      completed: false
-    }))
+  const rows = buildBoardCellStatePayloadRows(merged);
+  const preflight = await loadBoardBulkPreflight(env, userId, rows);
+  const now = new Date();
+  const targets = preflight.map(preflightTarget);
+  const expired = new Set(findBoardCellStatePatchesOutsideCurrentPeriod(merged, targets, now).map(boardCellStatePatchKey));
+  const invalidOrdinals = merged.flatMap((patch, ordinal) =>
+    preflight[ordinal]?.eligible !== 1 || expired.has(boardCellStatePatchKey(patch)) ? [ordinal] : []
   );
-  if (findUnauthorizedBoardCellStatePatches(merged, authorizedTargets).length > 0) {
-    return null;
-  }
-  if (findBoardCellStatePatchesOutsideCurrentPeriod(merged, authorizedTargets).length > 0) {
-    return null;
+  if (invalidOrdinals.length > 0) {
+    return { ok: false, rejectedKeys: invalidOrdinals.map((ordinal) => cellStateRejectedKey(merged[ordinal]!)) };
   }
 
-  const tableIds = unique(merged.map((patch) => patch.tableId));
-  const tableIdsJson = JSON.stringify(tableIds);
-  const statements = merged.map((patch) => {
-    const memo = patch.markType === "disabled" || patch.memo === "" ? null : patch.memo;
-    const markIcon = patch.markType === "disabled" ? null : (patch.markIcon ?? null);
-    if (patch.markType === "default" && memo === null && markIcon === null) {
-      return env.DB.prepare(
-        `DELETE FROM board_cell_states
-         WHERE user_id = ?1 AND table_id = ?2 AND row_item_id = ?3 AND column_item_id = ?4
-           AND EXISTS (
-             SELECT 1
-             FROM board_tables
-             WHERE board_tables.id = ?2
-               AND board_tables.user_id = ?1
-               AND board_tables.locked = 0
-           )
-           AND NOT EXISTS (
-             SELECT 1
-             FROM json_each(?5) AS requested
-             WHERE NOT EXISTS (
-               SELECT 1
-               FROM board_tables AS target
-               WHERE target.id = requested.value
-                 AND target.user_id = ?1
-                 AND target.locked = 0
-             )
-           )
-         RETURNING table_id AS id`
-      ).bind(userId, patch.tableId, patch.rowItemId, patch.columnItemId, tableIdsJson);
-    }
-
-    const markPeriodKey = patch.markType === "reserved" ? (patch.periodKey ?? null) : null;
-    const checkboxVisible = patch.markType === "disabled" ? 0 : 1;
-    return env.DB.prepare(
-      `INSERT INTO board_cell_states
-         (id, user_id, table_id, row_item_id, column_item_id, checkbox_visible, mark_type, mark_icon, memo, mark_period_key, updated_at)
-       SELECT ?1, ?2, board_tables.id, ?3, ?4, ?5, ?6, ?7, ?8, ?9, CURRENT_TIMESTAMP
-       FROM board_tables
-       WHERE board_tables.id = ?10 AND board_tables.user_id = ?11 AND board_tables.locked = 0
-         AND NOT EXISTS (
-           SELECT 1
-           FROM json_each(?12) AS requested
-           WHERE NOT EXISTS (
-             SELECT 1
-             FROM board_tables AS target
-             WHERE target.id = requested.value
-               AND target.user_id = ?11
-               AND target.locked = 0
-           )
-         )
-       ON CONFLICT(table_id, row_item_id, column_item_id)
-       DO UPDATE SET checkbox_visible = excluded.checkbox_visible,
-                     mark_type = excluded.mark_type,
-                     mark_icon = excluded.mark_icon,
-                     memo = excluded.memo,
-                     mark_period_key = excluded.mark_period_key,
-                     updated_at = CURRENT_TIMESTAMP
-       RETURNING table_id AS id`
-    ).bind(
-      crypto.randomUUID(),
-      userId,
-      patch.rowItemId,
-      patch.columnItemId,
-      checkboxVisible,
-      patch.markType,
-      markIcon,
-      memo,
-      markPeriodKey,
-      patch.tableId,
-      userId,
-      tableIdsJson
-    );
-  });
-
-  const results = await env.DB.batch([...statements, bumpBoardSheetVersionsForTables(env, userId, tableIds)]);
-  const everyRequiredMutationReturned = merged.every((patch, index) => {
-    const memo = patch.markType === "disabled" || patch.memo === "" ? null : patch.memo;
-    const markIcon = patch.markType === "disabled" ? null : (patch.markIcon ?? null);
-    const deletesDefault = patch.markType === "default" && memo === null && markIcon === null;
-    return deletesDefault || returnedMutationId(results[index], patch.tableId) !== null;
-  });
-  const anyMutationReturned = merged.some((patch, index) => returnedMutationId(results[index], patch.tableId) !== null);
-  const sheetVersions = returnedSheetVersions(results.at(-1));
-  if (!anyMutationReturned && sheetVersions?.length === 0) return null;
-  if (!sheetVersions || sheetVersions.length === 0 || !everyRequiredMutationReturned) return incompleteBoardMutation();
+  const guardedRows: GuardedBoardCellStatePayloadRow[] = rows.map((row, ordinal) => ({
+    ...row,
+    ...preflightGuardSnapshot(preflight[ordinal]!, now),
+    cell_state_exists: preflight[ordinal]!.cellStateExists === 1 ? 1 : 0
+  }));
+  const payloadJson = JSON.stringify(guardedRows);
+  let results: unknown[];
+  try {
+    results = await env.DB.batch(prepareBoardCellStateWriteStatements(env, userId, payloadJson));
+  } catch (error) {
+    if (isBoardBulkGuardAssertionError(error)) return incompleteBoardMutation();
+    throw error;
+  }
+  if (results.length !== 4 || !results.every(isSuccessfulBatchResult) || !hasEmptyBatchRows(results[2])) {
+    return incompleteBoardMutation();
+  }
+  const returnedDeleteKeys = returnedObjectKeySet(results[0], cellStateRowKey);
+  const returnedUpsertKeys = returnedObjectKeySet(results[1], cellStateRowKey);
+  const expectedDeleteKeys = new Set(
+    guardedRows.filter((row) => row.delete_state === 1 && row.cell_state_exists === 1).map(cellStatePayloadKey)
+  );
+  const expectedUpsertKeys = new Set(guardedRows.filter((row) => row.delete_state === 0).map(cellStatePayloadKey));
+  const sheetVersions = returnedSheetVersions(results[3]);
+  const expectedSheetIds = new Set(guardedRows.map((row) => row.sheet_id));
+  if (
+    !sameStringSet(returnedDeleteKeys, expectedDeleteKeys) ||
+    !sameStringSet(returnedUpsertKeys, expectedUpsertKeys) ||
+    !hasExactSheetVersions(sheetVersions, expectedSheetIds)
+  ) {
+    return incompleteBoardMutation();
+  }
   return { ok: true, versions: buildBoardMutationVersions(sheetVersions) };
+}
+
+type BoardBulkPayloadRow = BoardCompletionPayloadRow | BoardCellStatePayloadRow;
+
+async function loadBoardBulkPreflight(env: Env, userId: string, rows: BoardBulkPayloadRow[]): Promise<BoardBulkPreflightRow[]> {
+  const result = await prepareBoardBulkPreflightStatement(env, userId, JSON.stringify(rows)).all<BoardBulkPreflightRow>();
+  if (!Array.isArray(result.results) || result.results.length !== rows.length) return incompleteBoardMutation();
+  const byOrdinal = new Map<number, BoardBulkPreflightRow>();
+  for (const row of result.results) {
+    if (!Number.isInteger(row.ordinal) || row.ordinal < 0 || row.ordinal >= rows.length || byOrdinal.has(row.ordinal)) {
+      return incompleteBoardMutation();
+    }
+    const expected = rows[row.ordinal];
+    if (
+      !expected ||
+      row.tableId !== expected.table_id ||
+      row.rowItemId !== expected.row_item_id ||
+      row.columnItemId !== expected.column_item_id ||
+      (row.eligible !== 0 && row.eligible !== 1) ||
+      (row.cellStateExists !== 0 && row.cellStateExists !== 1) ||
+      (row.eligible === 1 &&
+        (typeof row.sheetId !== "string" ||
+          !isBoardAxisItemKind(row.rowKind) ||
+          !isBoardAxisItemKind(row.columnKind) ||
+          !isNullableString(row.rowTaskResetRuleJson) ||
+          !isNullableString(row.columnTaskResetRuleJson)))
+    ) {
+      return incompleteBoardMutation();
+    }
+    byOrdinal.set(row.ordinal, row);
+  }
+  const ordered = rows.map((_, ordinal) => byOrdinal.get(ordinal));
+  return ordered.every((row): row is BoardBulkPreflightRow => row !== undefined) ? ordered : incompleteBoardMutation();
+}
+
+function preflightTarget(row: BoardBulkPreflightRow): AuthorizedBoardCompletionTarget {
+  return {
+    tableId: row.tableId,
+    rowItemId: row.rowItemId,
+    columnItemId: row.columnItemId,
+    ...(row.eligible === 1 && row.rowKind && row.columnKind
+      ? {
+          rowKind: row.rowKind,
+          columnKind: row.columnKind,
+          rowTaskResetRuleJson: row.rowTaskResetRuleJson,
+          columnTaskResetRuleJson: row.columnTaskResetRuleJson
+        }
+      : {})
+  };
+}
+
+function preflightGuardSnapshot(row: BoardBulkPreflightRow, now: Date) {
+  if (row.eligible !== 1 || !row.sheetId || !row.rowKind || !row.columnKind) return incompleteBoardMutation();
+  const target = preflightTarget(row);
+  const boundaries = [
+    target.rowKind === "task" ? parseResetRule(target.rowTaskResetRuleJson) : null,
+    target.columnKind === "task" ? parseResetRule(target.columnTaskResetRuleJson) : null
+  ].flatMap((rule) => {
+    if (!rule) return [];
+    const boundary = getNextResetBoundary(rule, now);
+    return boundary ? [Math.floor(boundary.getTime() / 1000)] : [];
+  });
+  return {
+    sheet_id: row.sheetId,
+    row_kind: row.rowKind,
+    column_kind: row.columnKind,
+    row_task_reset_rule_json: row.rowTaskResetRuleJson,
+    column_task_reset_rule_json: row.columnTaskResetRuleJson,
+    guard_expires_at: boundaries.length > 0 ? Math.min(...boundaries) : null
+  };
+}
+
+function completionRejectedKey(patch: BoardCompletionPatch): BoardCompletionRejectedKey {
+  const { tableId, rowItemId, columnItemId, periodKey } = patch;
+  return { tableId, rowItemId, columnItemId, periodKey };
+}
+
+function cellStateRejectedKey(patch: BoardCellStatePatch): BoardCellStateRejectedKey {
+  const { tableId, rowItemId, columnItemId } = patch;
+  return { tableId, rowItemId, columnItemId };
+}
+
+function completionPayloadKey(row: BoardCompletionPayloadRow): string {
+  return JSON.stringify([row.table_id, row.row_item_id, row.column_item_id, row.period_key]);
+}
+
+function cellStatePayloadKey(row: BoardCellStatePayloadRow): string {
+  return JSON.stringify([row.table_id, row.row_item_id, row.column_item_id]);
+}
+
+function completionRowKey(row: Record<string, unknown>): string | null {
+  const { tableId, rowItemId, columnItemId, periodKey } = row;
+  return [tableId, rowItemId, columnItemId, periodKey].every((value) => typeof value === "string")
+    ? JSON.stringify([tableId, rowItemId, columnItemId, periodKey])
+    : null;
+}
+
+function cellStateRowKey(row: Record<string, unknown>): string | null {
+  const { tableId, rowItemId, columnItemId } = row;
+  return [tableId, rowItemId, columnItemId].every((value) => typeof value === "string")
+    ? JSON.stringify([tableId, rowItemId, columnItemId])
+    : null;
+}
+
+function returnedObjectKeySet(
+  result: unknown,
+  keyOf: (row: Record<string, unknown>) => string | null
+): Set<string> | null {
+  if (!result || typeof result !== "object" || !("results" in result)) return null;
+  const rows = (result as { results?: unknown[] }).results;
+  if (!Array.isArray(rows)) return null;
+  const keys = rows.map((row) => (row && typeof row === "object" ? keyOf(row as Record<string, unknown>) : null));
+  if (keys.some((key) => key === null)) return null;
+  const set = new Set(keys as string[]);
+  return set.size === rows.length ? set : null;
+}
+
+function isSuccessfulBatchResult(result: unknown): boolean {
+  return Boolean(result && typeof result === "object" && (result as { success?: unknown }).success === true);
+}
+
+function hasEmptyBatchRows(result: unknown): boolean {
+  return Boolean(
+    result &&
+      typeof result === "object" &&
+      Array.isArray((result as { results?: unknown }).results) &&
+      (result as { results: unknown[] }).results.length === 0
+  );
+}
+
+function isBoardAxisItemKind(value: unknown): value is "character" | "task" | "custom" {
+  return value === "character" || value === "task" || value === "custom";
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function sameStringSet(actual: Set<string> | null, expected: Set<string>): boolean {
+  return actual !== null && actual.size === expected.size && [...expected].every((value) => actual.has(value));
+}
+
+function hasExactSheetVersions(actual: BoardSheetVersion[] | null, expectedIds: Set<string>): actual is BoardSheetVersion[] {
+  if (!actual || actual.length !== expectedIds.size) return false;
+  const ids = new Set(actual.map((row) => row.id));
+  return ids.size === actual.length && ids.size === expectedIds.size && [...expectedIds].every((id) => ids.has(id));
+}
+
+function isBoardBulkGuardAssertionError(error: unknown): boolean {
+  return /NOT NULL constraint failed:\s*board_cell_completions\.user_id/i.test(String(error));
 }
 
 function unique(values: string[]): string[] {
@@ -2909,48 +3002,6 @@ function unique(values: string[]): string[] {
 
 function placeholders(values: string[]): string {
   return values.map(() => "?").join(", ");
-}
-
-async function loadAuthorizedBoardCompletionTargets(
-  env: Env,
-  userId: string,
-  patches: BoardCompletionPatch[]
-): Promise<AuthorizedBoardCompletionTarget[]> {
-  if (patches.length === 0) return [];
-
-  const tableIds = unique(patches.map((patch) => patch.tableId));
-  const rowItemIds = unique(patches.map((patch) => patch.rowItemId));
-  const columnItemIds = unique(patches.map((patch) => patch.columnItemId));
-
-  const authorized = await env.DB.prepare(
-    `SELECT board_tables.id AS tableId,
-            row_items.id AS rowItemId,
-            column_items.id AS columnItemId,
-            row_items.kind AS rowKind,
-            column_items.kind AS columnKind,
-            row_items.task_reset_rule_json AS rowTaskResetRuleJson,
-            column_items.task_reset_rule_json AS columnTaskResetRuleJson
-     FROM board_tables
-     JOIN board_axis_items row_items
-       ON row_items.table_id = board_tables.id
-      AND row_items.axis = 'row'
-      AND row_items.user_id = ?
-      AND row_items.visible = 1
-      AND row_items.id IN (${placeholders(rowItemIds)})
-     JOIN board_axis_items column_items
-       ON column_items.table_id = board_tables.id
-      AND column_items.axis = 'column'
-      AND column_items.user_id = ?
-      AND column_items.visible = 1
-      AND column_items.id IN (${placeholders(columnItemIds)})
-     WHERE board_tables.user_id = ?
-       AND board_tables.locked = 0
-       AND board_tables.id IN (${placeholders(tableIds)})`
-  )
-    .bind(userId, ...rowItemIds, userId, ...columnItemIds, userId, ...tableIds)
-    .all<AuthorizedBoardCompletionTarget>();
-
-  return authorized.results;
 }
 
 export async function updateBoardAxisItemSize(

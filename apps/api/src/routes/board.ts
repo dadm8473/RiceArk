@@ -644,8 +644,10 @@ boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchS
   const user = await requireUser(c);
   const { patches } = c.req.valid("json");
   const saved = await saveBoardCompletionPatches(c.env, user.id, patches as BoardCompletionPatch[]);
-  if (!saved) {
-    throw new ApiError(400, "invalid_board_completion_target", "Board completion target is not available");
+  if (saved.ok === false) {
+    throw new ApiError(400, "invalid_board_completion_target", "Board completion target is not available", {
+      details: { rejectedKeys: saved.rejectedKeys }
+    });
   }
   return c.json(saved);
 });
@@ -654,8 +656,10 @@ boardRoutes.patch("/board/cell-states", zValidator("json", boardCellStatePatchBa
   const user = await requireUser(c);
   const { patches } = c.req.valid("json");
   const saved = await saveBoardCellStatePatches(c.env, user.id, patches as BoardCellStatePatch[]);
-  if (!saved) {
-    throw new ApiError(400, "invalid_board_cell_state_target", "셀 표시 상태를 바꿀 수 없는 항목입니다.");
+  if (saved.ok === false) {
+    throw new ApiError(400, "invalid_board_cell_state_target", "셀 표시 상태를 바꿀 수 없는 항목입니다.", {
+      details: { rejectedKeys: saved.rejectedKeys }
+    });
   }
   return c.json(saved);
 });

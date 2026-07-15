@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getPeriodKey } from "../src/reset";
+import { getNextResetBoundary, getPeriodKey } from "../src/reset";
 import type { ResetRule } from "../src/types";
 
 describe("getPeriodKey", () => {
@@ -43,5 +43,24 @@ describe("getPeriodKey", () => {
     const rule: ResetRule = { type: "none" };
     expect(getPeriodKey(rule, new Date("2026-05-20T12:00:00.000Z"))).toBe("none:permanent");
     expect(getPeriodKey(rule, new Date("2026-06-20T12:00:00.000Z"))).toBe("none:permanent");
+  });
+
+  it("returns the next boundary for daily and weekly reset rules", () => {
+    expect(
+      getNextResetBoundary(
+        { type: "daily", hour: 6, timezone: "Asia/Seoul" },
+        new Date("2026-07-15T20:59:59.000Z")
+      )?.toISOString()
+    ).toBe("2026-07-15T21:00:00.000Z");
+    expect(
+      getNextResetBoundary(
+        { type: "weekly", weekday: 3, hour: 6, timezone: "Asia/Seoul" },
+        new Date("2026-07-15T21:00:00.000Z")
+      )?.toISOString()
+    ).toBe("2026-07-21T21:00:00.000Z");
+  });
+
+  it("has no reset boundary when resets are disabled", () => {
+    expect(getNextResetBoundary({ type: "none" }, new Date("2026-07-15T00:00:00.000Z"))).toBeNull();
   });
 });
