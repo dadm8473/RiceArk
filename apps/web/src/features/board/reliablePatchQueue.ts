@@ -191,6 +191,10 @@ export class ReliablePatchQueue<T, K> {
 
   private readonly handleImmediateRetry = () => {
     if (this.authPaused) return;
+    if (this.worker !== null || this.activeTransport !== null) {
+      this.immediateWakeRequested = true;
+      return;
+    }
     void this.startWorker();
   };
 
@@ -314,20 +318,14 @@ export class ReliablePatchQueue<T, K> {
       this.immediateWakeRequested = false;
       return;
     }
-    if (
-      !this.disposed &&
-      !this.authPaused &&
-      this.retryTimer === null &&
-      this.activeTransport === null &&
-      this.debounceTimer === null
-    ) {
-      if (this.immediateWakeRequested) {
-        this.immediateWakeRequested = false;
-        void this.startWorker();
-      } else {
-        this.scheduleDebounce();
-      }
+    if (this.disposed || this.authPaused || this.activeTransport !== null) return;
+    if (this.immediateWakeRequested) {
+      this.immediateWakeRequested = false;
+      this.clearTimers();
+      void this.startWorker();
+      return;
     }
+    if (this.retryTimer === null && this.debounceTimer === null) this.scheduleDebounce();
   }
 
   private async drain(): Promise<DrainResult> {
@@ -521,6 +519,7 @@ export class ReliablePatchQueue<T, K> {
 
     const continueAfterWorker = () => {
       if (this.disposed || this.pending.size === 0) return;
+      if (this.worker !== null || this.activeTransport !== null) return;
       if (this.immediateWakeRequested && !this.authPaused) {
         this.immediateWakeRequested = false;
         void this.startWorker();
@@ -640,6 +639,8 @@ export class ReliablePatchQueue<T, K> {
 
   private scheduleAfterEnqueue(): void {
     if (
+      this.disposed ||
+      this.pending.size === 0 ||
       this.authPaused ||
       this.worker !== null ||
       this.activeTransport !== null ||

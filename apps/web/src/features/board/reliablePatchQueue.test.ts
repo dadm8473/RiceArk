@@ -139,6 +139,26 @@ describe("ReliablePatchQueue", () => {
     expect(queue.getPendingSnapshot()).toEqual([]);
   });
 
+  it.each(["dispose", "discard"] as const)(
+    "leaves no timer when onPendingChange reentrantly calls %s",
+    (action) => {
+      let queue!: ReliablePatchQueue<Patch, string>;
+      let acted = false;
+      ({ queue } = makeQueue({
+        onPendingChange: (patches) => {
+          if (acted || patches.length === 0) return;
+          acted = true;
+          if (action === "dispose") queue.dispose();
+          else queue.discard();
+        }
+      }));
+
+      queue.enqueue({ key: "a", value: true });
+
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
   it("handles a rejected thenable returned by a void observer", async () => {
     const send = vi.fn(async (patches: Patch[]) => accepted(patches));
     const rejectedObserver = (() => Promise.reject(new Error("async observer failed"))) as (
@@ -434,7 +454,6 @@ describe("ReliablePatchQueue", () => {
       })
     );
     expect(signals[0]?.aborted).toBe(true);
-    eventTarget.dispatchEvent(new Event("focus"));
     await vi.advanceTimersByTimeAsync(30_000);
     expect(send).toHaveBeenCalledTimes(1);
 
@@ -445,6 +464,68 @@ describe("ReliablePatchQueue", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(send).toHaveBeenCalledTimes(2);
     expect(queue.getPendingSnapshot()).toEqual([]);
+  });
+
+  it.each(["focus", "online"] as const)(
+    "latches %s while a timed-out transport is active and retries immediately after settlement",
+    async (eventType) => {
+      const first = deferred<SendOutcome<string>>();
+      let activeSends = 0;
+      let maximumActiveSends = 0;
+      const send = vi.fn(async (patches: Patch[]) => {
+        activeSends += 1;
+        maximumActiveSends = Math.max(maximumActiveSends, activeSends);
+        try {
+          return send.mock.calls.length === 1 ? await first.promise : accepted(patches);
+        } finally {
+          activeSends -= 1;
+        }
+      });
+      const { queue } = makeQueue({ send });
+      queue.enqueue({ key: "a", value: true });
+      await vi.advanceTimersByTimeAsync(
+        PATCH_QUEUE_DEBOUNCE_MS + PATCH_QUEUE_REQUEST_TIMEOUT_MS
+      );
+
+      eventTarget.dispatchEvent(new Event(eventType));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(send).toHaveBeenCalledTimes(1);
+
+      first.resolve(accepted([{ key: "a", value: true }]));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(maximumActiveSends).toBe(1);
+      expect(queue.getPendingSnapshot()).toEqual([]);
+    }
+  );
+
+  it("does not let a timed-out transport settlement schedule beside its replacement worker", async () => {
+    const replacement = deferred<SendOutcome<string>>();
+    const send = vi.fn((patches: Patch[], context) => {
+      if (send.mock.calls.length === 1) {
+        return abortableDeferred<SendOutcome<string>>(context.signal).promise;
+      }
+      if (send.mock.calls.length === 2) return replacement.promise;
+      return Promise.resolve(accepted(patches));
+    });
+    const { queue } = makeQueue({ send });
+    queue.enqueue({ key: "a", value: true });
+    await vi.advanceTimersByTimeAsync(PATCH_QUEUE_DEBOUNCE_MS);
+
+    queue.retry();
+    await vi.advanceTimersByTimeAsync(PATCH_QUEUE_REQUEST_TIMEOUT_MS);
+    expect(send).toHaveBeenCalledTimes(2);
+
+    replacement.resolve(accepted([{ key: "a", value: true }]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+
+    queue.enqueue({ key: "b", value: false });
+    await vi.advanceTimersByTimeAsync(PATCH_QUEUE_DEBOUNCE_MS - 1);
+    expect(send).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(3);
   });
 
   it("uses the 1/2/5/10/30 second retry sequence and caps there", async () => {
@@ -677,6 +758,33 @@ describe("ReliablePatchQueue", () => {
     expect(send).toHaveBeenCalledTimes(2);
     retrySend.resolve(accepted([{ key: "a", value: true }]));
     await queue.flush();
+  });
+
+  it("consumes a latched immediate retry instead of leaving the worker's retry timer", async () => {
+    const first = deferred<SendOutcome<string>>();
+    let activeSends = 0;
+    let maximumActiveSends = 0;
+    const send = vi.fn(async (patches: Patch[]) => {
+      activeSends += 1;
+      maximumActiveSends = Math.max(maximumActiveSends, activeSends);
+      try {
+        return send.mock.calls.length === 1 ? await first.promise : accepted(patches);
+      } finally {
+        activeSends -= 1;
+      }
+    });
+    const { queue } = makeQueue({ send });
+    queue.enqueue({ key: "a", value: true });
+    await vi.advanceTimersByTimeAsync(PATCH_QUEUE_DEBOUNCE_MS);
+
+    queue.retry();
+    first.resolve({ type: "retry", error: new Error("busy"), retryAfterMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(maximumActiveSends).toBe(1);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("pauses automatic work on auth and resumes only through retry", async () => {
