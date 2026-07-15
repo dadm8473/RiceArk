@@ -645,6 +645,91 @@ describe("ReliablePatchQueue", () => {
     expect(versionChanges).toEqual([versions]);
   });
 
+  it("observes only acknowledged sent patches before pending removal", async () => {
+    const events: string[] = [];
+    let queue!: ReliablePatchQueue<Patch, string>;
+    ({ queue } = makeQueue({
+      send: async () => ({ type: "accepted", acknowledgedKeys: ["a"] }),
+      onAccepted: (patches: Patch[]) => {
+        events.push(`accepted:${patches.map(({ key }) => key).join(",")}`);
+        expect(queue.getPendingSnapshot()).toEqual([
+          { key: "a", value: true },
+          { key: "b", value: false }
+        ]);
+      },
+      onPendingChange: (patches) => events.push(`pending:${patches.length}`)
+    }));
+    queue.enqueueMany([
+      { key: "a", value: true },
+      { key: "b", value: false }
+    ]);
+
+    const flush = queue.flush().catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(events.slice(0, 3)).toEqual(["pending:2", "accepted:a", "pending:1"]);
+    queue.discard();
+    await flush;
+  });
+
+  it("observes the acknowledged sent generation while a newer generation remains pending", async () => {
+    const first = deferred<SendOutcome<string>>();
+    const second = deferred<SendOutcome<string>>();
+    const acceptedPatches: Patch[][] = [];
+    const send = vi.fn(async () => (send.mock.calls.length === 1 ? first.promise : second.promise));
+    const { queue } = makeQueue({
+      send,
+      onAccepted: (patches: Patch[]) => acceptedPatches.push(patches)
+    });
+    const sentPatch = { key: "cell", value: true };
+    const newerPatch = { key: "cell", value: false };
+    queue.enqueue(sentPatch);
+    await vi.advanceTimersByTimeAsync(800);
+    queue.enqueue(newerPatch);
+
+    first.resolve({ type: "accepted", acknowledgedKeys: ["cell"] });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(acceptedPatches).toEqual([[sentPatch]]);
+    expect(queue.getPendingSnapshot()).toEqual([newerPatch]);
+    queue.dispose();
+    second.resolve({ type: "accepted", acknowledgedKeys: ["cell"] });
+  });
+
+  it.each(["discard", "dispose"] as const)(
+    "does not observe a late accepted response after %s",
+    async (action) => {
+      const first = deferred<SendOutcome<string>>();
+      const onAccepted = vi.fn();
+      const { queue } = makeQueue({ send: async () => first.promise, onAccepted });
+      queue.enqueue({ key: "a", value: true });
+      await vi.advanceTimersByTimeAsync(800);
+
+      if (action === "discard") queue.discard();
+      else queue.dispose();
+      first.resolve({ type: "accepted", acknowledgedKeys: ["a"] });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(onAccepted).not.toHaveBeenCalled();
+    }
+  );
+
+  it("does not retry when the accepted observer throws", async () => {
+    const send = vi.fn(async (patches: Patch[]) => accepted(patches));
+    const { queue } = makeQueue({
+      send,
+      onAccepted: () => {
+        throw new Error("accepted observer failed");
+      }
+    });
+    queue.enqueue({ key: "a", value: true });
+
+    await expect(queue.flush()).resolves.toBeUndefined();
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+  });
+
   it("advances backoff for unknown and empty acknowledgments without resetting it", async () => {
     const send = vi
       .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()

@@ -28,7 +28,7 @@ export type BoardPatchApi = (
 
 export interface BoardCompletionQueueOptions {
   patch?: BoardPatchApi | undefined;
-  onAccepted?: ((patches: BoardCompletionPatch[], versions: BoardMutationVersions) => void) | undefined;
+  onAccepted?: ((patches: BoardCompletionPatch[], versions: BoardMutationVersions | undefined) => void) | undefined;
   onPendingChange?: ((patches: BoardCompletionPatch[]) => void) | undefined;
   onPermanentFailure?:
     | ((outcome: Extract<SendOutcome<BoardCompletionKey>, { type: "rejected" }>) => void)
@@ -67,18 +67,6 @@ function rejectedCompletionKeys(
     : sentPatches.map(getBoardCompletionKey);
 }
 
-function notifyAcceptedCompletionPatches(
-  observer: BoardCompletionQueueOptions["onAccepted"],
-  patches: BoardCompletionPatch[],
-  versions: BoardMutationVersions
-): void {
-  try {
-    observer?.(patches, versions);
-  } catch {
-    // The server acknowledgment must not be retried because a local observer failed.
-  }
-}
-
 export function createBoardCompletionQueue(
   options: BoardCompletionQueueOptions = {}
 ): ReliablePatchQueue<BoardCompletionPatch, BoardCompletionKey> {
@@ -90,7 +78,6 @@ export function createBoardCompletionQueue(
     send: async (patches, context) => {
       try {
         const response = await patch("/api/board/completions", { patches }, { keepalive: true, signal: context.signal });
-        notifyAcceptedCompletionPatches(options.onAccepted, patches, response.versions);
         return {
           type: "accepted",
           acknowledgedKeys: patches.map(getBoardCompletionKey),
@@ -117,6 +104,9 @@ export function createBoardCompletionQueue(
     onPendingChange: options.onPendingChange ?? (() => undefined),
     onPermanentFailure: options.onPermanentFailure ?? (() => undefined),
     onAuthPause: options.onAuthPause ?? (() => undefined),
+    ...(options.onAccepted
+      ? { onAccepted: (patches, outcome) => options.onAccepted?.(patches, outcome.versions) }
+      : {}),
     ...(options.onVersions ? { onVersions: options.onVersions } : {})
   });
 }

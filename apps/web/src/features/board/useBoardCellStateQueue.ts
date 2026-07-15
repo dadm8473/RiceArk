@@ -21,7 +21,7 @@ export interface BoardCellStateKey {
 
 export interface BoardCellStateQueueOptions {
   patch?: BoardPatchApi | undefined;
-  onAccepted?: ((patches: BoardCellStatePatch[], versions: BoardMutationVersions) => void) | undefined;
+  onAccepted?: ((patches: BoardCellStatePatch[], versions: BoardMutationVersions | undefined) => void) | undefined;
   onPendingChange?: ((patches: BoardCellStatePatch[]) => void) | undefined;
   onPermanentFailure?:
     | ((outcome: Extract<SendOutcome<BoardCellStateKey>, { type: "rejected" }>) => void)
@@ -55,18 +55,6 @@ function rejectedCellStateKeys(error: ApiClientError, sentPatches: BoardCellStat
     : sentPatches.map(getBoardCellStateKey);
 }
 
-function notifyAcceptedCellStatePatches(
-  observer: BoardCellStateQueueOptions["onAccepted"],
-  patches: BoardCellStatePatch[],
-  versions: BoardMutationVersions
-): void {
-  try {
-    observer?.(patches, versions);
-  } catch {
-    // The server acknowledgment must not be retried because a local observer failed.
-  }
-}
-
 export function createBoardCellStateQueue(
   options: BoardCellStateQueueOptions = {}
 ): ReliablePatchQueue<BoardCellStatePatch, BoardCellStateKey> {
@@ -78,7 +66,6 @@ export function createBoardCellStateQueue(
     send: async (patches, context) => {
       try {
         const response = await patch("/api/board/cell-states", { patches }, { keepalive: true, signal: context.signal });
-        notifyAcceptedCellStatePatches(options.onAccepted, patches, response.versions);
         return {
           type: "accepted",
           acknowledgedKeys: patches.map(getBoardCellStateKey),
@@ -105,6 +92,9 @@ export function createBoardCellStateQueue(
     onPendingChange: options.onPendingChange ?? (() => undefined),
     onPermanentFailure: options.onPermanentFailure ?? (() => undefined),
     onAuthPause: options.onAuthPause ?? (() => undefined),
+    ...(options.onAccepted
+      ? { onAccepted: (patches, outcome) => options.onAccepted?.(patches, outcome.versions) }
+      : {}),
     ...(options.onVersions ? { onVersions: options.onVersions } : {})
   });
 }

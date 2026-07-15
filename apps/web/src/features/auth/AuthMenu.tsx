@@ -1,4 +1,4 @@
-import { Check, ChevronDown, LogOut, Moon, Pencil, RefreshCw, Sun, Trash2, UserCircle, X } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, CloudUpload, LogOut, Moon, Pencil, RefreshCw, Sun, Trash2, UserCircle, X } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import type { AuthUser } from "./useSession";
 
@@ -10,9 +10,12 @@ export const DISPLAY_NAME_MAX_CHARS = 12;
 interface AuthMenuProps {
   status: AuthMenuStatus;
   user?: AuthUser | null;
+  hasPendingWrites?: boolean;
   menuOpen: boolean;
   logoutBlocked?: boolean;
+  logoutError?: string | null;
   logoutPending?: boolean;
+  pendingWriteError?: string | null;
   theme?: AppTheme;
   onToggleMenu?: () => void;
   onThemeToggle?: () => void;
@@ -29,9 +32,12 @@ function getAvatarInitial(user: AuthUser): string {
 export function AuthMenu({
   status,
   user,
+  hasPendingWrites = false,
   menuOpen,
   logoutBlocked = false,
+  logoutError = null,
   logoutPending = false,
+  pendingWriteError = null,
   theme = "light",
   onToggleMenu,
   onThemeToggle,
@@ -110,6 +116,20 @@ export function AuthMenu({
           <span className="profile-avatar profile-avatar-fallback">{getAvatarInitial(user)}</span>
         )}
         <span className="profile-name">{user.displayName}</span>
+        <span
+          {...(pendingWriteError
+            ? { "aria-label": "변경사항 저장 오류", role: "status", title: pendingWriteError }
+            : hasPendingWrites
+              ? { "aria-label": "변경사항 저장 대기 중", role: "status", title: "변경사항 저장 대기 중" }
+              : { "aria-hidden": true })}
+          className="profile-write-status-slot"
+        >
+          {pendingWriteError ? (
+            <AlertCircle aria-hidden="true" size={15} />
+          ) : hasPendingWrites ? (
+            <CloudUpload aria-hidden="true" size={15} />
+          ) : null}
+        </span>
         <ChevronDown aria-hidden="true" size={16} />
       </button>
       {menuOpen ? (
@@ -148,20 +168,28 @@ export function AuthMenu({
             </div>
           )}
           {nameError ? <p className="profile-name-edit-error">{nameError}</p> : null}
+          {pendingWriteError ? (
+            <p className="profile-write-state profile-write-state-error" role="alert">저장 오류: {pendingWriteError}</p>
+          ) : hasPendingWrites ? (
+            <p className="profile-write-state" role="status">변경사항 저장 대기 중</p>
+          ) : null}
+          {logoutError ? <p className="profile-logout-warning" role="alert">{logoutError}</p> : null}
           <button role="menuitem" type="button" onClick={onThemeToggle}>
             {theme === "dark" ? <Sun aria-hidden="true" size={16} /> : <Moon aria-hidden="true" size={16} />}
             {theme === "dark" ? "라이트모드" : "다크모드(Beta)"}
           </button>
           {logoutBlocked ? (
             <>
-              <p className="profile-logout-warning" role="alert">변경사항을 저장하지 못했습니다. 다시 시도하거나 변경사항을 삭제해주세요.</p>
+              <p className="profile-logout-warning" role="alert">
+                저장 대기 변경사항을 저장하지 못했습니다. 이미 저장된 변경사항은 유지됩니다.
+              </p>
               <button disabled={logoutPending} role="menuitem" type="button" onClick={onRetryLogout}>
                 <RefreshCw aria-hidden="true" size={16} />
                 저장 재시도 후 로그아웃
               </button>
               <button disabled={logoutPending} role="menuitem" type="button" onClick={onDiscardLogout}>
                 <Trash2 aria-hidden="true" size={16} />
-                변경사항 삭제 후 로그아웃
+                저장 대기 변경사항 버리고 로그아웃
               </button>
             </>
           ) : (

@@ -4,9 +4,11 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   App,
+  DurableLogoutError,
   getAppRouteState,
   getAppRouteUrl,
   getAuthErrorMessage,
+  getDurableLogoutFailureState,
   getDirectSharedRiceBinHistoryUrls,
   getUrlWithoutSharedRiceBinId,
   runDurableLogout
@@ -174,6 +176,16 @@ describe("app route helpers", () => {
 });
 
 describe("runDurableLogout", () => {
+  it("maps flush and logout failures to distinct recovery UI states", () => {
+    expect(getDurableLogoutFailureState(new DurableLogoutError("flush", new Error("offline"))))
+      .toEqual({ logoutBlocked: true, logoutError: null });
+    expect(getDurableLogoutFailureState(new DurableLogoutError("logout", new Error("unavailable"))))
+      .toEqual({
+        logoutBlocked: false,
+        logoutError: "로그아웃 요청에 실패했습니다. 다시 시도해주세요."
+      });
+  });
+
   it("flushes pending writes before calling logout", async () => {
     const order: string[] = [];
 
@@ -284,6 +296,25 @@ describe("App", () => {
 
     expect(html).toContain("board overview");
     expect(html).not.toContain("legacy checklist matrix");
+  });
+
+  it("shows pending write errors on the normal owner board screen", () => {
+    hooks.useBoard.mockReturnValue({
+      ...hooks.useBoard(),
+      data: board,
+      hasPendingWrites: true,
+      pendingWriteError: "Completion locked"
+    });
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-1", displayName: "RiceArk", avatarUrl: null, isAdmin: false },
+      error: null
+    });
+
+    const html = renderToStaticMarkup(createElement(App));
+
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Completion locked");
   });
 
   it("passes reliable write enqueue callbacks into the owner board", () => {

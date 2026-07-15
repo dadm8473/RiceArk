@@ -312,6 +312,20 @@ body {
   white-space: nowrap;
 }
 
+.profile-write-status-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: #2563eb;
+}
+
+.profile-write-status-slot[aria-label="변경사항 저장 오류"] {
+  color: #b42318;
+}
+
 .profile-menu {
   position: absolute;
   top: calc(100% + 8px);
@@ -404,6 +418,17 @@ body {
   font-size: 12px;
 }
 
+.profile-write-state {
+  margin: 5px 8px 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.profile-write-state-error {
+  color: #b42318;
+}
+
 .profile-menu-recovery {
   width: 260px;
 }
@@ -420,6 +445,15 @@ body {
 }
 
 .app-shell[data-theme="dark"] .profile-name-edit-error {
+  color: #fca5a5;
+}
+
+.app-shell[data-theme="dark"] .profile-write-state {
+  color: #cbd5e1;
+}
+
+.app-shell[data-theme="dark"] .profile-write-state-error,
+.app-shell[data-theme="dark"] .profile-write-status-slot[aria-label="변경사항 저장 오류"] {
   color: #fca5a5;
 }
 

@@ -25,6 +25,19 @@ export class DurableLogoutError extends Error {
   }
 }
 
+export function getDurableLogoutFailureState(error: unknown): {
+  logoutBlocked: boolean;
+  logoutError: string | null;
+} {
+  if (error instanceof DurableLogoutError && error.stage === "flush") {
+    return { logoutBlocked: true, logoutError: null };
+  }
+  return {
+    logoutBlocked: false,
+    logoutError: "로그아웃 요청에 실패했습니다. 다시 시도해주세요."
+  };
+}
+
 export async function runDurableLogout({
   mode,
   flushPendingWrites,
@@ -176,6 +189,7 @@ export function App() {
   const [patchNotesOpen, setPatchNotesOpen] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const [logoutBlocked, setLogoutBlocked] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
   const [theme, setTheme] = useState<AppTheme>(() =>
     getStoredAppTheme(typeof window === "undefined" ? null : window.localStorage)
   );
@@ -235,6 +249,7 @@ export function App() {
     setLogoutPending(true);
     setAuthMenuOpen(false);
     setLogoutBlocked(false);
+    setLogoutError(null);
     try {
       await runDurableLogout({
         mode,
@@ -245,9 +260,11 @@ export function App() {
       });
       window.location.assign("/");
     } catch (err) {
+      const failure = getDurableLogoutFailureState(err);
       setLogoutPending(false);
       setAuthMenuOpen(true);
-      setLogoutBlocked(err instanceof DurableLogoutError && err.stage === "flush");
+      setLogoutBlocked(failure.logoutBlocked);
+      setLogoutError(failure.logoutError);
       console.error(err);
     }
   };
@@ -329,12 +346,15 @@ export function App() {
             문의하기
           </a>
           <AuthMenu
+            hasPendingWrites={board.hasPendingWrites}
             logoutBlocked={logoutBlocked}
+            logoutError={logoutError}
             logoutPending={logoutPending}
             menuOpen={authMenuOpen}
             status={session.status}
             theme={theme}
             user={session.user}
+            pendingWriteError={board.pendingWriteError}
             onDisplayNameSave={handleDisplayNameSave}
             onDiscardLogout={handleDiscardLogout}
             onLogout={handleLogout}
@@ -365,6 +385,11 @@ export function App() {
           ) : session.status === "authenticated" ? (
             <>
               {board.error ? <p className="error-text">{board.error}</p> : null}
+              {board.pendingWriteError ? (
+                <p className="error-text board-write-error" role="alert">
+                  변경사항 저장 오류: {board.pendingWriteError}
+                </p>
+              ) : null}
               {!board.data && !board.error ? <p>로스트아크 숙제 체크리스트를 불러오는 중입니다.</p> : null}
               {board.data ? (
                 <BoardOverview

@@ -4,15 +4,20 @@ import { ApiClientError } from "../../api/client";
 import {
   BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS,
   BOARD_VERSION_IDLE_CHECK_INTERVAL_MS,
+  BOARD_WRITE_INVALIDATION_COALESCE_MS,
   buildLocalBoardPeriodFingerprint,
   buildBoardVersionKey,
   canClaimBoardPollingLeadership,
+  createBoardInvalidationPublisher,
+  createBoardReloadGate,
   createBoardWriteCoordinator,
   formatBoardError,
   getBoardPollingDelayMs,
   getNextBoardPeriodBoundaryMs,
   mergeBoardVersionSummary,
-  parseBoardPollingLeaderRecord
+  parseBoardPollingLeaderRecord,
+  reportBoardReloadErrorIfCurrent,
+  shouldReloadForBoardBroadcast
 } from "./useBoard";
 import type { BoardPayload } from "./types";
 
@@ -52,6 +57,19 @@ describe("formatBoardError", () => {
 
   it("uses a board-specific fallback for unknown errors", () => {
     expect(formatBoardError("bad")).toBe("보드 데이터를 불러오지 못했습니다.");
+  });
+
+  it("does not publish a stale coordinator reload failure into a new account", () => {
+    const oldCoordinator = {};
+    const currentCoordinator = {};
+    const report = vi.fn();
+
+    expect(reportBoardReloadErrorIfCurrent(currentCoordinator, oldCoordinator, new Error("old failure"), report))
+      .toBe(false);
+    expect(report).not.toHaveBeenCalled();
+    expect(reportBoardReloadErrorIfCurrent(currentCoordinator, currentCoordinator, new Error("current failure"), report))
+      .toBe(true);
+    expect(report).toHaveBeenCalledWith("current failure");
   });
 
   it("checks lightweight board versions on focus and visibility changes", () => {
@@ -246,6 +264,84 @@ describe("BoardWriteCoordinator", () => {
     coordinator.discardAndDispose();
   });
 
+  it("preserves a completion error when the cell-state queue succeeds", async () => {
+    const patch = vi.fn(async (path: string) => {
+      if (path === "/api/board/completions") {
+        throw new ApiClientError(422, "invalid_patch", "Completion locked");
+      }
+      return { ok: true as const, versions: { sheets: [] } };
+    });
+    const coordinator = createBoardWriteCoordinator("user-1", { attachLifecycle: false, patch });
+    coordinator.setAuthoritativeBase(emptyBoard);
+    coordinator.enqueueCompletion({
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      periodKey: "daily:2026-07-15",
+      completed: true
+    });
+    await coordinator.flushPendingWrites();
+    coordinator.enqueueCellState({
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      markType: "fixed",
+      markIcon: "pin",
+      memo: "saved"
+    });
+
+    await coordinator.flushPendingWrites();
+
+    expect(coordinator.getSnapshot().pendingWriteError).toBe("Completion locked");
+    coordinator.discardAndDispose();
+  });
+
+  it("derives a stable error from both queues and clears only the acknowledged queue", async () => {
+    let completionFails = true;
+    const patch = vi.fn(async (path: string) => {
+      if (path === "/api/board/completions" && completionFails) {
+        throw new ApiClientError(422, "invalid_completion", "Completion failed");
+      }
+      if (path === "/api/board/cell-states") {
+        throw new ApiClientError(422, "invalid_cell_state", "Cell state failed");
+      }
+      return { ok: true as const, versions: { sheets: [] } };
+    });
+    const coordinator = createBoardWriteCoordinator("user-1", { attachLifecycle: false, patch });
+    coordinator.enqueueCompletion({
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      periodKey: "daily:2026-07-15",
+      completed: true
+    });
+    coordinator.enqueueCellState({
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      markType: "fixed",
+      markIcon: "pin",
+      memo: "failed"
+    });
+    await coordinator.flushPendingWrites();
+
+    expect(coordinator.getSnapshot().pendingWriteError).toContain("Completion failed");
+    expect(coordinator.getSnapshot().pendingWriteError).toContain("Cell state failed");
+
+    completionFails = false;
+    coordinator.enqueueCompletion({
+      tableId: "table-1",
+      rowItemId: "row-2",
+      columnItemId: "column-1",
+      periodKey: "daily:2026-07-15",
+      completed: true
+    });
+    await coordinator.flushPendingWrites();
+
+    expect(coordinator.getSnapshot().pendingWriteError).toBe("Cell state failed");
+    coordinator.discardAndDispose();
+  });
+
   it("clears the prior account overlay and queues before another account is constructed", () => {
     const first = createBoardWriteCoordinator("user-1", { attachLifecycle: false });
     first.setAuthoritativeBase(emptyBoard);
@@ -287,5 +383,160 @@ describe("BoardWriteCoordinator", () => {
 
     await expect(flushing).rejects.toThrow("offline");
     coordinator.discardAndDispose();
+  });
+});
+
+describe("board cross-tab invalidation", () => {
+  it("reloads for a changed polling version announcement without reloading the same version", () => {
+    expect(shouldReloadForBoardBroadcast("board-version-key", "v4", "v5", true)).toBe(true);
+    expect(shouldReloadForBoardBroadcast("board-version-key", "v5", "v5", true)).toBe(false);
+    expect(shouldReloadForBoardBroadcast("board-version-key", null, "v5", false)).toBe(false);
+    expect(shouldReloadForBoardBroadcast("board-reload", null, "v5", false)).toBe(true);
+  });
+
+  it("coalesces a sender burst and publishes only the highest merged versions", async () => {
+    vi.useFakeTimers();
+    const postMessage = vi.fn();
+    const publisher = createBoardInvalidationPublisher({
+      sourceId: "tab-a",
+      userId: "user-1",
+      postMessage,
+      versionKeyFor: (summary) => JSON.stringify(summary)
+    });
+
+    publisher.schedule({ manifestVersion: 2, sheets: [{ id: "sheet-1", version: 4 }], periodFingerprint: "" });
+    publisher.schedule({ manifestVersion: 3, sheets: [{ id: "sheet-1", version: 6 }], periodFingerprint: "" });
+    publisher.schedule({ manifestVersion: 2, sheets: [{ id: "sheet-1", version: 5 }], periodFingerprint: "" });
+    await vi.advanceTimersByTimeAsync(BOARD_WRITE_INVALIDATION_COALESCE_MS - 1);
+    expect(postMessage).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      sourceId: "tab-a",
+      userId: "user-1",
+      type: "board-reload",
+      summary: {
+        manifestVersion: 3,
+        sheets: [{ id: "sheet-1", version: 6 }],
+        periodFingerprint: ""
+      }
+    }));
+    publisher.dispose();
+    vi.useRealTimers();
+  });
+
+  it("cancels a scheduled sender invalidation when disposed", async () => {
+    vi.useFakeTimers();
+    const postMessage = vi.fn();
+    const publisher = createBoardInvalidationPublisher({
+      sourceId: "tab-a",
+      userId: "user-1",
+      postMessage,
+      versionKeyFor: (summary) => JSON.stringify(summary)
+    });
+    publisher.schedule({ manifestVersion: 2, sheets: [], periodFingerprint: "" });
+
+    publisher.dispose();
+    await vi.advanceTimersByTimeAsync(BOARD_WRITE_INVALIDATION_COALESCE_MS);
+
+    expect(postMessage).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("deduplicates same-version reload messages", async () => {
+    const active = deferred<void>();
+    const reload = vi.fn(() => active.promise);
+    const gate = createBoardReloadGate({ userId: "user-1", reload });
+    const message = {
+      sourceId: "tab-a",
+      userId: "user-1",
+      type: "board-reload" as const,
+      summary: { manifestVersion: 2, sheets: [{ id: "sheet-1", version: 4 }], periodFingerprint: "" },
+      versionKey: "v4"
+    };
+
+    gate.receive(message);
+    gate.receive(message);
+    expect(reload).toHaveBeenCalledTimes(1);
+    active.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    gate.receive(message);
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    gate.dispose();
+  });
+
+  it("runs at most one active reload and one necessary newer trailing reload", async () => {
+    const first = deferred<void>();
+    const second = deferred<void>();
+    let activeCount = 0;
+    let maximumActive = 0;
+    const reload = vi.fn(async () => {
+      activeCount += 1;
+      maximumActive = Math.max(maximumActive, activeCount);
+      await (reload.mock.calls.length === 1 ? first.promise : second.promise);
+      activeCount -= 1;
+    });
+    const gate = createBoardReloadGate({ userId: "user-1", reload });
+    const message = (version: number) => ({
+      sourceId: "tab-a",
+      userId: "user-1",
+      type: "board-reload" as const,
+      summary: { manifestVersion: version, sheets: [{ id: "sheet-1", version }], periodFingerprint: "" },
+      versionKey: `v${version}`
+    });
+
+    gate.receive(message(4));
+    gate.receive(message(5));
+    gate.receive(message(6));
+    expect(reload).toHaveBeenCalledTimes(1);
+
+    first.resolve();
+    await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(2));
+    expect(maximumActive).toBe(1);
+    second.resolve();
+    await Promise.resolve();
+    gate.dispose();
+  });
+
+  it("ignores invalidations for another user", () => {
+    const reload = vi.fn(async () => undefined);
+    const gate = createBoardReloadGate({ userId: "user-1", reload });
+
+    gate.receive({
+      sourceId: "tab-b",
+      userId: "user-2",
+      type: "board-reload",
+      summary: { manifestVersion: 9, sheets: [], periodFingerprint: "" },
+      versionKey: "v9"
+    });
+
+    expect(reload).not.toHaveBeenCalled();
+    gate.dispose();
+  });
+
+  it("contains a reload rejection and allows the same invalidation to retry later", async () => {
+    const reload = vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(undefined);
+    const gate = createBoardReloadGate({ userId: "user-1", reload });
+    const message = {
+      sourceId: "tab-a",
+      userId: "user-1",
+      type: "board-reload" as const,
+      summary: { manifestVersion: 2, sheets: [], periodFingerprint: "" },
+      versionKey: "v2"
+    };
+
+    gate.receive(message);
+    await Promise.resolve();
+    await Promise.resolve();
+    gate.receive(message);
+
+    expect(reload).toHaveBeenCalledTimes(2);
+    gate.dispose();
   });
 });

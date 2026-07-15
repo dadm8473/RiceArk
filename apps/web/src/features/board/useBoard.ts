@@ -10,6 +10,7 @@ import { createBoardCellStateQueue } from "./useBoardCellStateQueue";
 export const BOARD_VERSION_CHECK_INTERVAL_MS = 120_000;
 export const BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS = BOARD_VERSION_CHECK_INTERVAL_MS;
 export const BOARD_VERSION_IDLE_CHECK_INTERVAL_MS = 5 * 60_000;
+export const BOARD_WRITE_INVALIDATION_COALESCE_MS = 150;
 const BOARD_VERSION_IDLE_AFTER_MS = 5 * 60_000;
 const BOARD_VERSION_LEADER_STORAGE_KEY = "riceark-board-polling-leader";
 const BOARD_VERSION_LEADER_TTL_MS = 45_000;
@@ -117,22 +118,33 @@ export function createBoardWriteCoordinator(
   let authoritativeBase: BoardPayload | null = null;
   let pendingCompletions: BoardCompletionPatch[] = [];
   let pendingCellStates: BoardCellStatePatch[] = [];
-  let pendingWriteError: string | null = null;
+  let completionWriteError: string | null = null;
+  let cellStateWriteError: string | null = null;
   let disposed = false;
 
   const getVisibleData = () => applyBoardWriteOverlays(authoritativeBase, pendingCompletions, pendingCellStates);
+  const getPendingWriteError = () => {
+    const errors = [completionWriteError, cellStateWriteError].filter(
+      (error): error is string => error !== null
+    );
+    return [...new Set(errors)].join(" ") || null;
+  };
   const getSnapshot = (): BoardWriteSnapshot => ({
     data: getVisibleData(),
     hasPendingWrites: pendingCompletions.length > 0 || pendingCellStates.length > 0,
-    pendingWriteError
+    pendingWriteError: getPendingWriteError()
   });
-  const emit = () => options.onChange?.(getSnapshot());
-  const reportPermanentFailure = (message: string) => {
-    pendingWriteError = message;
+  const emit = () => {
+    if (!disposed) options.onChange?.(getSnapshot());
+  };
+  const reportCompletionFailure = (message: string) => {
+    if (disposed) return;
+    completionWriteError = message;
     emit();
   };
-  const reportAuthPause = (error: ApiClientError) => {
-    pendingWriteError = error.message;
+  const reportCellStateFailure = (message: string) => {
+    if (disposed) return;
+    cellStateWriteError = message;
     emit();
   };
 
@@ -153,11 +165,11 @@ export function createBoardWriteCoordinator(
           )
         };
       }
-      pendingWriteError = null;
+      completionWriteError = null;
       emit();
     },
-    onPermanentFailure: (outcome) => reportPermanentFailure(outcome.message),
-    onAuthPause: reportAuthPause,
+    onPermanentFailure: (outcome) => reportCompletionFailure(outcome.message),
+    onAuthPause: (error) => reportCompletionFailure(error.message),
     ...(options.onVersions ? { onVersions: options.onVersions } : {})
   });
   const cellStateQueue = createBoardCellStateQueue({
@@ -177,11 +189,11 @@ export function createBoardWriteCoordinator(
           )
         };
       }
-      pendingWriteError = null;
+      cellStateWriteError = null;
       emit();
     },
-    onPermanentFailure: (outcome) => reportPermanentFailure(outcome.message),
-    onAuthPause: reportAuthPause,
+    onPermanentFailure: (outcome) => reportCellStateFailure(outcome.message),
+    onAuthPause: (error) => reportCellStateFailure(error.message),
     ...(options.onVersions ? { onVersions: options.onVersions } : {})
   });
   Object.assign(completionQueue, options.queueOverrides?.completion);
@@ -195,7 +207,8 @@ export function createBoardWriteCoordinator(
     cellStateQueue.discard();
     pendingCompletions = [];
     pendingCellStates = [];
-    pendingWriteError = null;
+    completionWriteError = null;
+    cellStateWriteError = null;
     emit();
   };
 
@@ -214,14 +227,20 @@ export function createBoardWriteCoordinator(
     flushPendingWrites: async () => {
       const results = await Promise.allSettled([completionQueue.flush(), cellStateQueue.flush()]);
       const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (results[0].status === "rejected") {
+        completionWriteError = formatPendingWriteError(results[0].reason);
+      }
+      if (results[1].status === "rejected") {
+        cellStateWriteError = formatPendingWriteError(results[1].reason);
+      }
       if (failure) {
-        pendingWriteError = formatPendingWriteError(failure.reason);
         emit();
         throw failure.reason;
       }
     },
     retryPendingWrites: () => {
-      pendingWriteError = null;
+      completionWriteError = null;
+      cellStateWriteError = null;
       completionQueue.retry();
       cellStateQueue.retry();
       emit();
@@ -238,8 +257,8 @@ export function createBoardWriteCoordinator(
       authoritativeBase = null;
       pendingCompletions = [];
       pendingCellStates = [];
-      pendingWriteError = null;
-      emit();
+      completionWriteError = null;
+      cellStateWriteError = null;
     }
   };
 }
@@ -253,11 +272,141 @@ interface BoardPollingLeaderRecord {
   expiresAt: number;
 }
 
-interface BoardPollingBroadcastMessage {
+export interface BoardPollingBroadcastMessage {
   sourceId: string;
+  userId: string;
   type: "board-version-key" | "board-reload";
   summary: BoardVersionSummary;
   versionKey: string;
+}
+
+export function shouldReloadForBoardBroadcast(
+  type: BoardPollingBroadcastMessage["type"],
+  previousVersionKey: string | null,
+  nextVersionKey: string,
+  hasLoadedBoard: boolean
+): boolean {
+  return type === "board-reload" || (hasLoadedBoard && previousVersionKey !== nextVersionKey);
+}
+
+interface BoardInvalidationPublisher {
+  schedule: (summary: BoardVersionSummary) => void;
+  dispose: () => void;
+}
+
+export function createBoardInvalidationPublisher(options: {
+  sourceId: string;
+  userId: string;
+  postMessage: (message: BoardPollingBroadcastMessage) => void;
+  versionKeyFor: (summary: BoardVersionSummary) => string;
+}): BoardInvalidationPublisher {
+  let pendingSummary: BoardVersionSummary | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+
+  return {
+    schedule: (summary) => {
+      if (disposed) return;
+      pendingSummary = mergeBoardVersionSummary(pendingSummary, summary);
+      if (timer !== null) return;
+      timer = setTimeout(() => {
+        timer = null;
+        const nextSummary = pendingSummary;
+        pendingSummary = null;
+        if (disposed || !nextSummary) return;
+        options.postMessage({
+          sourceId: options.sourceId,
+          userId: options.userId,
+          type: "board-reload",
+          summary: nextSummary,
+          versionKey: options.versionKeyFor(nextSummary)
+        });
+      }, BOARD_WRITE_INVALIDATION_COALESCE_MS);
+    },
+    dispose: () => {
+      disposed = true;
+      pendingSummary = null;
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+    }
+  };
+}
+
+function invalidationAdvances(
+  candidate: BoardPollingBroadcastMessage,
+  baseline: BoardPollingBroadcastMessage
+): boolean {
+  if (candidate.summary.manifestVersion > baseline.summary.manifestVersion) return true;
+  const baselineSheets = new Map(baseline.summary.sheets.map(({ id, version }) => [id, version]));
+  if (candidate.summary.sheets.some(({ id, version }) => version > (baselineSheets.get(id) ?? 0))) return true;
+  return candidate.versionKey !== baseline.versionKey
+    && candidate.summary.manifestVersion >= baseline.summary.manifestVersion
+    && candidate.summary.sheets.every(({ id, version }) => version >= (baselineSheets.get(id) ?? 0));
+}
+
+function mergeBoardInvalidations(
+  current: BoardPollingBroadcastMessage,
+  incoming: BoardPollingBroadcastMessage
+): BoardPollingBroadcastMessage {
+  const useIncomingVersionKey = invalidationAdvances(incoming, current);
+  return {
+    ...current,
+    summary: mergeBoardVersionSummary(current.summary, incoming.summary),
+    versionKey: useIncomingVersionKey ? incoming.versionKey : current.versionKey
+  };
+}
+
+export function createBoardReloadGate(options: {
+  userId: string;
+  reload: (message: BoardPollingBroadcastMessage) => Promise<unknown>;
+}): { receive: (message: BoardPollingBroadcastMessage) => void; dispose: () => void } {
+  let active: BoardPollingBroadcastMessage | null = null;
+  let trailing: BoardPollingBroadcastMessage | null = null;
+  let completed: BoardPollingBroadcastMessage | null = null;
+  let disposed = false;
+
+  const start = (message: BoardPollingBroadcastMessage) => {
+    if (disposed) return;
+    active = message;
+    let reloadPromise: Promise<unknown>;
+    try {
+      reloadPromise = Promise.resolve(options.reload(message));
+    } catch (error) {
+      reloadPromise = Promise.reject(error);
+    }
+    reloadPromise.then(
+      () => finish(message, true),
+      () => finish(message, false)
+    );
+  };
+
+  const finish = (message: BoardPollingBroadcastMessage, succeeded: boolean) => {
+    if (disposed || active !== message) return;
+    if (succeeded) completed = completed ? mergeBoardInvalidations(completed, message) : message;
+    active = null;
+    const next = trailing;
+    trailing = null;
+    if (next && (!completed || invalidationAdvances(next, completed))) start(next);
+  };
+
+  return {
+    receive: (message) => {
+      if (disposed || message.userId !== options.userId || message.type !== "board-reload") return;
+      if (active) {
+        if (!invalidationAdvances(message, active)) return;
+        trailing = trailing ? mergeBoardInvalidations(trailing, message) : message;
+        return;
+      }
+      if (completed && !invalidationAdvances(message, completed)) return;
+      start(message);
+    },
+    dispose: () => {
+      disposed = true;
+      active = null;
+      trailing = null;
+      completed = null;
+    }
+  };
 }
 
 export function getBoardPollingDelayMs(lastActivityAtMs: number, nowMs = Date.now()): number {
@@ -424,6 +573,17 @@ export function formatBoardError(err: unknown): string {
   return err instanceof Error ? err.message : "보드 데이터를 불러오지 못했습니다.";
 }
 
+export function reportBoardReloadErrorIfCurrent(
+  currentCoordinator: object | null,
+  expectedCoordinator: object,
+  error: unknown,
+  report: (message: string) => void
+): boolean {
+  if (currentCoordinator !== expectedCoordinator) return false;
+  report(formatBoardError(error));
+  return true;
+}
+
 export function buildLocalBoardPeriodFingerprint(
   board: BoardPeriodFingerprintSource | null | undefined,
   now = new Date()
@@ -469,6 +629,7 @@ export function useBoard({
   const lastActivityAtRef = useRef(Date.now());
   const pollingClientIdRef = useRef<string | null>(null);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  const invalidationPublisherRef = useRef<BoardInvalidationPublisher | null>(null);
   enabledRef.current = enabled;
 
   function setBoardData(payload: BoardPayload | null) {
@@ -476,8 +637,12 @@ export function useBoard({
     setData(payload);
   }
 
-  async function refreshVersionKey(boardForFingerprint: BoardPayload | null = dataRef.current) {
+  async function refreshVersionKey(
+    boardForFingerprint: BoardPayload | null = dataRef.current,
+    expectedCoordinator = coordinatorRef.current
+  ) {
     const summary = await apiGet<BoardVersionSummary>("/api/board/versions");
+    if (!expectedCoordinator || coordinatorRef.current !== expectedCoordinator) return null;
     const merged = mergeBoardVersionSummary(lastVersionSummaryRef.current, summary);
     lastVersionSummaryRef.current = merged;
     versionKeyRef.current = buildBoardVersionKey(merged, boardForFingerprint);
@@ -489,14 +654,7 @@ export function useBoard({
     lastVersionSummaryRef.current = summary;
     const versionKey = buildBoardVersionKey(summary, dataRef.current);
     versionKeyRef.current = versionKey;
-    const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
-    pollingClientIdRef.current = clientId;
-    broadcastChannelRef.current?.postMessage({
-      sourceId: clientId,
-      type: "board-reload",
-      summary,
-      versionKey
-    } satisfies BoardPollingBroadcastMessage);
+    invalidationPublisherRef.current?.schedule(summary);
   }, []);
 
   useEffect(() => {
@@ -505,6 +663,8 @@ export function useBoard({
       previous.discardAndDispose();
       coordinatorRef.current = null;
     }
+    invalidationPublisherRef.current?.dispose();
+    invalidationPublisherRef.current = null;
     setBoardData(null);
     setHasPendingWrites(false);
     setPendingWriteError(null);
@@ -512,6 +672,15 @@ export function useBoard({
     lastVersionSummaryRef.current = null;
     if (!userId) return;
 
+    const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
+    pollingClientIdRef.current = clientId;
+    const invalidationPublisher = createBoardInvalidationPublisher({
+      sourceId: clientId,
+      userId,
+      postMessage: (message) => broadcastChannelRef.current?.postMessage(message),
+      versionKeyFor: (summary) => buildBoardVersionKey(summary, dataRef.current)
+    });
+    invalidationPublisherRef.current = invalidationPublisher;
     const coordinator = createBoardWriteCoordinator(userId, {
       onChange: (snapshot) => {
         setHasPendingWrites(snapshot.hasPendingWrites);
@@ -523,6 +692,10 @@ export function useBoard({
     coordinatorRef.current = coordinator;
     return () => {
       if (coordinatorRef.current === coordinator) coordinatorRef.current = null;
+      if (invalidationPublisherRef.current === invalidationPublisher) {
+        invalidationPublisherRef.current = null;
+      }
+      invalidationPublisher.dispose();
       coordinator.discardAndDispose();
     };
   }, [handleMutationVersions, userId]);
@@ -541,7 +714,9 @@ export function useBoard({
       });
       return coordinator.getVisibleData();
     } catch (err) {
-      setError(formatBoardError(err));
+      if (!reportBoardReloadErrorIfCurrent(coordinatorRef.current, coordinator, err, setError)) {
+        return dataRef.current;
+      }
       throw err;
     }
   }, [enabled, pollingEnabled, userId]);
@@ -575,8 +750,9 @@ export function useBoard({
   }, [enabled, userId]);
 
   useEffect(() => {
-    if (!enabled || !pollingEnabled) return;
+    if (!enabled || !pollingEnabled || !userId) return;
     if (typeof window === "undefined") return;
+    const currentUserId = userId;
     let active = true;
     let timer: number | null = null;
     const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
@@ -590,8 +766,12 @@ export function useBoard({
       }
     }
 
-    function postBoardPollingMessage(message: Omit<BoardPollingBroadcastMessage, "sourceId">) {
-      broadcastChannelRef.current?.postMessage({ ...message, sourceId: clientId } satisfies BoardPollingBroadcastMessage);
+    function postBoardPollingMessage(message: Omit<BoardPollingBroadcastMessage, "sourceId" | "userId">) {
+      broadcastChannelRef.current?.postMessage({
+        ...message,
+        sourceId: clientId,
+        userId: currentUserId
+      } satisfies BoardPollingBroadcastMessage);
     }
 
     async function checkForRemoteChanges() {
@@ -669,7 +849,7 @@ export function useBoard({
       window.removeEventListener("touchstart", handleUserActivity);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [enabled, pollingEnabled, reload]);
+  }, [enabled, pollingEnabled, reload, userId]);
 
   useEffect(() => {
     if (!userId) return;
@@ -677,17 +857,29 @@ export function useBoard({
     const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
     pollingClientIdRef.current = clientId;
     const channel = new BroadcastChannel(BOARD_VERSION_BROADCAST_CHANNEL);
+    const reloadGate = createBoardReloadGate({
+      userId,
+      reload: async () => {
+        await reload({ refreshVersion: false });
+      }
+    });
     broadcastChannelRef.current = channel;
     channel.onmessage = (event: MessageEvent<BoardPollingBroadcastMessage>) => {
       const message = event.data;
-      if (!message || message.sourceId === clientId) return;
+      if (!message || message.sourceId === clientId || message.userId !== userId) return;
+      const previousVersionKey = versionKeyRef.current;
+      const hasLoadedBoard = dataRef.current !== null;
       const summary = mergeBoardVersionSummary(lastVersionSummaryRef.current, message.summary);
+      const nextVersionKey = buildBoardVersionKey(summary, dataRef.current);
       lastVersionSummaryRef.current = summary;
-      versionKeyRef.current = buildBoardVersionKey(summary, dataRef.current);
-      if (message.type === "board-reload") void reload({ refreshVersion: false });
+      versionKeyRef.current = nextVersionKey;
+      if (shouldReloadForBoardBroadcast(message.type, previousVersionKey, nextVersionKey, hasLoadedBoard)) {
+        reloadGate.receive({ ...message, type: "board-reload", summary, versionKey: nextVersionKey });
+      }
     };
     return () => {
       if (broadcastChannelRef.current === channel) broadcastChannelRef.current = null;
+      reloadGate.dispose();
       channel.close();
     };
   }, [reload, userId]);

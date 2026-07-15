@@ -44,6 +44,10 @@ export interface ReliablePatchQueueOptions<T, K> {
   onPendingChange: (patches: T[]) => void;
   onPermanentFailure: (outcome: Extract<SendOutcome<K>, { type: "rejected" }>) => void;
   onAuthPause: (error: ApiClientError) => void;
+  onAccepted?: (
+    patches: T[],
+    outcome: Extract<SendOutcome<K>, { type: "accepted" }>
+  ) => void;
   onVersions?: (versions: BoardMutationVersions) => void;
 }
 
@@ -451,11 +455,16 @@ export class ReliablePatchQueue<T, K> {
       case "accepted": {
         const acknowledged = this.canonicalKeyIds(outcome.acknowledgedKeys);
         const acknowledgedEntries = entries.filter(({ keyId }) => acknowledged.has(keyId));
-        this.reconcileEntries(acknowledgedEntries);
         if (acknowledgedEntries.length === 0 && entries.length > 0) {
           this.scheduleRetry(null);
           return { continue: false, result: this.stopResult("non-progress", outcome) };
         }
+        this.invokeObserver(
+          this.options.onAccepted,
+          acknowledgedEntries.map(({ patch }) => patch),
+          outcome
+        );
+        this.reconcileEntries(acknowledgedEntries);
         this.retryIndex = 0;
         if (outcome.versions !== undefined) {
           this.invokeObserver(this.options.onVersions, outcome.versions);
