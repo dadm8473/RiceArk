@@ -21,7 +21,9 @@
 
 - [ ] **Step 1: Write failing contract tests**
 
-Test that a manifest item carries navigation metadata plus content version, a sheet payload cannot contain another sheet's table/note/axis/cell/completion, and a bootstrap includes the same version snapshot used for cache validation.
+Test that a manifest item carries navigation metadata plus content version, a sheet payload exposes one active-sheet envelope with no top-level all-sheet collection, and a bootstrap includes the same version snapshot used for cache validation.
+
+Value-level cross-sheet isolation for tables, notes, axis items, cell states, and completions depends on the Task 2 loaders and SQL ownership predicates. Cover that behavior in Task 2 Step 1 rather than with a tautological fixture or a premature runtime validator around these intentionally `unknown[]` contract fields.
 
 - [ ] **Step 2: Run tests and confirm failure**
 
@@ -96,7 +98,7 @@ git commit -m "Define sheet-aware board read contracts"
 
 - [ ] **Step 1: Add failing ownership, fallback, and query-budget tests**
 
-Cover requested owned sheet, foreign/missing requested sheet fallback to default then first sorted, no sheet initialization fallback, period fingerprint, expired reserved marks, and explicit-column SQL. Count D1 statements and require at most nine read-path statements excluding session/auth for an established board, so the route stays at or below 10 including `requireUser`; require at most 30 statements for first-ever default-board initialization.
+Cover requested owned sheet, foreign/missing requested sheet fallback to default then first sorted, no sheet initialization fallback, period fingerprint, expired reserved marks, and explicit-column SQL. Prove value-level cross-sheet isolation across tables, notes, axis items, cell states, and completions, including rows reachable only through a foreign table. Count D1 statements and require at most nine read-path statements excluding session/auth for an established board, so the route stays at or below 10 including `requireUser`; require at most 30 statements for first-ever default-board initialization.
 
 - [ ] **Step 2: Run tests and confirm failure**
 
