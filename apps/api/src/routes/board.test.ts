@@ -1990,6 +1990,7 @@ describe("board owner read routes", () => {
     "/api/board/sheets/sheet%F0%9F%99%82"
   ])("returns the existing structured validation response for %s", async (path) => {
     const response = await app.request(path, {}, routeEnv);
+    expectPrivateOwnerReadHeaders(response);
     expectStructuredValidationError(response, await response.json());
   });
 
@@ -2029,6 +2030,7 @@ describe("board owner read routes", () => {
       );
 
       expect(response.status).toBe(404);
+      expectPrivateOwnerReadHeaders(response);
       expect(await response.json()).toEqual({
         error: { code: "board_sheet_not_found", message: "탭을 찾을 수 없습니다." }
       });
@@ -2047,6 +2049,7 @@ describe("board owner read routes", () => {
     );
 
     expect(response.status).toBe(503);
+    expectPrivateOwnerReadHeaders(response);
     expect(response.headers.get("Retry-After")).toBe("1");
     expect(await response.json()).toEqual({
       error: {
@@ -2075,6 +2078,7 @@ describe("board owner read routes", () => {
       );
 
       expect(response.status).toBe(500);
+      expectPrivateOwnerReadHeaders(response);
       expect(response.headers.get("Retry-After")).toBeNull();
       expect(await response.json()).toEqual({
         error: { code: "internal_error", message: "Internal server error" }

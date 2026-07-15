@@ -1,6 +1,6 @@
 import { zValidator } from "@hono/zod-validator";
 import { buildTaskDefinition } from "@riceark/core";
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import { requireUser } from "../auth/requireUser";
 import {
@@ -300,6 +300,12 @@ export const boardNoteLayoutPatchSchema = z.object({
 
 export const boardRoutes = new Hono<{ Bindings: Env }>();
 
+const privateBoardReadHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  c.header("Cache-Control", "private, no-store");
+  c.header("Vary", "Cookie");
+  await next();
+};
+
 function rethrowBoardReadError(error: unknown): never {
   if (error instanceof BoardSnapshotConflictError) {
     throw new ApiError(
@@ -312,49 +318,51 @@ function rethrowBoardReadError(error: unknown): never {
   throw error;
 }
 
-boardRoutes.get("/board/bootstrap", zValidator("query", boardBootstrapQuerySchema), async (c) => {
-  const user = await requireUser(c);
-  try {
-    const payload = await loadBoardBootstrap(c.env, user.id, c.req.valid("query").sheetId);
-    c.header("Cache-Control", "private, no-store");
-    c.header("Vary", "Cookie");
-    return c.json(payload);
-  } catch (error) {
-    rethrowBoardReadError(error);
+boardRoutes.get(
+  "/board/bootstrap",
+  privateBoardReadHeaders,
+  zValidator("query", boardBootstrapQuerySchema),
+  async (c) => {
+    const user = await requireUser(c);
+    try {
+      const payload = await loadBoardBootstrap(c.env, user.id, c.req.valid("query").sheetId);
+      return c.json(payload);
+    } catch (error) {
+      rethrowBoardReadError(error);
+    }
   }
-});
+);
 
-boardRoutes.get("/board/versions", async (c) => {
+boardRoutes.get("/board/versions", privateBoardReadHeaders, async (c) => {
   const user = await requireUser(c);
   const versions = await loadBoardVersionSummary(c.env, user.id);
-  c.header("Cache-Control", "private, no-store");
-  c.header("Vary", "Cookie");
   return c.json(versions);
 });
 
-boardRoutes.get("/board", async (c) => {
+boardRoutes.get("/board", privateBoardReadHeaders, async (c) => {
   const user = await requireUser(c);
   const board = await loadBoard(c.env, user.id);
-  c.header("Cache-Control", "private, no-store");
-  c.header("Vary", "Cookie");
   return c.json(board);
 });
 
-boardRoutes.get("/board/sheets/:id", zValidator("param", boardSheetIdParamSchema), async (c) => {
-  const user = await requireUser(c);
-  try {
-    const { id } = c.req.valid("param");
-    const sheet = await loadBoardSheet(c.env, user.id, id);
-    if (!sheet) {
-      throw new ApiError(404, "board_sheet_not_found", "탭을 찾을 수 없습니다.");
+boardRoutes.get(
+  "/board/sheets/:id",
+  privateBoardReadHeaders,
+  zValidator("param", boardSheetIdParamSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    try {
+      const { id } = c.req.valid("param");
+      const sheet = await loadBoardSheet(c.env, user.id, id);
+      if (!sheet) {
+        throw new ApiError(404, "board_sheet_not_found", "탭을 찾을 수 없습니다.");
+      }
+      return c.json(sheet);
+    } catch (error) {
+      rethrowBoardReadError(error);
     }
-    c.header("Cache-Control", "private, no-store");
-    c.header("Vary", "Cookie");
-    return c.json(sheet);
-  } catch (error) {
-    rethrowBoardReadError(error);
   }
-});
+);
 
 boardRoutes.get("/board/shares", async (c) => {
   const user = await requireUser(c);

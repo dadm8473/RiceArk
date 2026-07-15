@@ -55,12 +55,22 @@ describe("api shell", () => {
     expect(res.status).not.toBe(413);
   });
 
-  it.each(["/api/board/bootstrap", "/api/board/sheets/sheet-1"])(
+  it.each([
+    "/api/board/bootstrap",
+    "/api/board/versions",
+    "/api/board",
+    "/api/board/sheets/sheet-1"
+  ])(
     "registers authenticated owner read route %s",
     async (path) => {
       const res = await app.request(path, {}, env);
 
       expect(res.status).toBe(401);
+      expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+      expect(res.headers.get("Vary")?.split(",").map((value) => value.trim()).sort()).toEqual([
+        "Cookie",
+        "Origin"
+      ]);
       expect(await res.json()).toEqual({
         error: { code: "unauthorized", message: "Login required" }
       });
