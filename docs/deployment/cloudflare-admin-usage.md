@@ -18,6 +18,7 @@ Already configured in `apps/web/wrangler.jsonc`:
 
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_D1_DATABASE_ID`
+- `CLOUDFLARE_PAGES_PROJECT_NAME` (`riceark`)
 - `CLOUDFLARE_WORKER_SCRIPT_NAME`
 
 Required as a Pages secret:
@@ -30,12 +31,21 @@ Create a custom Cloudflare API token with the narrowest practical read permissio
 
 - Account: `Account Analytics` / `Read`
 - Account: `D1` / `Read`
+- Account: `Cloudflare Pages` / `Read` (API permission: `Pages Read`)
 
 Scope the token to the RiceArk Cloudflare account only.
 
+Before rolling out Pages script resolution, update the currently deployed token
+to include `Pages Read`, or create a replacement token with all three permissions.
+Then overwrite the existing `CLOUDFLARE_API_TOKEN` Pages secret before deploying.
+Changing `wrangler.jsonc` does not update token permissions or the deployed secret.
+Never place a token value in this guide, `wrangler.jsonc`, source control, command
+arguments, shell history, logs, screenshots, or rollout records.
+
 ## Add The Secret
 
-Run this from the repository root and paste the token when prompted:
+Run this from the repository root and paste the updated or replacement token only
+at Wrangler's interactive prompt:
 
 ```sh
 pnpm wrangler pages secret put CLOUDFLARE_API_TOKEN --project-name riceark

@@ -1,5 +1,5 @@
 import type { Env } from "../env";
-import { fetchExternal } from "../http/externalFetch";
+import { EXTERNAL_FETCH_TIMEOUT_MS, fetchExternal } from "../http/externalFetch";
 
 const D1_ROWS_READ_DAILY_LIMIT = 5_000_000;
 const D1_ROWS_WRITTEN_DAILY_LIMIT = 100_000;
@@ -234,12 +234,18 @@ function buildD1Usage(
   };
 }
 
-async function fetchD1DatabaseInfo(env: Env, accountId: string, databaseId: string): Promise<D1DatabaseResult> {
+async function fetchD1DatabaseInfo(
+  env: Env,
+  accountId: string,
+  databaseId: string,
+  signal: AbortSignal
+): Promise<D1DatabaseResult> {
   const response = await fetchExternal(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}`, {
     headers: {
       Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
       Accept: "application/json"
-    }
+    },
+    signal
   });
   if (!response.ok) throw new Error(`Cloudflare D1 API returned ${response.status}`);
 
@@ -253,7 +259,7 @@ async function fetchD1DatabaseInfo(env: Env, accountId: string, databaseId: stri
   return result;
 }
 
-async function fetchD1Metrics(env: Env): Promise<D1Metrics> {
+async function fetchD1Metrics(env: Env, signal: AbortSignal): Promise<D1Metrics> {
   const datetimeEnd = new Date().toISOString();
   const datetimeStart = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const response = await fetchExternal("https://api.cloudflare.com/client/v4/graphql", {
@@ -291,7 +297,8 @@ async function fetchD1Metrics(env: Env): Promise<D1Metrics> {
           ]
         }
       }
-    })
+    }),
+    signal
   });
   if (!response.ok) throw new Error(`Cloudflare D1 GraphQL API returned ${response.status}`);
 
@@ -317,7 +324,11 @@ async function fetchD1Metrics(env: Env): Promise<D1Metrics> {
   );
 }
 
-async function fetchWorkersUsage(env: Env, scriptName: string): Promise<NonNullable<CloudflareUsageSummary["workers"]>> {
+async function fetchWorkersUsage(
+  env: Env,
+  scriptName: string,
+  signal: AbortSignal
+): Promise<NonNullable<CloudflareUsageSummary["workers"]>> {
   const datetimeEnd = new Date().toISOString();
   const datetimeStart = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const response = await fetchExternal("https://api.cloudflare.com/client/v4/graphql", {
@@ -355,7 +366,8 @@ async function fetchWorkersUsage(env: Env, scriptName: string): Promise<NonNulla
         datetimeEnd,
         scriptName
       }
-    })
+    }),
+    signal
   });
   if (!response.ok) throw new Error(`Cloudflare GraphQL API returned ${response.status}`);
 
@@ -388,14 +400,20 @@ async function fetchWorkersUsage(env: Env, scriptName: string): Promise<NonNulla
   };
 }
 
-async function fetchPagesProductionScriptName(env: Env, accountId: string, projectName: string): Promise<string | null> {
+async function fetchPagesProductionScriptName(
+  env: Env,
+  accountId: string,
+  projectName: string,
+  signal: AbortSignal
+): Promise<string | null> {
   const response = await fetchExternal(
     `https://api.cloudflare.com/client/v4/accounts/${accountId}/pages/projects/${encodeURIComponent(projectName)}`,
     {
       headers: {
         Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
         Accept: "application/json"
-      }
+      },
+      signal
     }
   );
   if (!response.ok) throw new Error(`Cloudflare Pages API returned ${response.status}`);
@@ -431,8 +449,8 @@ export async function getCloudflareUsage(env: Env, activeUsers24h: number): Prom
     env.CLOUDFLARE_WORKER_SCRIPT_NAME ?? "",
     tokenFingerprint(env.CLOUDFLARE_API_TOKEN)
   ]);
-  const now = Date.now();
-  if (usageCache?.key === cacheKey && usageCache.expiresAt > now) {
+  const lookupAt = Date.now();
+  if (usageCache?.key === cacheKey && usageCache.expiresAt > lookupAt) {
     return {
       ...usageCache.value,
       capacity: estimateCapacity({
@@ -447,10 +465,11 @@ export async function getCloudflareUsage(env: Env, activeUsers24h: number): Prom
   const warnings: string[] = [];
   const accountId = encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID ?? "");
   const databaseId = encodeURIComponent(env.CLOUDFLARE_D1_DATABASE_ID ?? "");
-  const d1InfoResultPromise = settle(fetchD1DatabaseInfo(env, accountId, databaseId));
-  const d1MetricsResultPromise = settle(fetchD1Metrics(env));
+  const collectionSignal = AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS);
+  const d1InfoResultPromise = settle(fetchD1DatabaseInfo(env, accountId, databaseId, collectionSignal));
+  const d1MetricsResultPromise = settle(fetchD1Metrics(env, collectionSignal));
   const pagesResult = env.CLOUDFLARE_PAGES_PROJECT_NAME
-    ? await settle(fetchPagesProductionScriptName(env, accountId, env.CLOUDFLARE_PAGES_PROJECT_NAME))
+    ? await settle(fetchPagesProductionScriptName(env, accountId, env.CLOUDFLARE_PAGES_PROJECT_NAME, collectionSignal))
     : ({ status: "fulfilled", value: null } satisfies PromiseFulfilledResult<null>);
 
   if (pagesResult.status === "rejected") {
@@ -461,7 +480,14 @@ export async function getCloudflareUsage(env: Env, activeUsers24h: number): Prom
     warnings.push("Pages production script 이름과 CLOUDFLARE_WORKER_SCRIPT_NAME이 없어 Workers 요청 수는 표시하지 않습니다.");
   }
 
-  const workersResultPromise = scriptName ? settle(fetchWorkersUsage(env, scriptName)) : Promise.resolve(null);
+  const workersResultPromise = scriptName
+    ? collectionSignal.aborted
+      ? Promise.resolve({
+          status: "rejected",
+          reason: collectionSignal.reason ?? new DOMException("Cloudflare collection timed out", "TimeoutError")
+        } satisfies PromiseRejectedResult)
+      : settle(fetchWorkersUsage(env, scriptName, collectionSignal))
+    : Promise.resolve(null);
   const [d1InfoResult, d1MetricsResult, workersResult] = await Promise.all([
     d1InfoResultPromise,
     d1MetricsResultPromise,
@@ -493,10 +519,11 @@ export async function getCloudflareUsage(env: Env, activeUsers24h: number): Prom
   }
 
   const status: CloudflareUsageSummary["status"] = d1 || workers ? (warnings.length ? "partial" : "ok") : "error";
+  const completedAt = Date.now();
   const value: Omit<CloudflareUsageSummary, "capacity"> = {
     status,
     configured: true,
-    checkedAt: new Date(now).toISOString(),
+    checkedAt: new Date(completedAt).toISOString(),
     cacheTtlSeconds: CACHE_TTL_MS / 1000,
     requiredSecrets: [],
     warnings,
@@ -504,7 +531,7 @@ export async function getCloudflareUsage(env: Env, activeUsers24h: number): Prom
     workers
   };
 
-  usageCache = { key: cacheKey, expiresAt: now + CACHE_TTL_MS, value };
+  usageCache = { key: cacheKey, expiresAt: completedAt + CACHE_TTL_MS, value };
   return {
     ...value,
     capacity: estimateCapacity({

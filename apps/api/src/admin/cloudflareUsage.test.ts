@@ -70,6 +70,7 @@ describe("getCloudflareUsage", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     resetCloudflareUsageCacheForTests();
   });
@@ -213,6 +214,50 @@ describe("getCloudflareUsage", () => {
     expect(sourceCalls).toHaveLength(4);
   });
 
+  it("bounds the full collection to eight seconds and skips dependent Workers after budget expiry", async () => {
+    vi.useFakeTimers();
+    const startedAt = new Date("2026-07-15T00:00:00.000Z").getTime();
+    vi.setSystemTime(startedAt);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException("The operation timed out", "TimeoutError")), milliseconds);
+      return controller.signal;
+    });
+    const sourceCalls: CloudflareSource[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const source = sourceOf(input, init);
+      sourceCalls.push(source);
+      if (source === "d1-info") return Promise.resolve(d1InfoResponse());
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    let settledAt: number | null = null;
+    const request = getCloudflareUsage(createEnv(), 2).then((summary) => {
+      settledAt = Date.now();
+      return summary;
+    });
+
+    await vi.advanceTimersByTimeAsync(8_000);
+    if (settledAt === null) await vi.advanceTimersByTimeAsync(8_000);
+    const summary = await request;
+
+    expect(settledAt).toBe(startedAt + 8_000);
+    expect(sourceCalls).toEqual(expect.arrayContaining(["pages", "d1-info", "d1-graphql"]));
+    expect(sourceCalls).toHaveLength(3);
+    expect(sourceCalls).not.toContain("workers-graphql");
+    expect(summary.d1).toMatchObject({ databaseName: "riceark", databaseSizeBytes: 1_024 });
+    expect(summary.workers).toBeNull();
+    expect(summary.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("Workers GraphQL 사용량을 불러오지 못했습니다")])
+    );
+  });
+
   it("warns exactly when D1 has traffic but resolved Workers requests are zero", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       switch (sourceOf(input, init)) {
@@ -259,5 +304,45 @@ describe("getCloudflareUsage", () => {
     expect(first.workers?.scriptName).toBe("worker-project-a");
     expect(projectChanged.workers?.scriptName).toBe("worker-project-b");
     expect(fetchMock).toHaveBeenCalledTimes(12);
+  });
+
+  it("starts checkedAt and the five-minute cache TTL when collection completes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
+    let resolvePages: (response: Response) => void = () => {};
+    const pagesResponse = new Promise<Response>((resolve) => {
+      resolvePages = resolve;
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      switch (sourceOf(input, init)) {
+        case "pages":
+          return pagesResponse;
+        case "d1-info":
+          return d1InfoResponse();
+        case "d1-graphql":
+          return d1MetricsResponse();
+        case "workers-graphql":
+          return workersResponse();
+      }
+    });
+
+    const pending = getCloudflareUsage(createEnv(), 2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    vi.setSystemTime(new Date("2026-07-15T00:02:00.000Z"));
+    resolvePages(Response.json({ success: true, result: { production_script_name: "pages-worker" } }));
+    const first = await pending;
+
+    expect(first.checkedAt).toBe("2026-07-15T00:02:00.000Z");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    vi.setSystemTime(new Date("2026-07-15T00:06:59.999Z"));
+    const hot = await getCloudflareUsage(createEnv(), 3);
+    expect(hot.checkedAt).toBe(first.checkedAt);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    vi.setSystemTime(new Date("2026-07-15T00:07:00.000Z"));
+    const refreshed = await getCloudflareUsage(createEnv(), 2);
+    expect(refreshed.checkedAt).toBe("2026-07-15T00:07:00.000Z");
+    expect(fetchMock).toHaveBeenCalledTimes(8);
   });
 });
