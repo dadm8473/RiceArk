@@ -4,7 +4,7 @@
 
 **Goal:** Prove the optimization phases against explicit RiceArk flow budgets, prepare a reversible production candidate, and compare real Pages Functions and D1 usage after equivalent traffic.
 
-**Architecture:** Deterministic local scripts and route tests provide per-flow evidence before deployment. Production remains a single Cloudflare Pages project whose Functions bundle the Hono API; each compatible phase is deployed behind an explicit user approval, then focused browser smoke tests and a final comparable 24-hour metrics window determine acceptance or rollback.
+**Architecture:** Deterministic local scripts and route tests provide exact per-flow evidence before deployment. Production remains a single Cloudflare Pages project whose Functions bundle the Hono API; each compatible phase is deployed behind an explicit user approval, then focused browser smoke tests and a qualified rolling 24-hour metrics capture determine aggregate comparison and acceptance or rollback.
 
 **Tech Stack:** pnpm, Vitest, Wrangler Pages, Wrangler D1, Cloudflare admin metrics, browser network inspection.
 
@@ -51,21 +51,25 @@ Record total test counts and copy the emitted bundle sizes into the baseline rep
 
 - [ ] **Step 3: Capture the current directional rolling reference**
 
-Issue authenticated `GET` requests to `/api/admin/summary` and
-`/api/admin/health` at the scheduled window end, and record each response's
-`generatedAt` plus its request timestamp. Preserve the raw JSON outside git and
-copy only aggregate fields into the report. The approved 2026-07-15 rolling
-aggregate has no exact start/end timestamps, so it is directional and not a
-fixed comparable window. Derive the first post-instrumentation window as
-`windowStart = windowEnd - 24h`; it becomes the comparable baseline. Mark
-unavailable counters as unavailable.
+Capture both authenticated endpoints exactly four times at offsets `+00:05`,
+`+08:05`, `+16:05`, and `windowEnd` from `windowStart`, recording each source's
+effective boundary where exposed, request timestamp, and skew. Create only a
+redacted aggregate artifact outside git: retain numeric aggregates and
+timestamps, drop admin/id/displayName, cookies/headers, raw warning strings,
+URLs/ids/tokens, and map warnings to allowlisted categories. The approved
+2026-07-15 rolling aggregate has no exact start/end timestamps, and current
+endpoint captures independently use rolling now-24h values. They are qualified
+rolling captures, not a fixed comparable baseline. A genuinely fixed baseline
+requires provider-side fixed-boundary export or future explicit boundary
+support; until then, aggregate comparisons remain qualified. Local flow tests
+remain exact. Mark unavailable counters as unavailable.
 
 - [ ] **Step 4: Document the repeat procedure and commit**
 
-Update `cloudflare-admin-usage.md` with the exact response-timestamp collection
-procedure for the first post-instrumentation comparable baseline and each
-post-deploy comparison. Do not treat the rolling source snapshot as a fixed
-comparable window.
+Update `cloudflare-admin-usage.md` with the qualified rolling-capture procedure
+for post-instrumentation and post-deploy comparisons. Do not treat current
+endpoint captures as a fixed comparable window or retain unredacted response
+data.
 
 ```bash
 git add docs/performance/2026-07-15-optimization-baseline.md docs/deployment/cloudflare-admin-usage.md
@@ -208,7 +212,7 @@ git commit -m "Record production optimization smoke test"
 
 - [ ] **Step 1: Collect post-deploy aggregates**
 
-After a comparable 24-hour traffic window, record Workers/Pages requests, p50/p99 CPU when available, CPU-limit errors, D1 rows read/written, DB size, API 4xx/5xx groups, cache warnings, active users, and fixed admin-query cost. Keep raw user data out of the report.
+After a post-deploy 24-hour traffic window, record Workers/Pages requests, p50/p99 CPU when available, CPU-limit errors, D1 rows read/written, DB size, API 4xx/5xx groups, allowlisted warning categories, active users, and scheduled admin capture cost. Treat aggregate comparisons as qualified unless provider-side fixed-boundary data is available; keep raw user data out of the report.
 
 - [ ] **Step 2: Compare normalized flows, not totals alone**
 

@@ -15,7 +15,7 @@ character names, note content, or share ids.
 | Source commit tested | `96c1f6f` |
 | Branch | `codex/performance-caching` |
 | Production aggregate source | Approved optimization design, based on the 2026-07-15 production admin aggregate and D1 Insights |
-| Production window status | Directional rolling reference, not an operational fixed baseline and not directly comparable to later fixed windows |
+| Production window status | Directional rolling reference; endpoint captures are qualified rolling captures, not an operational fixed baseline |
 | Production 24-hour boundaries | Unavailable; the source snapshot records rolling 24-hour totals but not exact start and end timestamps |
 | Local test fixture/source | Repository Vitest fixtures and mocks at the source commit above; no production row or identity data was used by the local gates |
 | Browser viewport | Not measured; no browser capture was performed for this pre-implementation baseline |
@@ -47,9 +47,12 @@ phase checkpoints defined by the rollout plan.
 ## Directional Production Rolling Reference
 
 The following aggregate is the approved 2026-07-15 rolling reference. It has no
-exact start or end timestamps, so it is directional only and is **not directly
-comparable** to later fixed 24-hour windows. The first post-instrumentation
-exact 24-hour capture becomes the comparable operational baseline.
+exact start or end timestamps, so it is directional only. Future authenticated
+endpoint captures are qualified rolling captures: the endpoints independently
+report rolling now-24h values and do not create a fixed window. A genuinely
+fixed baseline requires a provider-side fixed-boundary export or future explicit
+boundary support; until then, aggregate comparisons remain qualified. The local
+flow tests below remain exact.
 
 | Metric | Observed value |
 | --- | ---: |
@@ -131,7 +134,8 @@ request and D1 metadata instrumentation.
 
 The repository gates are green and the current bundle is recorded. The rolling
 production reference is sufficient to begin phased implementation, but is not a
-fixed comparable baseline. The first post-instrumentation exact 24-hour capture
-is the comparable baseline. This report does not claim that any target flow
-budget already passes; those decisions require the phase-created SQL and
-board-read measurement gates plus browser request evidence.
+fixed comparable baseline. Post-instrumentation endpoint captures are qualified
+rolling captures until provider-side fixed-boundary export or future explicit
+boundary support exists. This report does not claim that any target flow budget
+already passes; those decisions require the phase-created SQL and board-read
+measurement gates plus exact browser request evidence.

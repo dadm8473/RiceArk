@@ -49,8 +49,8 @@ pnpm --filter @riceark/web run deploy
 
 ## Comparable 24-Hour Rollout Procedure
 
-Use this procedure for the first post-instrumentation comparable baseline and
-every post-deployment comparison. Keep the record aggregate-only. Do not include
+Use this procedure for the first post-instrumentation qualified rolling capture
+and every post-deployment comparison. Keep the record aggregate-only. Do not include
 names, email addresses, OAuth ids, session values, character names, note content,
 share ids, API tokens, or other secrets.
 
@@ -58,23 +58,29 @@ share ids, API tokens, or other secrets.
 
 1. Record the source commit SHA, Pages deployment id and URL, and deployment
    completion timestamp.
-2. At the scheduled `windowEnd`, issue authenticated `GET` requests to
-   `/api/admin/summary` and `/api/admin/health`. Record each response's
-   `generatedAt` and the request timestamp. Use `generatedAt` as that response's
-   boundary when present; otherwise use its recorded request timestamp. If
-   the two responses do not provide matching boundaries, mark the window
-   `unavailable` or `qualified` rather than aligning them by inference.
-3. Derive `windowStart = windowEnd - 24h`, then record both as ISO 8601 UTC
-   timestamps and their exact Asia/Seoul (KST, UTC+09:00) equivalents. Use
-   `windowStart <= event < windowEnd`.
+2. Define the scheduled comparison target as `windowStart = windowEnd - 24h`,
+   then record both as ISO 8601 UTC timestamps and their exact Asia/Seoul (KST,
+   UTC+09:00) equivalents. Use `windowStart <= event < windowEnd` for exact
+   local flow tests and event attribution.
+3. The authenticated admin endpoints independently return rolling now-24h
+   values; their captures do not create this fixed target window. Record each
+   source's effective boundary when exposed (such as `generatedAt`), the
+   request timestamp, and boundary skew from the scheduled target and the
+   other route. Label these endpoint captures `qualified rolling captures`.
+   A genuinely fixed baseline requires provider-side fixed-boundary export or
+   future explicit boundary support. Until then, aggregate comparisons remain
+   `qualified`; do not align endpoint values by inference.
 4. Record the operator timezone separately. Use the same weekday and UTC/KST
    start time for the baseline and post-deployment windows where possible.
-5. Preserve the raw authenticated response JSON locally outside git for audit;
-   copy only sanitized aggregate fields into the report.
+5. Create only a redacted aggregate artifact outside git for audit. Retain
+   numeric aggregates and timestamps only; drop admin, id, and displayName
+   fields, cookies and headers, raw warning strings, URLs, ids, and tokens.
+   Map warnings to the allowlisted local categories before retaining them.
 6. Do not place a deployment or migration inside either comparison window. The
    post-deployment window starts only after the candidate deployment completes.
 7. Do not compare two rolling "last 24 hours" screenshots taken at unrelated
-   times. Query or capture both windows with their fixed boundaries.
+   times. Use the scheduled capture pattern and record each provider-reported
+   effective boundary and skew; aggregate comparisons remain qualified.
 
 Record these fields for each window:
 
@@ -94,12 +100,15 @@ for an unavailable value.
 
 ### 2. Hold Admin Scan Cost Constant
 
-For this rollout, make exactly four deliberate authenticated visits to each of
-`/api/admin/summary` and `/api/admin/health` in each 24-hour window, at offsets
-`+00:05`, `+06:05`, `+12:05`, and `+18:05` from `windowStart`. Do not make
-additional deliberate admin-dashboard visits during the window. Record
-accidental or automated visits and flag the window as non-comparable if the
-visit pattern cannot be matched.
+For this rollout, make exactly four total authenticated captures of both
+`/api/admin/summary` and `/api/admin/health` at offsets `+00:05`, `+08:05`,
+`+16:05`, and `windowEnd` from `windowStart`. The `windowEnd` capture occurs at
+or just outside the half-open boundary and is attributed according to the
+provider timestamps. If that call cannot be separated from the preceding
+rolling interval, mark the capture `qualified`. Do not make additional
+deliberate admin-dashboard visits during the window. Record accidental or
+automated visits and flag the comparison as `qualified` if the pattern cannot
+be matched.
 
 For each summary visit, record whether D1 Insights shows the user/activity and
 data aggregates executing. For each health visit, record the route's observed
@@ -107,13 +116,13 @@ D1 work and cleanup behavior. Treat those observations as the cache-status
 evidence; do not infer a cache hit from elapsed time alone because module memory
 is best-effort and isolate-local.
 
-Record fixed admin cost separately:
+Record scheduled admin capture cost separately:
 
 | Route | Requests | D1 read/write queries | Rows read/written | Cleanup writes |
 | --- | --- | --- | --- | --- |
-| `/api/admin/summary` | Count and scheduled offsets | Count each, or `unavailable` | Read and written counts, or `unavailable` | Count, or `unavailable` |
-| `/api/admin/health` | Count and scheduled offsets | Count each, or `unavailable` | Read and written counts, or `unavailable` | Count, or `unavailable` |
-| Total fixed admin cost | Sum only when route attribution is complete | Sum only when route attribution is complete | Sum only when route attribution is complete | Sum only when route attribution is complete |
+| `/api/admin/summary` | 4 captures at the scheduled offsets | Count each, or `unavailable` | Read and written counts, or `unavailable` | Count, or `unavailable` |
+| `/api/admin/health` | 4 captures at the scheduled offsets | Count each, or `unavailable` | Read and written counts, or `unavailable` | Count, or `unavailable` |
+| Total scheduled admin capture cost | Sum only when route attribution is complete | Sum only when route attribution is complete | Sum only when route attribution is complete | Sum only when route attribution is complete |
 
 Record summary and health warnings only as sanitized allowlisted local
 categories described below.
@@ -125,7 +134,10 @@ that reference.
 
 ### 3. Capture The Same Metrics
 
-Capture all values against the fixed boundaries and record the source used:
+Capture all values against the scheduled comparison target, record each
+provider-reported effective boundary and skew where exposed, and record the
+source used. Treat aggregate values as qualified unless fixed-boundary provider
+data is available:
 
 - completion-active users in 24 hours;
 - completion updates in 24 hours and stored completion count, kept as separate
@@ -138,7 +150,7 @@ Capture all values against the fixed boundaries and record the source used:
 - API 4xx and 5xx totals grouped by route template and status class;
 - application, cache, Lost Ark, Cloudflare, and metrics warnings counted only
   by the allowlisted local category;
-- fixed admin visits and D1 cost from the preceding section.
+- scheduled admin captures and D1 cost from the preceding section.
 
 Store and count warnings only as one of these allowlisted local categories:
 `pages_project_unavailable`, `d1_usage_unavailable`,
