@@ -11,6 +11,7 @@ import {
   canApplyBoardTableSettingsUpdate,
   createBoardAxisItem,
   createBoardNote,
+  createBoardSheet,
   createBoardTable,
   addBoardShareFavorite,
   createManualBoardCharacterForTable,
@@ -18,6 +19,7 @@ import {
   defaultBoardRolesForOrientation,
   defaultOrientationForTableRoles,
   deleteBoardNote,
+  deleteBoardSheet,
   deleteBoardShareFavorite,
   ensureDefaultBoard,
   getCurrentBoardCompletionPeriodKeys,
@@ -41,8 +43,191 @@ import {
   saveBoardCompletionPatches,
   transposeBoardRoles,
   updateBoardNote,
-  updateBoardNoteLayout
+  updateBoardNoteLayout,
+  updateBoardSheet
 } from "./board";
+
+interface MutationStatement {
+  sql: string;
+  values: unknown[];
+}
+
+interface MutationState {
+  manifestVersion: number;
+  sheets: Map<string, { userId: string; name: string; version: number; isDefault: number }>;
+  notes: Map<string, { userId: string; sheetId: string }>;
+}
+
+function cloneMutationState(state: MutationState): MutationState {
+  return {
+    manifestVersion: state.manifestVersion,
+    sheets: new Map([...state.sheets].map(([id, sheet]) => [id, { ...sheet }])),
+    notes: new Map([...state.notes].map(([id, note]) => [id, { ...note }]))
+  };
+}
+
+function createAtomicMutationEnv() {
+  const state: MutationState = {
+    manifestVersion: 7,
+    sheets: new Map([
+      ["sheet-1", { userId: "user-1", name: "Main", version: 3, isDefault: 1 }],
+      ["sheet-2", { userId: "user-1", name: "Other", version: 5, isDefault: 0 }]
+    ]),
+    notes: new Map([["note-1", { userId: "user-1", sheetId: "sheet-1" }]])
+  };
+  const batches: MutationStatement[][] = [];
+  const preparedSql: string[] = [];
+
+  const execute = (statement: MutationStatement, target: MutationState) => {
+    const sql = statement.sql.replace(/\s+/g, " ").trim();
+    const returning = /\bRETURNING\b/i.test(sql);
+    const result = (rows: Record<string, unknown>[], changes: number) => ({
+      success: true,
+      meta: { changes },
+      results: returning ? rows : []
+    });
+
+    if (sql.includes("INSERT INTO board_manifest_versions")) {
+      const conditionalSheetId = sql.includes("WHERE EXISTS") ? String(statement.values[1]) : null;
+      const conditionalUserId = sql.includes("WHERE EXISTS") ? String(statement.values[2]) : null;
+      if (conditionalSheetId) {
+        const sheet = target.sheets.get(conditionalSheetId);
+        if (!sheet || sheet.userId !== conditionalUserId) return result([], 0);
+      }
+      target.manifestVersion += 1;
+      return result([{ user_id: String(statement.values[0]), version: target.manifestVersion }], 1);
+    }
+
+    if (sql.startsWith("INSERT INTO sheets")) {
+      const [id, userId, name] = statement.values.map(String);
+      if ([...target.sheets.values()].some((sheet) => sheet.userId === userId && sheet.name === name)) {
+        throw new Error("D1_ERROR: UNIQUE constraint failed: sheets.user_id, sheets.name");
+      }
+      target.sheets.set(id!, { userId: userId!, name: name!, version: 0, isDefault: 0 });
+      return result([{ id }], 1);
+    }
+
+    if (sql.startsWith("UPDATE sheets") && sql.includes("SET name =")) {
+      const [name, sheetId, userId] = statement.values.map(String);
+      const sheet = target.sheets.get(sheetId!);
+      if (!sheet || sheet.userId !== userId) return result([], 0);
+      if ([...target.sheets].some(([id, candidate]) => id !== sheetId && candidate.userId === userId && candidate.name === name)) {
+        throw new Error("D1_ERROR: UNIQUE constraint failed: sheets.user_id, sheets.name");
+      }
+      sheet.name = name!;
+      return result([{ id: sheetId }], 1);
+    }
+
+    if (sql.startsWith("UPDATE sheets") && sql.includes("content_version = content_version + 1")) {
+      let sheetId: string | undefined;
+      if (sql.includes("FROM board_notes")) {
+        const note = target.notes.get(String(statement.values[1]));
+        if (note?.userId === String(statement.values[0]) && note.userId === String(statement.values[2])) sheetId = note.sheetId;
+      } else {
+        const candidate = target.sheets.get(String(statement.values[0]));
+        if (candidate?.userId === String(statement.values[1])) sheetId = String(statement.values[0]);
+      }
+      const sheet = sheetId ? target.sheets.get(sheetId) : null;
+      if (!sheet) return result([], 0);
+      sheet.version += 1;
+      return result([{ id: sheetId, version: sheet.version }], 1);
+    }
+
+    if (sql.startsWith("DELETE FROM sheets")) {
+      const [sheetId, userId] = statement.values.map(String);
+      const sheet = target.sheets.get(sheetId!);
+      if (!sheet || sheet.userId !== userId) return result([], 0);
+      target.sheets.delete(sheetId!);
+      return result([{ id: sheetId }], 1);
+    }
+
+    if (sql.startsWith("INSERT INTO board_tables")) {
+      const [id, userId, sheetId] = statement.values.map(String);
+      const sheet = target.sheets.get(sheetId!);
+      if (!sheet || sheet.userId !== userId) return result([], 0);
+      return result([{ id }], 1);
+    }
+
+    if (sql.startsWith("INSERT INTO board_notes")) {
+      const [id, userId, sheetId] = statement.values.map(String);
+      const sheet = target.sheets.get(sheetId!);
+      if (!sheet || sheet.userId !== userId) return result([], 0);
+      target.notes.set(id!, { userId: userId!, sheetId: sheetId! });
+      return result([{ id }], 1);
+    }
+
+    if (sql.startsWith("UPDATE board_notes")) {
+      const noteId = String(statement.values.at(-2));
+      const userId = String(statement.values.at(-1));
+      const note = target.notes.get(noteId);
+      return note?.userId === userId ? result([{ id: noteId }], 1) : result([], 0);
+    }
+
+    if (sql.startsWith("DELETE FROM board_notes") && sql.includes("WHERE id = ? AND user_id = ?")) {
+      const [noteId, userId] = statement.values.map(String);
+      const note = target.notes.get(noteId!);
+      if (!note || note.userId !== userId) return result([], 0);
+      target.notes.delete(noteId!);
+      return result([{ id: noteId }], 1);
+    }
+
+    return result([], 1);
+  };
+
+  const env = {
+    DB: {
+      prepare(sql: string) {
+        preparedSql.push(sql);
+        return {
+          sql,
+          values: [] as unknown[],
+          bind(...values: unknown[]) {
+            return { ...this, values };
+          },
+          async first() {
+            if (sql.includes("SELECT id FROM board_tables WHERE user_id = ? LIMIT 1")) return { id: "table-existing" };
+            if (sql.includes("SELECT id, is_default FROM sheets")) {
+              const sheet = state.sheets.get(String(this.values[0]));
+              if (!sheet || sheet.userId !== this.values[1]) return null;
+              return { id: this.values[0], is_default: sheet.isDefault };
+            }
+            if (sql.includes("SELECT COUNT(*) AS count FROM sheets")) {
+              return { count: [...state.sheets.values()].filter((sheet) => sheet.userId === this.values[0]).length };
+            }
+            if (sql.includes("SELECT id FROM sheets WHERE user_id = ? AND name = ?")) {
+              const match = [...state.sheets].find(([, sheet]) => sheet.userId === this.values[0] && sheet.name === this.values[1]);
+              return match ? { id: match[0] } : null;
+            }
+            if (sql.includes("SELECT id FROM sheets WHERE id = ? AND user_id = ?")) {
+              const sheet = state.sheets.get(String(this.values[0]));
+              return sheet?.userId === this.values[1] ? { id: this.values[0] } : null;
+            }
+            if (sql.includes("MAX(sort_order)")) {
+              return sql.includes("board_notes")
+                ? { maxSortOrder: 10, noteCount: state.notes.size }
+                : { maxSortOrder: 10, tableCount: 1 };
+            }
+            return null;
+          },
+          async run() {
+            return execute(this, state);
+          }
+        };
+      },
+      async batch(statements: MutationStatement[]) {
+        batches.push(statements);
+        const transaction = cloneMutationState(state);
+        const results = statements.map((statement) => execute(statement, transaction));
+        state.manifestVersion = transaction.manifestVersion;
+        state.sheets = transaction.sheets;
+        state.notes = transaction.notes;
+        return results;
+      }
+    }
+  } as unknown as Parameters<typeof createBoardSheet>[0];
+
+  return { env, state, batches, preparedSql };
+}
 
 describe("board db defaults", () => {
   afterEach(() => {
@@ -125,47 +310,191 @@ describe("board db defaults", () => {
     expect(batches[0]?.some((statement) => statement.sql.includes("content_version = content_version + 1"))).toBe(true);
   });
 
-  it("bumps sheet versions when board notes are created, edited, moved, or deleted", async () => {
-    const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
-    const runs: Array<{ sql: string; values: unknown[] }> = [];
-    const env = {
-      DB: {
-        prepare(sql: string) {
-          return {
-            sql,
-            values: [] as unknown[],
-            bind(...values: unknown[]) {
-              return { ...this, values };
-            },
-            async first() {
-              if (sql.includes("SELECT id FROM board_tables WHERE user_id = ? LIMIT 1")) return { id: "table-existing" };
-              if (sql.includes("SELECT id FROM sheets WHERE id = ? AND user_id = ?")) return { id: "sheet-1" };
-              if (sql.includes("SELECT COALESCE(MAX(sort_order)")) return { maxSortOrder: 0, noteCount: 1 };
-              return null;
-            },
-            async run() {
-              runs.push({ sql, values: this.values });
-              return { success: true, meta: { changes: 1 } };
+  it.each(["create sheet", "rename sheet", "delete sheet", "create table"] as const)(
+    "%s returns atomic version deltas from its mutation batch",
+    async (operation) => {
+      const { env, state, batches, preparedSql } = createAtomicMutationEnv();
+      const initialManifestVersion = state.manifestVersion;
+      const initialSheetVersion = state.sheets.get("sheet-1")!.version;
+
+      if (operation === "create sheet") {
+        await expect(createBoardSheet(env, "user-1", { name: "New" })).resolves.toEqual({
+          id: expect.any(String),
+          versions: { sheets: [], manifestVersion: initialManifestVersion + 1 }
+        });
+        expect(state.manifestVersion).toBe(initialManifestVersion + 1);
+        expect(state.sheets.get("sheet-1")?.version).toBe(initialSheetVersion);
+      } else if (operation === "rename sheet") {
+        await expect(updateBoardSheet(env, "user-1", "sheet-1", { name: "Renamed" })).resolves.toEqual({
+          type: "updated",
+          result: {
+            ok: true,
+            versions: {
+              sheets: [{ id: "sheet-1", version: initialSheetVersion + 1 }],
+              manifestVersion: initialManifestVersion + 1
             }
-          };
-        },
-        async batch(statements: Array<{ sql: string; values: unknown[] }>) {
-          batches.push(statements);
-          return statements.map(() => ({ success: true, meta: { changes: 1 } }));
-        }
+          }
+        });
+        expect(state.manifestVersion).toBe(initialManifestVersion + 1);
+        expect(state.sheets.get("sheet-1")?.version).toBe(initialSheetVersion + 1);
+      } else if (operation === "delete sheet") {
+        await expect(deleteBoardSheet(env, "user-1", "sheet-1")).resolves.toEqual({
+          type: "deleted",
+          result: { ok: true, versions: { sheets: [], manifestVersion: initialManifestVersion + 1 } }
+        });
+        expect(state.manifestVersion).toBe(initialManifestVersion + 1);
+        expect(state.sheets.has("sheet-1")).toBe(false);
+      } else {
+        await expect(
+          createBoardTable(env, "user-1", { sheetId: "sheet-1", name: "New table", orientation: "custom" })
+        ).resolves.toEqual({
+          id: expect.any(String),
+          versions: { sheets: [{ id: "sheet-1", version: initialSheetVersion + 1 }] }
+        });
+        expect(state.manifestVersion).toBe(initialManifestVersion);
+        expect(state.sheets.get("sheet-1")?.version).toBe(initialSheetVersion + 1);
       }
-    } as unknown as Parameters<typeof updateBoardNote>[0];
 
-    await createBoardNote(env, "user-1", { sheetId: "sheet-1", title: "메모", body: "본문" });
-    await expect(updateBoardNote(env, "user-1", "note-1", { body: "수정" })).resolves.toBe("updated");
-    await expect(updateBoardNoteLayout(env, "user-1", "note-1", { x: 10, y: 20, width: 240, height: 180 })).resolves.toBe(true);
-    await expect(deleteBoardNote(env, "user-1", "note-1")).resolves.toBe(true);
+      expect(batches).toHaveLength(1);
+      expect(
+        preparedSql.filter(
+          (sql) => /^\s*SELECT\b/i.test(sql) && (sql.includes("board_manifest_versions") || sql.includes("content_version"))
+        )
+      ).toEqual([]);
+    }
+  );
 
-    expect(runs).toHaveLength(0);
-    expect(batches).toHaveLength(4);
-    expect(
-      batches.every((statements) => statements.some((statement) => statement.sql.includes("content_version = content_version + 1")))
-    ).toBe(true);
+  it.each(["create", "update", "layout", "delete"] as const)(
+    "%s note bumps its owning sheet exactly once and returns the batch version",
+    async (operation) => {
+      const { env, state, batches, preparedSql } = createAtomicMutationEnv();
+      const initialVersion = state.sheets.get("sheet-1")!.version;
+
+      if (operation === "create") {
+        await expect(createBoardNote(env, "user-1", { sheetId: "sheet-1", title: "Memo", body: "Body" })).resolves.toEqual({
+          id: expect.any(String),
+          versions: { sheets: [{ id: "sheet-1", version: initialVersion + 1 }] }
+        });
+      } else if (operation === "update") {
+        await expect(updateBoardNote(env, "user-1", "note-1", { body: "Updated" })).resolves.toEqual({
+          type: "updated",
+          result: { ok: true, versions: { sheets: [{ id: "sheet-1", version: initialVersion + 1 }] } }
+        });
+      } else if (operation === "layout") {
+        await expect(
+          updateBoardNoteLayout(env, "user-1", "note-1", { x: 10, y: 20, width: 240, height: 180 })
+        ).resolves.toEqual({
+          ok: true,
+          versions: { sheets: [{ id: "sheet-1", version: initialVersion + 1 }] }
+        });
+      } else {
+        await expect(deleteBoardNote(env, "user-1", "note-1")).resolves.toEqual({
+          ok: true,
+          versions: { sheets: [{ id: "sheet-1", version: initialVersion + 1 }] }
+        });
+      }
+
+      expect(state.sheets.get("sheet-1")?.version).toBe(initialVersion + 1);
+      expect(batches).toHaveLength(1);
+      expect(batches[0]?.filter((statement) => statement.sql.includes("content_version = content_version + 1"))).toHaveLength(1);
+      expect(
+        preparedSql.filter((sql) => /^\s*SELECT\b/i.test(sql) && sql.includes("content_version"))
+      ).toEqual([]);
+    }
+  );
+
+  it("keeps rejected sheet and note mutations from changing version state", async () => {
+    const cases: Array<{
+      name: string;
+      arrange?: (state: MutationState) => void;
+      mutate: (env: Parameters<typeof createBoardSheet>[0]) => Promise<unknown>;
+      expected: unknown;
+    }> = [
+      {
+        name: "create sheet name conflict",
+        mutate: (env) => createBoardSheet(env, "user-1", { name: "Other" }),
+        expected: null
+      },
+      {
+        name: "rename not found",
+        mutate: (env) => updateBoardSheet(env, "user-1", "missing", { name: "Missing" }),
+        expected: { type: "not_found" }
+      },
+      {
+        name: "rename conflict",
+        mutate: (env) => updateBoardSheet(env, "user-1", "sheet-1", { name: "Other" }),
+        expected: { type: "name_conflict" }
+      },
+      {
+        name: "delete not found",
+        mutate: (env) => deleteBoardSheet(env, "user-1", "missing"),
+        expected: { type: "not_found" }
+      },
+      {
+        name: "delete last sheet",
+        arrange: (state) => state.sheets.delete("sheet-2"),
+        mutate: (env) => deleteBoardSheet(env, "user-1", "sheet-1"),
+        expected: { type: "last_sheet" }
+      },
+      {
+        name: "create table missing sheet",
+        mutate: (env) => createBoardTable(env, "user-1", { sheetId: "missing", name: "Table", orientation: "custom" }),
+        expected: null
+      },
+      {
+        name: "create note missing sheet",
+        mutate: (env) => createBoardNote(env, "user-1", { sheetId: "missing", title: "Memo", body: "" }),
+        expected: null
+      },
+      {
+        name: "update note not found",
+        mutate: (env) => updateBoardNote(env, "user-1", "missing", { body: "Nope" }),
+        expected: { type: "not_found" }
+      },
+      {
+        name: "layout note not found",
+        mutate: (env) => updateBoardNoteLayout(env, "user-1", "missing", { x: 0, y: 0, width: 220, height: 160 }),
+        expected: null
+      },
+      {
+        name: "delete note not found",
+        mutate: (env) => deleteBoardNote(env, "user-1", "missing"),
+        expected: null
+      }
+    ];
+
+    for (const testCase of cases) {
+      const { env, state } = createAtomicMutationEnv();
+      testCase.arrange?.(state);
+      const before = cloneMutationState(state);
+
+      await expect(testCase.mutate(env), testCase.name).resolves.toEqual(testCase.expected);
+      expect(state.manifestVersion, testCase.name).toBe(before.manifestVersion);
+      expect(state.sheets, testCase.name).toEqual(before.sheets);
+    }
+  });
+
+  it("orders guarded version rows around destructive writes and uses RETURNING for parsed domain writes", async () => {
+    const noteHarness = createAtomicMutationEnv();
+    await deleteBoardNote(noteHarness.env, "user-1", "note-1");
+    expect(noteHarness.batches[0]?.map((statement) => statement.sql)).toEqual([
+      expect.stringContaining("content_version = content_version + 1"),
+      expect.stringMatching(/DELETE FROM board_notes[\s\S]*RETURNING id/)
+    ]);
+
+    const sheetHarness = createAtomicMutationEnv();
+    await deleteBoardSheet(sheetHarness.env, "user-1", "sheet-1");
+    const sheetStatements = sheetHarness.batches[0] ?? [];
+    expect(sheetStatements[0]?.sql).toContain("board_manifest_versions");
+    expect(sheetStatements.at(-1)?.sql).toMatch(/DELETE FROM sheets[\s\S]*RETURNING id/);
+
+    const renameHarness = createAtomicMutationEnv();
+    await updateBoardSheet(renameHarness.env, "user-1", "sheet-1", { name: "Renamed" });
+    expect(renameHarness.batches[0]?.map((statement) => statement.sql)).toEqual([
+      expect.stringMatching(/UPDATE sheets[\s\S]*RETURNING id/),
+      expect.stringContaining("content_version = content_version + 1"),
+      expect.stringContaining("board_manifest_versions")
+    ]);
   });
 
   it("lists owner shares and user share favorites", async () => {
@@ -1004,7 +1333,12 @@ describe("board db defaults", () => {
         },
         async batch(statements: Array<{ sql: string; values: unknown[] }>) {
           runs.push(...statements);
-          return statements.map(() => ({ success: true }));
+          return statements.map((statement) => ({
+            success: true,
+            results: statement.sql.includes("INSERT INTO board_tables")
+              ? [{ id: statement.values[0] }]
+              : [{ id: "sheet-1", version: 1 }]
+          }));
         }
       }
     } as unknown as Parameters<typeof createBoardTable>[0];
@@ -1015,7 +1349,10 @@ describe("board db defaults", () => {
         name: "새 표",
         orientation: "custom"
       })
-    ).resolves.toEqual({ id: expect.any(String) });
+    ).resolves.toEqual({
+      id: expect.any(String),
+      versions: { sheets: [{ id: "sheet-1", version: 1 }] }
+    });
 
     const tableInserts = runs.filter((statement) => statement.sql.includes("INSERT INTO board_tables"));
     expect(tableInserts).toHaveLength(1);
@@ -1052,7 +1389,12 @@ describe("board db defaults", () => {
         },
         async batch(statements: Array<{ sql: string; values: unknown[] }>) {
           runs.push(...statements);
-          return statements.map(() => ({ success: true }));
+          return statements.map((statement) => ({
+            success: true,
+            results: statement.sql.includes("INSERT INTO board_tables")
+              ? [{ id: statement.values[0] }]
+              : [{ id: "sheet-1", version: 1 }]
+          }));
         }
       }
     } as unknown as Parameters<typeof createBoardTable>[0];
@@ -1063,7 +1405,10 @@ describe("board db defaults", () => {
         name: "겹쳐서 추가",
         orientation: "tasks_columns"
       })
-    ).resolves.toEqual({ id: expect.any(String) });
+    ).resolves.toEqual({
+      id: expect.any(String),
+      versions: { sheets: [{ id: "sheet-1", version: 1 }] }
+    });
 
     const tableInsert = runs.find((statement) => statement.sql.includes("INSERT INTO board_tables"));
     expect(tableInsert?.values.slice(4, 7)).toEqual([80, 24, 24]);

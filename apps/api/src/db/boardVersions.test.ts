@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import {
   buildBoardMutationVersions,
+  bumpBoardManifestVersionForOwnedSheetStatement,
   bumpBoardManifestVersionStatement,
   bumpBoardSheetVersionForNoteStatement,
   bumpBoardSheetVersionStatement,
@@ -106,6 +107,24 @@ describe("board mutation versions", () => {
       })
     ]);
     expect(statements[0]?.sql).toContain("board_manifest_versions.version + 1");
+  });
+
+  it("conditionally bumps the manifest only while the owned sheet exists", () => {
+    withVersionDatabase((database) => {
+      database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-1", "user-1");
+      const owned = captureStatement((env) => bumpBoardManifestVersionForOwnedSheetStatement(env, "user-1", "sheet-1"));
+      const foreign = captureStatement((env) => bumpBoardManifestVersionForOwnedSheetStatement(env, "user-2", "sheet-1"));
+
+      expect(owned.values).toEqual(["user-1", "sheet-1", "user-1"]);
+      expect(owned.sql).toContain("WHERE EXISTS");
+      expect(owned.sql).toContain("SELECT 1 FROM sheets WHERE id = ? AND user_id = ?");
+      expect(executeStatement(database, owned)).toEqual([{ user_id: "user-1", version: 1 }]);
+      expect(executeStatement(database, foreign)).toEqual([]);
+      expect(database.prepare("SELECT version FROM board_manifest_versions WHERE user_id = ?").get("user-1")).toEqual({
+        version: 1
+      });
+      expect(database.prepare("SELECT version FROM board_manifest_versions WHERE user_id = ?").get("user-2")).toBeUndefined();
+    });
   });
 
   it("returns an owned bumped sheet version", () => {

@@ -13,16 +13,54 @@ import type { ChecklistOrientation } from "./settings";
 import { createUserTask } from "./tasks";
 import type { LostArkEventRewardFilter } from "../lostark/events";
 import {
+  buildBoardMutationVersions,
+  bumpBoardManifestVersionForOwnedSheetStatement as bumpBoardManifestVersionForOwnedSheet,
   bumpBoardManifestVersionStatement as bumpBoardManifestVersion,
   bumpBoardSheetVersionForNoteStatement as bumpBoardSheetVersionForNote,
   bumpBoardSheetVersionStatement as bumpBoardSheetVersion,
-  bumpBoardSheetVersionsForTablesStatement as bumpBoardSheetVersionsForTables
+  bumpBoardSheetVersionsForTablesStatement as bumpBoardSheetVersionsForTables,
+  type BoardMutationResult,
+  type BoardSheetVersion
 } from "./boardVersions";
 
 export const DEFAULT_SHEET_NAME = "기본";
 export const DEFAULT_TABLE_NAME = "숙제";
 const NEW_BOARD_TABLE_DEFAULT_X = 24;
 const NEW_BOARD_TABLE_DEFAULT_Y = 24;
+
+function firstBatchRow<T>(result: unknown): T | null {
+  if (!result || typeof result !== "object" || !("results" in result)) return null;
+  const rows = (result as { results?: unknown[] }).results;
+  return Array.isArray(rows) && rows.length > 0 ? (rows[0] as T) : null;
+}
+
+function returnedMutationId(result: unknown, expectedId: string): string | null {
+  const row = firstBatchRow<{ id?: unknown }>(result);
+  return row?.id === expectedId ? expectedId : null;
+}
+
+function returnedAnySheetVersion(result: unknown): BoardSheetVersion | null {
+  const row = firstBatchRow<{ id?: unknown; version?: unknown }>(result);
+  return typeof row?.id === "string" && typeof row.version === "number" ? { id: row.id, version: row.version } : null;
+}
+
+function returnedSheetVersion(result: unknown, expectedId: string): BoardSheetVersion | null {
+  const sheetVersion = returnedAnySheetVersion(result);
+  return sheetVersion?.id === expectedId ? sheetVersion : null;
+}
+
+function returnedManifestVersion(result: unknown, expectedUserId: string): number | null {
+  const row = firstBatchRow<{ user_id?: unknown; version?: unknown }>(result);
+  return row?.user_id === expectedUserId && typeof row.version === "number" ? row.version : null;
+}
+
+function isSheetNameConflictError(error: unknown): boolean {
+  return /UNIQUE constraint failed:\s*sheets\.user_id,\s*sheets\.name/i.test(String(error));
+}
+
+function incompleteBoardMutation(): never {
+  throw new Error("Board mutation batch did not return every required row");
+}
 
 export interface BoardRoles {
   rowRole: BoardAxisRole;
@@ -1399,7 +1437,7 @@ export async function createBoardSheet(
   env: Env,
   userId: string,
   input: CreateBoardSheetInput
-): Promise<{ id: string } | null> {
+): Promise<BoardMutationResult<{ id: string }> | null> {
   await ensureDefaultBoard(env, userId);
 
   const existing = await env.DB.prepare("SELECT id FROM sheets WHERE user_id = ? AND name = ?")
@@ -1413,19 +1451,35 @@ export async function createBoardSheet(
   const id = crypto.randomUUID();
   const sortOrder = (maxSort?.maxSortOrder ?? -10) + 10;
 
-  await env.DB.prepare(
-    `INSERT INTO sheets (id, user_id, name, sort_order, is_default)
-     VALUES (?, ?, ?, ?, 0)`
-  )
-    .bind(id, userId, input.name, sortOrder)
-    .run();
+  try {
+    const [createdResult, manifestResult] = await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO sheets (id, user_id, name, sort_order, is_default)
+         VALUES (?, ?, ?, ?, 0)
+         RETURNING id`
+      ).bind(id, userId, input.name, sortOrder),
+      bumpBoardManifestVersion(env, userId)
+    ]);
+    const createdId = returnedMutationId(createdResult, id);
+    const manifestVersion = returnedManifestVersion(manifestResult, userId);
+    if (!createdId || manifestVersion === null) return incompleteBoardMutation();
 
-  return { id };
+    return { id, versions: buildBoardMutationVersions([], manifestVersion) };
+  } catch (error) {
+    if (isSheetNameConflictError(error)) return null;
+    throw error;
+  }
 }
 
-export type DeleteBoardSheetResult = "deleted" | "last_sheet" | "not_found";
+export type DeleteBoardSheetResult =
+  | { type: "deleted"; result: BoardMutationResult }
+  | { type: "last_sheet" }
+  | { type: "not_found" };
 
-export type UpdateBoardSheetResult = "updated" | "name_conflict" | "not_found";
+export type UpdateBoardSheetResult =
+  | { type: "updated"; result: BoardMutationResult }
+  | { type: "name_conflict" }
+  | { type: "not_found" };
 
 export async function updateBoardSheet(
   env: Env,
@@ -1435,25 +1489,34 @@ export async function updateBoardSheet(
 ): Promise<UpdateBoardSheetResult> {
   await ensureDefaultBoard(env, userId);
 
-  const sheet = await env.DB.prepare("SELECT id FROM sheets WHERE id = ? AND user_id = ?")
-    .bind(sheetId, userId)
-    .first<{ id: string }>();
-  if (!sheet) return "not_found";
+  try {
+    const [updatedResult, sheetVersionResult, manifestResult] = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE sheets
+         SET name = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND user_id = ?
+         RETURNING id`
+      ).bind(input.name, sheetId, userId),
+      bumpBoardSheetVersion(env, userId, sheetId),
+      bumpBoardManifestVersionForOwnedSheet(env, userId, sheetId)
+    ]);
+    const updatedId = returnedMutationId(updatedResult, sheetId);
+    const sheetVersion = returnedSheetVersion(sheetVersionResult, sheetId);
+    const manifestVersion = returnedManifestVersion(manifestResult, userId);
+    if (!updatedId) {
+      if (sheetVersion || manifestVersion !== null) return incompleteBoardMutation();
+      return { type: "not_found" };
+    }
+    if (!sheetVersion || manifestVersion === null) return incompleteBoardMutation();
 
-  const existing = await env.DB.prepare("SELECT id FROM sheets WHERE user_id = ? AND name = ? AND id <> ?")
-    .bind(userId, input.name, sheetId)
-    .first<{ id: string }>();
-  if (existing) return "name_conflict";
-
-  await env.DB.prepare(
-    `UPDATE sheets
-     SET name = ?, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ?`
-  )
-    .bind(input.name, sheetId, userId)
-    .run();
-
-  return "updated";
+    return {
+      type: "updated",
+      result: { ok: true, versions: buildBoardMutationVersions([sheetVersion], manifestVersion) }
+    };
+  } catch (error) {
+    if (isSheetNameConflictError(error)) return { type: "name_conflict" };
+    throw error;
+  }
 }
 
 export async function deleteBoardSheet(env: Env, userId: string, sheetId: string): Promise<DeleteBoardSheetResult> {
@@ -1462,15 +1525,15 @@ export async function deleteBoardSheet(env: Env, userId: string, sheetId: string
   const sheet = await env.DB.prepare("SELECT id, is_default FROM sheets WHERE id = ? AND user_id = ?")
     .bind(sheetId, userId)
     .first<{ id: string; is_default: number }>();
-  if (!sheet) return "not_found";
+  if (!sheet) return { type: "not_found" };
 
   const sheetCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM sheets WHERE user_id = ?")
     .bind(userId)
     .first<{ count: number }>();
-  if ((sheetCount?.count ?? 0) <= 1) return "last_sheet";
+  if ((sheetCount?.count ?? 0) <= 1) return { type: "last_sheet" };
 
   const tableIdsForSheet = "SELECT id FROM board_tables WHERE user_id = ? AND sheet_id = ?";
-  const statements = [];
+  const statements = [bumpBoardManifestVersionForOwnedSheet(env, userId, sheetId)];
 
   if (sheet.is_default === 1) {
     statements.push(
@@ -1501,18 +1564,29 @@ export async function deleteBoardSheet(env: Env, userId: string, sheetId: string
     env.DB.prepare(`DELETE FROM board_axis_items WHERE user_id = ? AND table_id IN (${tableIdsForSheet})`).bind(userId, userId, sheetId),
     env.DB.prepare("DELETE FROM board_notes WHERE user_id = ? AND sheet_id = ?").bind(userId, sheetId),
     env.DB.prepare("DELETE FROM board_tables WHERE user_id = ? AND sheet_id = ?").bind(userId, sheetId),
-    env.DB.prepare("DELETE FROM sheets WHERE id = ? AND user_id = ?").bind(sheetId, userId)
+    env.DB.prepare("DELETE FROM sheets WHERE id = ? AND user_id = ? RETURNING id").bind(sheetId, userId)
   );
 
-  await env.DB.batch(statements);
-  return "deleted";
+  const results = await env.DB.batch(statements);
+  const manifestVersion = returnedManifestVersion(results[0], userId);
+  const deletedId = returnedMutationId(results.at(-1), sheetId);
+  if (!deletedId) {
+    if (manifestVersion !== null) return incompleteBoardMutation();
+    return { type: "not_found" };
+  }
+  if (manifestVersion === null) return incompleteBoardMutation();
+
+  return {
+    type: "deleted",
+    result: { ok: true, versions: buildBoardMutationVersions([], manifestVersion) }
+  };
 }
 
 export async function createBoardTable(
   env: Env,
   userId: string,
   input: CreateBoardTableInput
-): Promise<{ id: string } | null> {
+): Promise<BoardMutationResult<{ id: string }> | null> {
   await ensureDefaultBoard(env, userId);
 
   const sheet = await env.DB.prepare("SELECT id FROM sheets WHERE id = ? AND user_id = ?")
@@ -1532,27 +1606,30 @@ export async function createBoardTable(
   const defaultColumnWidth = input.defaultColumnWidth ?? 132;
   const templateType = input.templateType ?? "custom";
 
-  await env.DB.prepare(
-    `INSERT INTO board_tables (
-       id,
-       user_id,
-       sheet_id,
-       name,
-       sort_order,
-       x,
-       y,
-       row_role,
-       column_role,
-       task_axis,
-       default_row_height,
-       default_column_width,
-       display_options_json,
-       template_type,
-       event_options_json
-     )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(
+  const [createdResult, sheetVersionResult] = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO board_tables (
+         id,
+         user_id,
+         sheet_id,
+         name,
+         sort_order,
+         x,
+         y,
+         row_role,
+         column_role,
+         task_axis,
+         default_row_height,
+         default_column_width,
+         display_options_json,
+         template_type,
+         event_options_json
+       )
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       FROM sheets
+       WHERE id = ? AND user_id = ?
+       RETURNING id`
+    ).bind(
       id,
       userId,
       input.sheetId,
@@ -1567,14 +1644,25 @@ export async function createBoardTable(
       defaultColumnWidth,
       serializeBoardDisplaySettings(input.displaySettings),
       templateType,
-      serializeBoardEventOptions(templateType, input.eventOptions)
-    )
-    .run();
+      serializeBoardEventOptions(templateType, input.eventOptions),
+      input.sheetId,
+      userId
+    ),
+    bumpBoardSheetVersion(env, userId, input.sheetId)
+  ]);
+  const createdId = returnedMutationId(createdResult, id);
+  const sheetVersion = returnedSheetVersion(sheetVersionResult, input.sheetId);
+  if (!createdId && !sheetVersion) return null;
+  if (!createdId || !sheetVersion) return incompleteBoardMutation();
 
-  return { id };
+  return { id, versions: buildBoardMutationVersions([sheetVersion]) };
 }
 
-export async function createBoardNote(env: Env, userId: string, input: CreateBoardNoteInput): Promise<{ id: string } | null> {
+export async function createBoardNote(
+  env: Env,
+  userId: string,
+  input: CreateBoardNoteInput
+): Promise<BoardMutationResult<{ id: string }> | null> {
   await ensureDefaultBoard(env, userId);
 
   const sheet = await env.DB.prepare("SELECT id FROM sheets WHERE id = ? AND user_id = ?")
@@ -1591,7 +1679,7 @@ export async function createBoardNote(env: Env, userId: string, input: CreateBoa
   const sortOrder = (placement?.maxSortOrder ?? -10) + 10;
   const y = (placement?.noteCount ?? 0) * 180;
 
-  await env.DB.batch([
+  const [createdResult, sheetVersionResult] = await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO board_notes (
          id,
@@ -1606,15 +1694,24 @@ export async function createBoardNote(env: Env, userId: string, input: CreateBoa
          width,
          height
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 220, 160)`
-    ).bind(id, userId, input.sheetId, input.title, input.body, input.color ?? "#fef3c7", sortOrder, y),
+       SELECT ?, ?, ?, ?, ?, ?, ?, 0, ?, 220, 160
+       FROM sheets
+       WHERE id = ? AND user_id = ?
+       RETURNING id`
+    ).bind(id, userId, input.sheetId, input.title, input.body, input.color ?? "#fef3c7", sortOrder, y, input.sheetId, userId),
     bumpBoardSheetVersion(env, userId, input.sheetId)
   ]);
+  const createdId = returnedMutationId(createdResult, id);
+  const sheetVersion = returnedSheetVersion(sheetVersionResult, input.sheetId);
+  if (!createdId && !sheetVersion) return null;
+  if (!createdId || !sheetVersion) return incompleteBoardMutation();
 
-  return { id };
+  return { id, versions: buildBoardMutationVersions([sheetVersion]) };
 }
 
-export type BoardNoteUpdateResult = "updated" | "not_found";
+export type BoardNoteUpdateResult =
+  | { type: "updated"; result: BoardMutationResult }
+  | { type: "not_found" };
 
 export async function updateBoardNote(
   env: Env,
@@ -1622,7 +1719,7 @@ export async function updateBoardNote(
   noteId: string,
   input: UpdateBoardNoteInput
 ): Promise<BoardNoteUpdateResult> {
-  const [result] = await env.DB.batch([
+  const [updatedResult, sheetVersionResult] = await env.DB.batch([
     env.DB.prepare(
       `UPDATE board_notes
        SET title = COALESCE(?, title),
@@ -1632,7 +1729,8 @@ export async function updateBoardNote(
            height = COALESCE(?, height),
            locked = COALESCE(?, locked),
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND user_id = ?`
+       WHERE id = ? AND user_id = ?
+       RETURNING id`
     ).bind(
       input.title ?? null,
       input.body ?? null,
@@ -1645,8 +1743,15 @@ export async function updateBoardNote(
     ),
     bumpBoardSheetVersionForNote(env, userId, noteId)
   ]);
+  const updatedId = returnedMutationId(updatedResult, noteId);
+  const sheetVersion = returnedAnySheetVersion(sheetVersionResult);
+  if (!updatedId && !sheetVersion) return { type: "not_found" };
+  if (!updatedId || !sheetVersion) return incompleteBoardMutation();
 
-  return (result?.meta.changes ?? 0) > 0 ? "updated" : "not_found";
+  return {
+    type: "updated",
+    result: { ok: true, versions: buildBoardMutationVersions([sheetVersion]) }
+  };
 }
 
 export async function updateBoardNoteLayout(
@@ -1654,8 +1759,8 @@ export async function updateBoardNoteLayout(
   userId: string,
   noteId: string,
   patch: BoardNoteLayoutPatch
-): Promise<boolean> {
-  const [result] = await env.DB.batch([
+): Promise<BoardMutationResult | null> {
+  const [updatedResult, sheetVersionResult] = await env.DB.batch([
     env.DB.prepare(
       `UPDATE board_notes
        SET x = ?,
@@ -1663,20 +1768,30 @@ export async function updateBoardNoteLayout(
            width = ?,
            height = ?,
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND user_id = ?`
+       WHERE id = ? AND user_id = ?
+       RETURNING id`
     ).bind(patch.x, patch.y, patch.width, patch.height, noteId, userId),
     bumpBoardSheetVersionForNote(env, userId, noteId)
   ]);
+  const updatedId = returnedMutationId(updatedResult, noteId);
+  const sheetVersion = returnedAnySheetVersion(sheetVersionResult);
+  if (!updatedId && !sheetVersion) return null;
+  if (!updatedId || !sheetVersion) return incompleteBoardMutation();
 
-  return (result?.meta.changes ?? 0) > 0;
+  return { ok: true, versions: buildBoardMutationVersions([sheetVersion]) };
 }
 
-export async function deleteBoardNote(env: Env, userId: string, noteId: string): Promise<boolean> {
-  const [, result] = await env.DB.batch([
+export async function deleteBoardNote(env: Env, userId: string, noteId: string): Promise<BoardMutationResult | null> {
+  const [sheetVersionResult, deletedResult] = await env.DB.batch([
     bumpBoardSheetVersionForNote(env, userId, noteId),
-    env.DB.prepare("DELETE FROM board_notes WHERE id = ? AND user_id = ?").bind(noteId, userId)
+    env.DB.prepare("DELETE FROM board_notes WHERE id = ? AND user_id = ? RETURNING id").bind(noteId, userId)
   ]);
-  return (result?.meta.changes ?? 0) > 0;
+  const deletedId = returnedMutationId(deletedResult, noteId);
+  const sheetVersion = returnedAnySheetVersion(sheetVersionResult);
+  if (!deletedId && !sheetVersion) return null;
+  if (!deletedId || !sheetVersion) return incompleteBoardMutation();
+
+  return { ok: true, versions: buildBoardMutationVersions([sheetVersion]) };
 }
 
 export async function updateBoardTableSettings(

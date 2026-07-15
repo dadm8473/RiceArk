@@ -23,6 +23,20 @@ export function bumpBoardManifestVersionStatement(env: Env, userId: string) {
   ).bind(userId);
 }
 
+export function bumpBoardManifestVersionForOwnedSheetStatement(env: Env, userId: string, sheetId: string) {
+  return env.DB.prepare(
+    `INSERT INTO board_manifest_versions (user_id, version, updated_at)
+     SELECT ?, 1, CURRENT_TIMESTAMP
+     WHERE EXISTS (
+       SELECT 1 FROM sheets WHERE id = ? AND user_id = ?
+     )
+     ON CONFLICT(user_id) DO UPDATE
+     SET version = board_manifest_versions.version + 1,
+         updated_at = CURRENT_TIMESTAMP
+     RETURNING user_id, version`
+  ).bind(userId, sheetId, userId);
+}
+
 export function bumpBoardSheetVersionStatement(env: Env, userId: string, sheetId: string) {
   return env.DB.prepare(
     `UPDATE sheets

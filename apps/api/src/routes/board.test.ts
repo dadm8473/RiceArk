@@ -627,6 +627,281 @@ describe("board route schemas", () => {
   });
 });
 
+describe("board mutation routes", () => {
+  function createMutationRouteEnv(options: { missingSheet?: boolean; missingNote?: boolean; lastSheet?: boolean; nameConflict?: boolean } = {}) {
+    const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
+
+    const execute = (statement: { sql: string; values: unknown[] }) => {
+      const sql = statement.sql.replace(/\s+/g, " ").trim();
+      const returning = /\bRETURNING\b/i.test(sql);
+      const result = (rows: Record<string, unknown>[], changes = rows.length) => ({
+        success: true,
+        meta: { changes },
+        results: returning ? rows : []
+      });
+
+      if (sql.startsWith("UPDATE sheets") && sql.includes("SET name =")) {
+        if (options.nameConflict) throw new Error("D1_ERROR: UNIQUE constraint failed: sheets.user_id, sheets.name");
+        return options.missingSheet ? result([]) : result([{ id: "sheet-1" }]);
+      }
+      if (sql.startsWith("INSERT INTO sheets")) return result([{ id: String(statement.values[0]) }]);
+      if (sql.includes("INSERT INTO board_manifest_versions")) {
+        return options.missingSheet && sql.includes("WHERE EXISTS") ? result([]) : result([{ user_id: "user-1", version: 8 }]);
+      }
+      if (sql.startsWith("UPDATE sheets") && sql.includes("content_version = content_version + 1")) {
+        return options.missingSheet || (sql.includes("FROM board_notes") && options.missingNote)
+          ? result([])
+          : result([{ id: "sheet-1", version: 4 }]);
+      }
+      if (sql.startsWith("DELETE FROM sheets")) return options.missingSheet ? result([]) : result([{ id: "sheet-1" }]);
+      if (sql.startsWith("INSERT INTO board_tables")) {
+        return options.missingSheet ? result([]) : result([{ id: String(statement.values[0]) }]);
+      }
+      if (sql.startsWith("INSERT INTO board_notes")) {
+        return options.missingSheet ? result([]) : result([{ id: String(statement.values[0]) }]);
+      }
+      if (sql.startsWith("UPDATE board_notes")) return options.missingNote ? result([]) : result([{ id: "note-1" }]);
+      if (sql.startsWith("DELETE FROM board_notes") && sql.includes("WHERE id = ? AND user_id = ?")) {
+        return options.missingNote ? result([]) : result([{ id: "note-1" }]);
+      }
+      return result([], 1);
+    };
+
+    const env = {
+      ...routeEnv,
+      DB: {
+        prepare(sql: string) {
+          return {
+            sql,
+            values: [] as unknown[],
+            bind(...values: unknown[]) {
+              return { ...this, values };
+            },
+            async first() {
+              if (sql.includes("FROM sessions")) return { id: "user-1", display_name: "Tester", avatar_url: null };
+              if (sql.includes("SELECT id FROM board_tables WHERE user_id = ? LIMIT 1")) return { id: "table-existing" };
+              if (sql.includes("SELECT id, is_default FROM sheets")) {
+                return options.missingSheet ? null : { id: "sheet-1", is_default: 1 };
+              }
+              if (sql.includes("SELECT COUNT(*) AS count FROM sheets")) return { count: options.lastSheet ? 1 : 2 };
+              if (sql.includes("SELECT id FROM sheets WHERE user_id = ? AND name = ?")) {
+                return options.nameConflict ? { id: "sheet-2" } : null;
+              }
+              if (sql.includes("SELECT id FROM sheets WHERE id = ? AND user_id = ?")) {
+                return options.missingSheet ? null : { id: "sheet-1" };
+              }
+              if (sql.includes("MAX(sort_order)")) {
+                return sql.includes("board_notes")
+                  ? { maxSortOrder: 10, noteCount: 1 }
+                  : { maxSortOrder: 10, tableCount: 1 };
+              }
+              return null;
+            },
+            async run() {
+              return execute(this);
+            }
+          };
+        },
+        async batch(statements: Array<{ sql: string; values: unknown[] }>) {
+          batches.push(statements);
+          return statements.map(execute);
+        }
+      }
+    };
+
+    return { env, batches };
+  }
+
+  it.each([
+    {
+      name: "create sheet",
+      method: "POST",
+      path: "/api/board/sheets",
+      body: { name: "New" },
+      status: 201,
+      expected: { id: expect.any(String), versions: { sheets: [], manifestVersion: 8 } }
+    },
+    {
+      name: "rename sheet",
+      method: "PATCH",
+      path: "/api/board/sheets/sheet-1",
+      body: { name: "Renamed" },
+      status: 200,
+      expected: { ok: true, versions: { sheets: [{ id: "sheet-1", version: 4 }], manifestVersion: 8 } }
+    },
+    {
+      name: "delete sheet",
+      method: "DELETE",
+      path: "/api/board/sheets/sheet-1",
+      status: 200,
+      expected: { ok: true, versions: { sheets: [], manifestVersion: 8 } }
+    },
+    {
+      name: "create table",
+      method: "POST",
+      path: "/api/board/tables",
+      body: { sheetId: "sheet-1", name: "Table", orientation: "custom" },
+      status: 201,
+      expected: { id: expect.any(String), versions: { sheets: [{ id: "sheet-1", version: 4 }] } }
+    },
+    {
+      name: "create note",
+      method: "POST",
+      path: "/api/board/notes",
+      body: { sheetId: "sheet-1", title: "Memo", body: "Body" },
+      status: 201,
+      expected: { id: expect.any(String), versions: { sheets: [{ id: "sheet-1", version: 4 }] } }
+    },
+    {
+      name: "update note",
+      method: "PATCH",
+      path: "/api/board/notes/note-1",
+      body: { body: "Updated" },
+      status: 200,
+      expected: { ok: true, versions: { sheets: [{ id: "sheet-1", version: 4 }] } }
+    },
+    {
+      name: "layout note",
+      method: "PATCH",
+      path: "/api/board/notes/note-1/layout",
+      body: { x: 10, y: 20, width: 240, height: 180 },
+      status: 200,
+      expected: { ok: true, versions: { sheets: [{ id: "sheet-1", version: 4 }] } }
+    },
+    {
+      name: "delete note",
+      method: "DELETE",
+      path: "/api/board/notes/note-1",
+      status: 200,
+      expected: { ok: true, versions: { sheets: [{ id: "sheet-1", version: 4 }] } }
+    }
+  ])("keeps $name response fields top-level and adds versions", async ({ method, path, body, status, expected }) => {
+    const { env } = createMutationRouteEnv();
+    const response = await app.request(
+      path,
+      {
+        method,
+        headers: {
+          Cookie: "riceark_session=test-token",
+          ...(body ? { "Content-Type": "application/json" } : {})
+        },
+        ...(body ? { body: JSON.stringify(body) } : {})
+      },
+      env
+    );
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual(expected);
+  });
+
+  it.each([
+    {
+      name: "create sheet name conflict",
+      options: { nameConflict: true },
+      method: "POST",
+      path: "/api/board/sheets",
+      body: { name: "Other" },
+      status: 409,
+      code: "board_sheet_name_conflict"
+    },
+    {
+      name: "rename missing sheet",
+      options: { missingSheet: true },
+      method: "PATCH",
+      path: "/api/board/sheets/sheet-1",
+      body: { name: "Renamed" },
+      status: 404,
+      code: "board_sheet_not_found"
+    },
+    {
+      name: "rename name conflict",
+      options: { nameConflict: true },
+      method: "PATCH",
+      path: "/api/board/sheets/sheet-1",
+      body: { name: "Other" },
+      status: 409,
+      code: "board_sheet_name_conflict"
+    },
+    {
+      name: "delete missing sheet",
+      options: { missingSheet: true },
+      method: "DELETE",
+      path: "/api/board/sheets/sheet-1",
+      status: 404,
+      code: "board_sheet_not_found"
+    },
+    {
+      name: "delete last sheet",
+      options: { lastSheet: true },
+      method: "DELETE",
+      path: "/api/board/sheets/sheet-1",
+      status: 400,
+      code: "board_sheet_last_one"
+    },
+    {
+      name: "create table for missing sheet",
+      options: { missingSheet: true },
+      method: "POST",
+      path: "/api/board/tables",
+      body: { sheetId: "sheet-1", name: "Table", orientation: "custom" },
+      status: 404,
+      code: "board_sheet_not_found"
+    },
+    {
+      name: "create note for missing sheet",
+      options: { missingSheet: true },
+      method: "POST",
+      path: "/api/board/notes",
+      body: { sheetId: "sheet-1", title: "Memo", body: "" },
+      status: 404,
+      code: "board_sheet_not_found"
+    },
+    {
+      name: "update missing note",
+      options: { missingNote: true },
+      method: "PATCH",
+      path: "/api/board/notes/note-1",
+      body: { body: "Updated" },
+      status: 404,
+      code: "board_note_not_found"
+    },
+    {
+      name: "layout missing note",
+      options: { missingNote: true },
+      method: "PATCH",
+      path: "/api/board/notes/note-1/layout",
+      body: { x: 10, y: 20, width: 240, height: 180 },
+      status: 404,
+      code: "board_note_not_found"
+    },
+    {
+      name: "delete missing note",
+      options: { missingNote: true },
+      method: "DELETE",
+      path: "/api/board/notes/note-1",
+      status: 404,
+      code: "board_note_not_found"
+    }
+  ])("preserves $name status and error code", async ({ options, method, path, body, status, code }) => {
+    const { env } = createMutationRouteEnv(options);
+    const response = await app.request(
+      path,
+      {
+        method,
+        headers: {
+          Cookie: "riceark_session=test-token",
+          ...(body ? { "Content-Type": "application/json" } : {})
+        },
+        ...(body ? { body: JSON.stringify(body) } : {})
+      },
+      env
+    );
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toMatchObject({ error: { code } });
+  });
+});
+
 describe("board share routes", () => {
   function createShareRouteEnv() {
     const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];

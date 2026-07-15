@@ -380,13 +380,13 @@ boardRoutes.delete("/board/sheets/:id", zValidator("param", boardSheetIdParamSch
   const user = await requireUser(c);
   const { id } = c.req.valid("param");
   const result = await deleteBoardSheet(c.env, user.id, id);
-  if (result === "not_found") {
+  if (result.type === "not_found") {
     throw new ApiError(404, "board_sheet_not_found", "탭을 찾을 수 없습니다.");
   }
-  if (result === "last_sheet") {
+  if (result.type === "last_sheet") {
     throw new ApiError(400, "board_sheet_last_one", "마지막 탭은 삭제할 수 없습니다.");
   }
-  return c.body(null, 204);
+  return c.json(result.result);
 });
 
 boardRoutes.patch(
@@ -398,13 +398,13 @@ boardRoutes.patch(
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
     const result = await updateBoardSheet(c.env, user.id, id, input);
-    if (result === "not_found") {
+    if (result.type === "not_found") {
       throw new ApiError(404, "board_sheet_not_found", "탭을 찾을 수 없습니다.");
     }
-    if (result === "name_conflict") {
+    if (result.type === "name_conflict") {
       throw new ApiError(409, "board_sheet_name_conflict", "같은 이름의 탭이 이미 있습니다.");
     }
-    return c.json({ ok: true });
+    return c.json(result.result);
   }
 );
 
@@ -437,10 +437,10 @@ boardRoutes.patch(
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
     const updated = await updateBoardNote(c.env, user.id, id, input);
-    if (updated === "not_found") {
+    if (updated.type === "not_found") {
       throw new ApiError(404, "board_note_not_found", "메모를 찾을 수 없습니다.");
     }
-    return c.json({ ok: true });
+    return c.json(updated.result);
   }
 );
 
@@ -451,7 +451,7 @@ boardRoutes.delete("/board/notes/:id", zValidator("param", boardNoteIdParamSchem
   if (!deleted) {
     throw new ApiError(404, "board_note_not_found", "메모를 찾을 수 없습니다.");
   }
-  return c.body(null, 204);
+  return c.json(deleted);
 });
 
 boardRoutes.patch(
@@ -597,7 +597,7 @@ boardRoutes.patch(
     if (!updated) {
       throw new ApiError(404, "board_note_not_found", "메모를 찾을 수 없습니다.");
     }
-    return c.json({ ok: true });
+    return c.json(updated);
   }
 );
 
