@@ -2836,7 +2836,9 @@ function prepareBoardAxisOrderUpdate(
   axisItemIdsJson: string,
   temporary: boolean
 ) {
-  const nextSortOrder = temporary ? "-(ordered.position + 1) * 10" : "ordered.position * 10";
+  const nextSortOrder = temporary
+    ? "(ordered.position - (SELECT COUNT(*) FROM ordered)) * 10"
+    : "ordered.position * 10";
   return env.DB.prepare(
     `WITH requested AS MATERIALIZED (
        SELECT CAST(key AS INTEGER) AS position, value AS id

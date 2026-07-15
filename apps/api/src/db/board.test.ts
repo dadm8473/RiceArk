@@ -1960,63 +1960,101 @@ describe("board db defaults", () => {
     expect(batches[0]?.[1]?.values[0]).toBe(JSON.stringify(["row-b", "row-a"]));
   });
 
-  it("moves hidden axis items out of the way before reordering visible items", async () => {
-    const axisItems = [
-      { id: "row-a", visible: 1, sortOrder: 0 },
-      { id: "row-hidden", visible: 0, sortOrder: 10 },
-      { id: "row-b", visible: 1, sortOrder: 20 }
-    ];
-    const env = {
-      DB: {
-        prepare(sql: string) {
-          return {
-            sql,
-            values: [] as unknown[],
-            bind(...values: unknown[]) {
-              return { ...this, values };
-            },
-            async first() {
-              return { id: "table-1", locked: 0 };
-            },
-            async all() {
-              const results = sql.includes("visible = 1") ? axisItems.filter((item) => item.visible === 1) : axisItems;
-              return { results: results.map((item) => ({ id: item.id, visible: item.visible })) };
-            }
-          };
-        },
-        async batch(statements: Array<{ sql: string; values: unknown[] }>) {
-          const requestedIds = JSON.parse(String(statements[0]?.values[0])) as string[];
-          const orderedIds = [
-            ...requestedIds,
-            ...axisItems.filter((item) => !requestedIds.includes(item.id)).map((item) => item.id)
-          ];
-          for (const [index, id] of orderedIds.entries()) {
-            const item = axisItems.find((axisItem) => axisItem.id === id);
-            if (!item) throw new Error("missing axis item");
-            item.sortOrder = index * 10;
-          }
-          return statements.map((statement) => ({
-            success: true,
-            results: statement.sql.includes("UPDATE sheets")
-              ? [{ id: "sheet-1", version: 4 }]
-              : orderedIds.map((id) => ({ id }))
-          }));
-        }
-      }
-    } as unknown as Parameters<typeof reorderBoardAxisItems>[0];
+  it("preserves hidden axis order while applying one visible reorder with 10-step sort orders", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["sheet-1"]);
+      const tableId = "table-sheet-1";
+      const insert = database.prepare(
+        `INSERT INTO board_axis_items (id, user_id, table_id, axis, kind, label, sort_order, visible)
+         VALUES (?, 'user-1', ?, 'row', 'custom', ?, ?, ?)`
+      );
+      insert.run("row-a", tableId, "Row A", 10, 1);
+      insert.run("row-hidden-a", tableId, "Hidden A", 20, 0);
+      insert.run("row-hidden-b", tableId, "Hidden B", 30, 0);
+      insert.run("row-b", tableId, "Row B", 40, 1);
+      database.exec("CREATE UNIQUE INDEX test_axis_sort ON board_axis_items(table_id, axis, sort_order)");
+      const { env, batches, preparedSql } = createSqliteD1Env(database);
 
-    await expect(
-      reorderBoardAxisItems(env, "user-1", {
-        tableId: "table-1",
+      await expect(reorderBoardAxisItems(env, "user-1", {
+        tableId,
         axis: "row",
-        axisItemIds: ["row-b", "row-a"]
-      })
-    ).resolves.toEqual({ ok: true, versions: { sheets: [{ id: "sheet-1", version: 4 }] } });
-    expect(axisItems).toMatchObject([
-      { id: "row-a", sortOrder: 10 },
-      { id: "row-hidden", sortOrder: 20 },
-      { id: "row-b", sortOrder: 0 }
-    ]);
+        axisItemIds: ["row-b", "axis-row", "row-a"]
+      })).resolves.toEqual({ ok: true, versions: { sheets: [{ id: "sheet-1", version: 1 }] } });
+
+      expect(database.prepare(
+        `SELECT id, visible, sort_order
+         FROM board_axis_items
+         WHERE table_id = ? AND axis = 'row'
+         ORDER BY sort_order`
+      ).all(tableId)).toEqual([
+        { id: "row-b", visible: 1, sort_order: 0 },
+        { id: "axis-row", visible: 1, sort_order: 10 },
+        { id: "row-a", visible: 1, sort_order: 20 },
+        { id: "row-hidden-a", visible: 0, sort_order: 30 },
+        { id: "row-hidden-b", visible: 0, sort_order: 40 }
+      ]);
+      expect(preparedSql).toHaveLength(3);
+      expect(batches).toHaveLength(1);
+      expect(batches[0]).toHaveLength(3);
+      expect(batches[0]?.every((statement) => statement.values.length === 4)).toBe(true);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("does not toggle hidden axis order across repeated visible reorders", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["sheet-1"]);
+      const tableId = "table-sheet-1";
+      const insert = database.prepare(
+        `INSERT INTO board_axis_items (id, user_id, table_id, axis, kind, label, sort_order, visible)
+         VALUES (?, 'user-1', ?, 'row', 'custom', ?, ?, ?)`
+      );
+      insert.run("row-a", tableId, "Row A", 10, 1);
+      insert.run("row-hidden-a", tableId, "Hidden A", 20, 0);
+      insert.run("row-hidden-b", tableId, "Hidden B", 30, 0);
+      insert.run("row-b", tableId, "Row B", 40, 1);
+      database.exec("CREATE UNIQUE INDEX test_axis_sort ON board_axis_items(table_id, axis, sort_order)");
+      const { env, batches, preparedSql } = createSqliteD1Env(database);
+      const input = {
+        tableId,
+        axis: "row" as const,
+        axisItemIds: ["row-b", "axis-row", "row-a"]
+      };
+      const readOrder = () => database.prepare(
+        `SELECT id, visible, sort_order
+         FROM board_axis_items
+         WHERE table_id = ? AND axis = 'row'
+         ORDER BY sort_order`
+      ).all(tableId);
+      const expectedOrder = [
+        { id: "row-b", visible: 1, sort_order: 0 },
+        { id: "axis-row", visible: 1, sort_order: 10 },
+        { id: "row-a", visible: 1, sort_order: 20 },
+        { id: "row-hidden-a", visible: 0, sort_order: 30 },
+        { id: "row-hidden-b", visible: 0, sort_order: 40 }
+      ];
+
+      await expect(reorderBoardAxisItems(env, "user-1", input)).resolves.toEqual({
+        ok: true,
+        versions: { sheets: [{ id: "sheet-1", version: 1 }] }
+      });
+      expect(readOrder()).toEqual(expectedOrder);
+
+      await expect(reorderBoardAxisItems(env, "user-1", input)).resolves.toEqual({
+        ok: true,
+        versions: { sheets: [{ id: "sheet-1", version: 2 }] }
+      });
+      expect(readOrder()).toEqual(expectedOrder);
+      expect(preparedSql).toHaveLength(6);
+      expect(batches).toHaveLength(2);
+      expect(batches.every((batch) => batch.length === 3)).toBe(true);
+      expect(batches.every((batch) => batch.every((statement) => statement.values.length === 4))).toBe(true);
+    } finally {
+      database.close();
+    }
   });
 
   it("reorders the 300-item axis maximum with guarded bounded statements", async () => {
