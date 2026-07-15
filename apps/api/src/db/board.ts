@@ -756,6 +756,26 @@ export function getCurrentBoardCompletionPeriodKeys(
   return [...keys];
 }
 
+interface BoardCompletionTaskPeriodPair {
+  taskId: string;
+  periodKey: string;
+}
+
+function buildCurrentBoardCompletionTaskPeriodPairs(
+  axisItems: Array<Pick<DefaultAxisItemSeed, "kind" | "taskId" | "taskResetRuleJson">>,
+  now: Date
+): BoardCompletionTaskPeriodPair[] {
+  const pairs = new Map<string, BoardCompletionTaskPeriodPair>();
+  for (const item of axisItems) {
+    if (item.kind !== "task" || !item.taskId) continue;
+    const rule = parseResetRule(item.taskResetRuleJson);
+    if (!rule) continue;
+    const pair = { taskId: item.taskId, periodKey: getPeriodKey(rule, now) };
+    pairs.set(JSON.stringify(pair), pair);
+  }
+  return [...pairs.values()];
+}
+
 export function findUnauthorizedBoardCellStatePatches(
   patches: BoardCellStatePatch[],
   authorizedTargets: AuthorizedBoardCompletionTarget[]
@@ -1066,10 +1086,8 @@ export async function ensureDefaultBoard(env: Env, userId: string, now = new Dat
     tasks,
     characters
   }).map((seed) => ({ id: crypto.randomUUID(), ...seed }));
-  const currentPeriodKeys = getCurrentBoardCompletionPeriodKeys(
-    seeds.map((seed) => ({ kind: seed.kind, task_reset_rule_json: seed.taskResetRuleJson })),
-    now
-  );
+  const currentTaskPeriodPairs = buildCurrentBoardCompletionTaskPeriodPairs(seeds, now);
+  const currentTaskPeriodPairsJson = JSON.stringify(currentTaskPeriodPairs);
 
   const results = await env.DB.batch([
     env.DB.prepare(
@@ -1133,7 +1151,12 @@ export async function ensureDefaultBoard(env: Env, userId: string, now = new Dat
        RETURNING id`
     ).bind(userId, tableId, JSON.stringify(seeds)),
     env.DB.prepare(
-      `INSERT INTO board_cell_completions (
+      `WITH current_pairs AS (
+         SELECT json_extract(value, '$.taskId') AS task_id,
+                json_extract(value, '$.periodKey') AS period_key
+         FROM json_each(?3)
+       )
+       INSERT INTO board_cell_completions (
          id, user_id, table_id, row_item_id, column_item_id,
          period_key, completed, updated_at
        )
@@ -1146,6 +1169,9 @@ export async function ensureDefaultBoard(env: Env, userId: string, now = new Dat
               completions.completed,
               CURRENT_TIMESTAMP
        FROM completions
+       JOIN current_pairs
+         ON current_pairs.task_id = completions.task_id
+        AND current_pairs.period_key = completions.period_key
        JOIN board_axis_items AS task_items
          ON task_items.user_id = ?1
         AND task_items.table_id = ?2
@@ -1158,12 +1184,11 @@ export async function ensureDefaultBoard(env: Env, userId: string, now = new Dat
         AND character_items.character_id = completions.character_id
        WHERE completions.user_id = ?1
          AND completions.character_id IS NOT NULL
-         AND completions.period_key IN (SELECT value FROM json_each(?3))
          AND task_items.axis <> character_items.axis
        ON CONFLICT(user_id, table_id, row_item_id, column_item_id, period_key)
        DO UPDATE SET completed = excluded.completed, updated_at = CURRENT_TIMESTAMP
        RETURNING id`
-    ).bind(userId, tableId, JSON.stringify(currentPeriodKeys)),
+    ).bind(userId, tableId, currentTaskPeriodPairsJson),
     env.DB.prepare(
       `INSERT INTO board_manifest_versions (user_id, version, updated_at)
        SELECT ?1, 1, CURRENT_TIMESTAMP
@@ -1177,6 +1202,11 @@ export async function ensureDefaultBoard(env: Env, userId: string, now = new Dat
          SELECT json_extract(value, '$.id') AS id
          FROM json_each(?4)
        ),
+       current_pairs AS (
+         SELECT json_extract(value, '$.taskId') AS task_id,
+                json_extract(value, '$.periodKey') AS period_key
+         FROM json_each(?5)
+       ),
        expected_completions AS (
          SELECT 'legacy:' || ?2 || ':' || completions.id AS id,
                 CASE WHEN task_items.axis = 'row' THEN task_items.id ELSE character_items.id END AS row_item_id,
@@ -1184,6 +1214,9 @@ export async function ensureDefaultBoard(env: Env, userId: string, now = new Dat
                 completions.period_key,
                 completions.completed
          FROM completions
+         JOIN current_pairs
+           ON current_pairs.task_id = completions.task_id
+          AND current_pairs.period_key = completions.period_key
          JOIN board_axis_items AS task_items
            ON task_items.user_id = ?1
           AND task_items.table_id = ?2
@@ -1196,7 +1229,6 @@ export async function ensureDefaultBoard(env: Env, userId: string, now = new Dat
           AND character_items.character_id = completions.character_id
          WHERE completions.user_id = ?1
            AND completions.character_id IS NOT NULL
-           AND completions.period_key IN (SELECT value FROM json_each(?5))
            AND task_items.axis <> character_items.axis
        )
        INSERT INTO board_axis_items (
@@ -1250,7 +1282,7 @@ export async function ensureDefaultBoard(env: Env, userId: string, now = new Dat
              SELECT 1 FROM board_manifest_versions WHERE user_id = ?1
            )
          )`
-    ).bind(userId, tableId, sheetId, JSON.stringify(seeds), JSON.stringify(currentPeriodKeys))
+    ).bind(userId, tableId, sheetId, JSON.stringify(seeds), currentTaskPeriodPairsJson)
   ]);
   if (results.length !== 6) return incompleteBoardMutation();
   const createdSheetId = returnedMutationId(results[0], sheetId);

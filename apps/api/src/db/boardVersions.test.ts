@@ -223,7 +223,7 @@ describe("board mutation versions", () => {
     expect(statements[0]?.sql).toContain("RETURNING id, content_version AS version");
   });
 
-  it("finds distinct visible owned sheets through active character axis items and returns their versions", () => {
+  it("finds distinct owned sheets through active character axis items including hidden references", () => {
     const { env, statements } = createEnv();
 
     bumpBoardSheetVersionsForCharacterStatement(env, "user-1", "character-1");
@@ -232,7 +232,7 @@ describe("board mutation versions", () => {
     expect(statements[0]?.sql).toContain("JOIN board_axis_items");
     expect(statements[0]?.sql).toContain("JOIN characters");
     expect(statements[0]?.sql).toContain("board_axis_items.character_id = ?");
-    expect(statements[0]?.sql).toContain("board_axis_items.visible = 1");
+    expect(statements[0]?.sql).not.toContain("board_axis_items.visible = 1");
     expect(statements[0]?.sql).toContain("characters.enabled = 1");
     expect(statements[0]?.sql).toContain("characters.deleted_at IS NULL");
     expect(statements[0]?.sql).toContain("SELECT DISTINCT board_tables.sheet_id");
@@ -400,7 +400,7 @@ describe("board mutation versions", () => {
       });
     });
 
-    it("increments each distinct sheet once for visible owned references only", () => {
+    it("increments each distinct sheet once for every owned reference including hidden items", () => {
       withVersionDatabase((database) => {
         database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?), (?, ?), (?, ?), (?, ?)")
           .run(
@@ -455,7 +455,8 @@ describe("board mutation versions", () => {
 
         expect(executeStatement(database, active)).toEqual([
           { id: "sheet-1", version: 1 },
-          { id: "sheet-2", version: 1 }
+          { id: "sheet-2", version: 1 },
+          { id: "sheet-hidden", version: 1 }
         ]);
         expect(executeStatement(database, noBoard)).toEqual([]);
         expect(executeStatement(database, deleted)).toEqual([]);
@@ -465,7 +466,7 @@ describe("board mutation versions", () => {
           { id: "sheet-1", content_version: 1 },
           { id: "sheet-2", content_version: 1 },
           { id: "sheet-foreign", content_version: 0 },
-          { id: "sheet-hidden", content_version: 0 }
+          { id: "sheet-hidden", content_version: 1 }
         ]);
       });
     });

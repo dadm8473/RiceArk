@@ -221,6 +221,10 @@ function insertProjection(database: DatabaseSync, characterId: string): void {
   );
 }
 
+function hideProjection(database: DatabaseSync, characterId: string): void {
+  database.prepare("UPDATE board_axis_items SET visible = 0 WHERE character_id = ?").run(characterId);
+}
+
 describe("set-based character arrays", () => {
   it("imports the schema maximum with bounded statements and bindings", async () => {
     const database = createCharacterDatabase();
@@ -400,6 +404,7 @@ describe("updateCharacterFromLostArk", () => {
     try {
       insertCharacter(database, "character-1");
       insertProjection(database, "character-1");
+      hideProjection(database, "character-1");
       const { env, batches } = createSqliteEnv(database);
       vi.mocked(searchRosterCharacters).mockResolvedValue([
         {
@@ -528,11 +533,40 @@ describe("character projection mutations", () => {
     }
   });
 
+  it("bumps every hidden projection sheet when character details change", async () => {
+    const database = createCharacterDatabase();
+    try {
+      insertCharacter(database, "character-1");
+      insertProjection(database, "character-1");
+      hideProjection(database, "character-1");
+      const { env } = createSqliteEnv(database);
+
+      await expect(
+        updateCharacterDetails(env, "user-1", "character-1", {
+          displayName: "서포터",
+          itemLevel: "1,650.00",
+          combatPower: "2,700.00"
+        })
+      ).resolves.toEqual({
+        ok: true,
+        versions: {
+          sheets: [
+            { id: "sheet-1", version: 1 },
+            { id: "sheet-2", version: 1 }
+          ]
+        }
+      });
+    } finally {
+      database.close();
+    }
+  });
+
   it("bumps versions before soft-deleting so the active character remains eligible", async () => {
     const database = createCharacterDatabase();
     try {
       insertCharacter(database, "character-1");
       insertProjection(database, "character-1");
+      hideProjection(database, "character-1");
       const { env, batches } = createSqliteEnv(database);
 
       await expect(deleteCharacter(env, "user-1", "character-1")).resolves.toEqual({

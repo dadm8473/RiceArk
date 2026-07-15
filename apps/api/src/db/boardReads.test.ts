@@ -1092,6 +1092,50 @@ describe("sheet-aware board reads", () => {
     }
   });
 
+  it("migrates legacy completions only when both task and current period match", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
+    const database = createBoardReadDatabase();
+    database.prepare("INSERT INTO users (id, display_name) VALUES (?, ?)").run("user-1", "Owner");
+    seedDefaultTasks(database);
+    seedDefaultCharacters(database, 1);
+    const insertCompletion = database.prepare(
+      `INSERT INTO completions (
+         id, user_id, task_id, character_id, target_key, period_key, completed
+       ) VALUES (?, 'user-1', ?, 'character-0', 'character-0', ?, 1)`
+    );
+    insertCompletion.run("legacy-daily-valid", "task-daily-1", "daily:2026-06-05");
+    insertCompletion.run("legacy-daily-corrupt-weekly", "task-daily-1", "weekly:2026-06-03");
+    insertCompletion.run("legacy-weekly-valid", "task-weekly-1", "weekly:2026-06-03");
+    const { env } = createSqliteReadEnv(database);
+
+    try {
+      const payload = await loadBoardBootstrap(env, "user-1");
+      const migrated = database.prepare(
+        `SELECT board_cell_completions.id,
+                task_items.task_id,
+                board_cell_completions.period_key
+         FROM board_cell_completions
+         JOIN board_axis_items AS task_items
+           ON task_items.id = board_cell_completions.row_item_id
+          AND task_items.kind = 'task'
+         ORDER BY task_items.task_id, board_cell_completions.period_key`
+      ).all().map((row) => ({
+        sourceId: String(row.id).split(":").at(-1),
+        taskId: row.task_id,
+        periodKey: row.period_key
+      }));
+
+      expect(payload.activeSheet.completions).toHaveLength(2);
+      expect(migrated).toEqual([
+        { sourceId: "legacy-daily-valid", taskId: "task-daily-1", periodKey: "daily:2026-06-05" },
+        { sourceId: "legacy-weekly-valid", taskId: "task-weekly-1", periodKey: "weekly:2026-06-03" }
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
   it("initializes an empty owner board within the first-load statement budget", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
