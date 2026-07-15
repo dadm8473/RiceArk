@@ -232,6 +232,8 @@ Use a parameterized route test over table settings/delete/layout/transpose, char
 
 Add character tests proving that display-name/details/delete/refresh bump every distinct sheet whose visible axis item references that character, while a character not present on a board returns an empty `sheets` array.
 
+Replace the existing share start/stop assertions: sharing metadata is loaded by the sharing overview and does not change sheet navigation or rendered sheet content. Starting or stopping a share must execute only the guarded share mutation and must not increment `board_manifest_versions` or `sheets.content_version`.
+
 - [ ] **Step 2: Run the focused tests and confirm failure**
 
 Run: `pnpm test apps/api/src/db/board.test.ts apps/api/src/db/characters.test.ts apps/api/src/routes/board.test.ts apps/api/src/routes/characters.test.ts`
@@ -279,6 +281,8 @@ For local character cooldown `429`, set `Retry-After` before throwing:
 c.header("Retry-After", String(updated.retryAfterSeconds));
 throw new ApiError(429, "character_refresh_rate_limited", message);
 ```
+
+Share start/stop responses remain on their existing compatibility contract and do not include board version metadata because those mutations no longer change either version domain.
 
 - [ ] **Step 5: Run focused tests**
 
