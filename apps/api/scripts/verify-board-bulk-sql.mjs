@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
@@ -12,6 +12,7 @@ const SHEET_ID = "sheet-1";
 const TABLE_ID = "table-1";
 const CHARACTER_ID = "character-1";
 const CHARACTER_REFRESH_GUARD_PATH = "$[riceark_character_refresh_exact_set_guard_constraint_v1";
+const CHARACTER_REFRESH_GUARD_SIGNATURE = `bad JSON path: '${CHARACTER_REFRESH_GUARD_PATH}'`;
 const SUCCESS_LINE = "board bulk SQL verified: cells=2, completed=2, version=1";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
@@ -19,6 +20,7 @@ const apiDirectory = dirname(scriptDirectory);
 const migrationsDirectory = join(apiDirectory, "migrations");
 const require = createRequire(import.meta.url);
 const wranglerBin = require.resolve("wrangler/bin/wrangler.js");
+let sqlFileCounter = 0;
 
 function sqlLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
@@ -28,6 +30,9 @@ function sqlBatch(...statements) {
   return `${statements.join(";\n")};`;
 }
 
+// Mirrors prepareBoardCompletionWriteStatements/prepareBoardCellStateWriteStatements (boardBulkSql.ts),
+// prepareBoardAxisOrderUpdate (board.ts), and applyCharacterRefreshProfiles/refreshCharactersFromLostArk
+// (characters.ts); source drift weakens this verifier.
 function boardInputCte(payloadJson) {
   return `input AS (
     SELECT CAST(key AS INTEGER) AS ordinal,
@@ -346,7 +351,7 @@ function jsonDocuments(value) {
 }
 
 function isD1ResultPayload(value) {
-  return Array.isArray(value) && value.every((entry) => (
+  return Array.isArray(value) && value.length > 0 && value.every((entry) => (
     entry !== null && typeof entry === "object" && "success" in entry
   ));
 }
@@ -409,7 +414,15 @@ async function applyMigrations(stateDirectory) {
   }
 }
 
+async function writeSqlBatchFile(stateDirectory, sql) {
+  sqlFileCounter += 1;
+  const sqlFile = join(stateDirectory, `batch-${String(sqlFileCounter).padStart(3, "0")}.sql`);
+  await writeFile(sqlFile, sql, "utf8");
+  return sqlFile;
+}
+
 async function executeSql(stateDirectory, sql, label) {
+  const sqlFile = await writeSqlBatchFile(stateDirectory, sql);
   const result = await runWrangler([
     "d1",
     "execute",
@@ -417,8 +430,8 @@ async function executeSql(stateDirectory, sql, label) {
     "--local",
     "--persist-to",
     stateDirectory,
-    "--command",
-    sql,
+    "--file",
+    sqlFile,
     "--json",
     "--yes"
   ]);
@@ -437,6 +450,7 @@ async function executeSql(stateDirectory, sql, label) {
 }
 
 async function expectSqlFailure(stateDirectory, sql, label, expectedFragments) {
+  const sqlFile = await writeSqlBatchFile(stateDirectory, sql);
   const result = await runWrangler([
     "d1",
     "execute",
@@ -444,8 +458,8 @@ async function expectSqlFailure(stateDirectory, sql, label, expectedFragments) {
     "--local",
     "--persist-to",
     stateDirectory,
-    "--command",
-    sql,
+    "--file",
+    sqlFile,
     "--json",
     "--yes"
   ]);
@@ -690,19 +704,32 @@ async function verifyBoardBulkSql(stateDirectory) {
   assert.deepEqual(rowsAt(mainResults, 10, "Character exact-set update"), [{ id: CHARACTER_ID }]);
   assert.deepEqual(rowsAt(mainResults, 11, "Character exact-set guard"), []);
 
-  const duplicateProfilePayload = JSON.stringify([
-    { id: CHARACTER_ID, className: "InvalidOne", itemLevel: "1", combatPower: null },
-    { id: CHARACTER_ID, className: "InvalidTwo", itemLevel: "2", combatPower: null }
-  ]);
+  const partialProfileRows = [
+    { id: CHARACTER_ID, className: "MustRollback", itemLevel: "1", combatPower: null },
+    { id: "missing-character", className: "Missing", itemLevel: "2", combatPower: null }
+  ];
+  assert.equal(partialProfileRows.length, 2);
+  assert.equal(new Set(partialProfileRows.map((row) => row.id)).size, 2);
+  const partialProfilePayload = JSON.stringify(partialProfileRows);
+  const partialUpdateProbe = await executeSql(
+    stateDirectory,
+    sqlBatch(
+      characterProfileUpdateSql(partialProfilePayload),
+      characterProfileUpdateSql(profilePayload)
+    ),
+    "Partial character update probe and restore"
+  );
+  assert.deepEqual(rowsAt(partialUpdateProbe, 0, "Partial character update probe"), [{ id: CHARACTER_ID }]);
+  assert.deepEqual(rowsAt(partialUpdateProbe, 1, "Character profile restore"), [{ id: CHARACTER_ID }]);
   await expectSqlFailure(
     stateDirectory,
     sqlBatch(
       `UPDATE sheets SET name = 'exact-set-rollback-marker' WHERE id = ${sqlLiteral(SHEET_ID)} RETURNING id`,
-      characterProfileUpdateSql(duplicateProfilePayload),
-      characterExactSetGuardSql(duplicateProfilePayload)
+      characterProfileUpdateSql(partialProfilePayload),
+      characterExactSetGuardSql(partialProfilePayload)
     ),
     "Character changes exact-set guard batch",
-    ["bad JSON path", CHARACTER_REFRESH_GUARD_PATH]
+    [CHARACTER_REFRESH_GUARD_SIGNATURE]
   );
 
   const claimIds = JSON.stringify([CHARACTER_ID]);
