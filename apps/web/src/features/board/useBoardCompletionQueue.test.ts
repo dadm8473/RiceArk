@@ -120,7 +120,7 @@ describe("board completion reliable queue", () => {
       onPermanentFailure: (outcome) => rejected.push(outcome.rejectedKeys)
     });
     validQueue.enqueue(completion(1));
-    await validQueue.flush();
+    await expect(validQueue.flush()).rejects.toMatchObject({ reason: "rejected" });
     validQueue.dispose();
 
     const fallbackQueue = createBoardCompletionQueue({
@@ -130,7 +130,7 @@ describe("board completion reliable queue", () => {
       onPermanentFailure: (outcome) => rejected.push(outcome.rejectedKeys)
     });
     fallbackQueue.enqueueMany([completion(3), completion(4)]);
-    await fallbackQueue.flush();
+    await expect(fallbackQueue.flush()).rejects.toMatchObject({ reason: "rejected" });
 
     expect(rejected).toEqual([
       [validKey],

@@ -315,7 +315,7 @@ describe("BoardWriteCoordinator", () => {
 
     expect(coordinator.getVisibleData()?.completions).toEqual([]);
     expect(coordinator.getAuthoritativeBase()?.completions).toEqual([]);
-    expect(coordinator.getSnapshot()).toMatchObject({ hasPendingWrites: false, pendingWriteError: "Locked cell" });
+    expect(coordinator.getSnapshot()).toMatchObject({ hasPendingWrites: true, pendingWriteError: "Locked cell" });
     coordinator.discardAndDispose();
   });
 
@@ -351,7 +351,7 @@ describe("BoardWriteCoordinator", () => {
     coordinator.discardAndDispose();
   });
 
-  it("keeps both permanent queue errors until explicit retry even when one queue later succeeds", async () => {
+  it("keeps both permanent queue errors until their retained intents are acknowledged", async () => {
     let completionFails = true;
     const patch = vi.fn(async (path: string) => {
       if (path === "/api/board/completions" && completionFails) {
@@ -396,7 +396,8 @@ describe("BoardWriteCoordinator", () => {
     expect(coordinator.getSnapshot().pendingWriteError).toContain("Completion failed");
     expect(coordinator.getSnapshot().pendingWriteError).toContain("Cell state failed");
     coordinator.retryPendingWrites();
-    expect(coordinator.getSnapshot().pendingWriteError).toBeNull();
+    expect(coordinator.getSnapshot().pendingWriteError).toContain("Completion failed");
+    expect(coordinator.getSnapshot().pendingWriteError).toContain("Cell state failed");
     coordinator.discardAndDispose();
   });
 
@@ -418,6 +419,7 @@ describe("BoardWriteCoordinator", () => {
           periodKey: rejectedPatch.periodKey
         }]
       }))
+      .mockResolvedValueOnce({ ok: true as const, versions: { sheets: [] } })
       .mockResolvedValueOnce({ ok: true as const, versions: { sheets: [] } });
     const coordinator = createBoardWriteCoordinator("user-1", { attachLifecycle: false, patch });
     coordinator.setAuthoritativeBase(emptyBoard);
@@ -428,7 +430,7 @@ describe("BoardWriteCoordinator", () => {
 
     expect(patch).toHaveBeenCalledTimes(2);
     expect(coordinator.getSnapshot()).toMatchObject({
-      hasPendingWrites: false,
+      hasPendingWrites: true,
       pendingWriteError: "Locked row"
     });
     expect(coordinator.getAuthoritativeBase()?.completions).toEqual([
@@ -436,8 +438,42 @@ describe("BoardWriteCoordinator", () => {
     ]);
 
     coordinator.retryPendingWrites();
+    expect(coordinator.getSnapshot()).toMatchObject({
+      hasPendingWrites: true,
+      pendingWriteError: "Locked row"
+    });
     await expect(coordinator.flushPendingWrites()).resolves.toBeUndefined();
+    expect(patch).toHaveBeenCalledTimes(3);
+    expect(patch.mock.calls[2]?.[1]).toEqual({ patches: [rejectedPatch] });
     expect(coordinator.getSnapshot().pendingWriteError).toBeNull();
+    coordinator.discardAndDispose();
+  });
+
+  it("keeps a permanently rejected retry blocked after making another network request", async () => {
+    const rejectedPatch = {
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      periodKey: "daily:2026-07-15",
+      completed: true
+    };
+    const patch = vi.fn(async (_path: string, _body: { patches: unknown[] }) => {
+      throw new ApiClientError(422, "invalid_completion", "Still locked");
+    });
+    const coordinator = createBoardWriteCoordinator("user-1", { attachLifecycle: false, patch });
+    coordinator.setAuthoritativeBase(emptyBoard);
+    coordinator.enqueueCompletion(rejectedPatch);
+    await expect(coordinator.flushPendingWrites()).rejects.toMatchObject({ reason: "rejected" });
+
+    coordinator.retryPendingWrites();
+    await expect(coordinator.flushPendingWrites()).rejects.toMatchObject({ reason: "rejected" });
+
+    expect(patch).toHaveBeenCalledTimes(2);
+    expect(patch.mock.calls[1]?.[1]).toEqual({ patches: [rejectedPatch] });
+    expect(coordinator.getSnapshot()).toMatchObject({
+      hasPendingWrites: true,
+      pendingWriteError: "Still locked"
+    });
     coordinator.discardAndDispose();
   });
 

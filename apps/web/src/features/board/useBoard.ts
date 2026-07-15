@@ -105,6 +105,7 @@ interface BoardQueueControl<T> {
   discard: () => T[];
   dispose: () => T[];
   getPendingSnapshot: () => T[];
+  getRejectedSnapshot: () => T[];
 }
 
 interface BoardWriteCoordinatorOptions {
@@ -182,7 +183,11 @@ export function createBoardWriteCoordinator(
   };
   const getSnapshot = (): BoardWriteSnapshot => ({
     data: getVisibleData(),
-    hasPendingWrites: pendingCompletions.length > 0 || pendingCellStates.length > 0,
+    hasPendingWrites:
+      pendingCompletions.length > 0 ||
+      pendingCellStates.length > 0 ||
+      completionQueue.getRejectedSnapshot().length > 0 ||
+      cellStateQueue.getRejectedSnapshot().length > 0,
     pendingWriteError: getPendingWriteError()
   });
   const emit = () => {
@@ -227,6 +232,9 @@ export function createBoardWriteCoordinator(
         };
       }
       completionWriteError = null;
+      if (completionQueue.getRejectedSnapshot().length === 0) {
+        completionPermanentWriteError = null;
+      }
       emit();
     },
     onPermanentFailure: (outcome) => reportCompletionPermanentFailure(outcome.message),
@@ -251,6 +259,9 @@ export function createBoardWriteCoordinator(
         };
       }
       cellStateWriteError = null;
+      if (cellStateQueue.getRejectedSnapshot().length === 0) {
+        cellStatePermanentWriteError = null;
+      }
       emit();
     },
     onPermanentFailure: (outcome) => reportCellStatePermanentFailure(outcome.message),
@@ -290,10 +301,16 @@ export function createBoardWriteCoordinator(
     flushPendingWrites: async () => {
       const results = await Promise.allSettled([completionQueue.flush(), cellStateQueue.flush()]);
       const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-      if (results[0].status === "rejected") {
+      if (
+        results[0].status === "rejected" &&
+        !(results[0].reason instanceof ReliablePatchQueueFlushError && results[0].reason.reason === "rejected")
+      ) {
         completionWriteError = formatPendingWriteError(results[0].reason);
       }
-      if (results[1].status === "rejected") {
+      if (
+        results[1].status === "rejected" &&
+        !(results[1].reason instanceof ReliablePatchQueueFlushError && results[1].reason.reason === "rejected")
+      ) {
         cellStateWriteError = formatPendingWriteError(results[1].reason);
       }
       if (failure) {
@@ -311,9 +328,7 @@ export function createBoardWriteCoordinator(
     },
     retryPendingWrites: () => {
       completionWriteError = null;
-      completionPermanentWriteError = null;
       cellStateWriteError = null;
-      cellStatePermanentWriteError = null;
       completionQueue.retry();
       cellStateQueue.retry();
       emit();

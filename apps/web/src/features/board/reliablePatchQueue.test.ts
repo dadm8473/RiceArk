@@ -242,7 +242,7 @@ describe("ReliablePatchQueue", () => {
         { key: "good", value: false }
       ]);
 
-      await expect(queue.flush()).resolves.toBeUndefined();
+      await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
       expect(maximumActiveSends).toBe(1);
       expect(send).toHaveBeenCalledTimes(1);
       expect(queue.getPendingSnapshot()).toEqual([]);
@@ -318,7 +318,7 @@ describe("ReliablePatchQueue", () => {
     queue.enqueue({ key: "huge", value: true, payload: "x".repeat(PATCH_QUEUE_MAX_BODY_BYTES) });
 
     await vi.advanceTimersByTimeAsync(800);
-    await queue.flush();
+    await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
 
     expect(send).not.toHaveBeenCalled();
     expect(permanentFailures).toEqual([
@@ -894,7 +894,7 @@ describe("ReliablePatchQueue", () => {
     ]);
 
     queue.retry();
-    await queue.flush();
+    await expect(queue.flush()).resolves.toBeUndefined();
     expect(send).toHaveBeenCalledTimes(2);
     expect(queue.getPendingSnapshot()).toEqual([]);
   });
@@ -984,6 +984,78 @@ describe("ReliablePatchQueue", () => {
     expect(pendingChanges.at(-1)).toEqual([]);
   });
 
+  it("retains rejected intent outside the optimistic overlay and resends it on explicit retry", async () => {
+    const rejectedPatch = { key: "a", value: true };
+    const send = vi
+      .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()
+      .mockResolvedValueOnce({ type: "rejected", rejectedKeys: ["a"], message: "Locked" })
+      .mockImplementation(async (patches) => accepted(patches));
+    const { queue } = makeQueue({ send });
+    queue.enqueue(rejectedPatch);
+
+    await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
+    expect(queue.getPendingSnapshot()).toEqual([]);
+    expect(queue.getRejectedSnapshot()).toEqual([rejectedPatch]);
+
+    queue.retry();
+    await expect(queue.flush()).resolves.toBeUndefined();
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]?.[0]).toEqual([rejectedPatch]);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+    expect(queue.getRejectedSnapshot()).toEqual([]);
+  });
+
+  it("keeps a failed permanent retry retained and blocks flush without another network request", async () => {
+    const rejectedPatch = { key: "a", value: true };
+    const send = vi.fn(async () => ({
+      type: "rejected" as const,
+      rejectedKeys: ["a"],
+      message: "Still locked"
+    }));
+    const { queue } = makeQueue({ send });
+    queue.enqueue(rejectedPatch);
+
+    await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
+    queue.retry();
+    await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
+    await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(queue.getRejectedSnapshot()).toEqual([rejectedPatch]);
+  });
+
+  it("keeps a rejected generation latched until a newer intent is acknowledged", async () => {
+    const retryAttempt = deferred<SendOutcome<string>>();
+    const newerAttempt = deferred<SendOutcome<string>>();
+    const rejectedPatch = { key: "cell", value: true };
+    const newerPatch = { key: "cell", value: false };
+    const send = vi
+      .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()
+      .mockResolvedValueOnce({ type: "rejected", rejectedKeys: ["cell"], message: "Invalid" })
+      .mockImplementationOnce(async () => retryAttempt.promise)
+      .mockImplementationOnce(async () => newerAttempt.promise);
+    const { queue } = makeQueue({ send });
+    queue.enqueue(rejectedPatch);
+    await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
+
+    queue.retry();
+    await vi.advanceTimersByTimeAsync(0);
+    queue.enqueue(newerPatch);
+    retryAttempt.resolve({ type: "accepted", acknowledgedKeys: ["cell"] });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(send.mock.calls[2]?.[0]).toEqual([newerPatch]);
+    expect(queue.getRejectedSnapshot()).toEqual([rejectedPatch]);
+    expect(queue.getPendingSnapshot()).toEqual([newerPatch]);
+
+    newerAttempt.resolve({ type: "accepted", acknowledgedKeys: ["cell"] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(queue.getRejectedSnapshot()).toEqual([]);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+  });
+
   it("continues remaining work when onPermanentFailure throws", async () => {
     const send = vi
       .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()
@@ -1000,7 +1072,7 @@ describe("ReliablePatchQueue", () => {
       { key: "b", value: false }
     ]);
 
-    await expect(queue.flush()).resolves.toBeUndefined();
+    await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
     expect(send).toHaveBeenCalledTimes(2);
     expect(queue.getPendingSnapshot()).toEqual([]);
   });
@@ -1054,7 +1126,7 @@ describe("ReliablePatchQueue", () => {
     expect(authPauses).toHaveLength(1);
 
     queue.retry();
-    await queue.flush();
+    await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
     expect(permanentFailures).toEqual([
       { type: "rejected", rejectedKeys: ["a"], message: "Invalid patch" }
     ]);
@@ -1083,7 +1155,11 @@ describe("ReliablePatchQueue", () => {
       );
       await Promise.resolve();
       if (firstOutcome === "retry") await vi.advanceTimersByTimeAsync(1_000);
-      await queue.flush();
+      if (firstOutcome === "rejected") {
+        await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
+      } else {
+        await expect(queue.flush()).resolves.toBeUndefined();
+      }
 
       expect(sent).toEqual([
         [{ key: "cell", value: true }],
@@ -1177,7 +1253,7 @@ describe("ReliablePatchQueue", () => {
     const key = ["table-1", "row-1", "column-1"] as const;
     queue.enqueue({ key, value: true });
 
-    await expect(queue.flush()).resolves.toBeUndefined();
+    await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
     expect(queue.getPendingSnapshot()).toEqual([]);
     expect(permanentFailures).toEqual([
       { type: "rejected", rejectedKeys: [key], message: "Locked" }
@@ -1305,7 +1381,7 @@ describe("ReliablePatchQueue", () => {
       { key: "good", value: false }
     ]);
 
-    await expect(queue.flush()).resolves.toBeUndefined();
+    await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
     expect(permanentFailures).toEqual([
       {
         type: "rejected",

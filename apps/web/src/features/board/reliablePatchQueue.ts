@@ -60,6 +60,11 @@ interface PendingEntry<T, K> {
   serializedValue: string | null;
 }
 
+interface RejectedEntry<T, K> {
+  entry: PendingEntry<T, K>;
+  message: string;
+}
+
 interface SendChunk<T, K> {
   entries: Array<PendingEntry<T, K>>;
   oversized: PendingEntry<T, K> | null;
@@ -180,6 +185,7 @@ export function classifyQueueError(error: unknown): QueueErrorClassification {
 
 export class ReliablePatchQueue<T, K> {
   private readonly pending = new Map<string, PendingEntry<T, K>>();
+  private readonly rejected = new Map<string, RejectedEntry<T, K>>();
   private readonly eventTarget: EventTarget | null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -188,10 +194,12 @@ export class ReliablePatchQueue<T, K> {
   private generation = 0;
   private transportEpoch = 0;
   private lifecycleEpoch = 0;
+  private rejectionRevision = 0;
   private retryIndex = 0;
   private authPaused = false;
   private lastAuthError: ApiClientError | null = null;
   private immediateWakeRequested = false;
+  private reportingPermanentFailure = false;
   private disposed = false;
 
   private readonly handleImmediateRetry = () => {
@@ -229,11 +237,18 @@ export class ReliablePatchQueue<T, K> {
   }
 
   async flush(): Promise<void> {
-    if (this.pending.size === 0) return;
+    const rejectionRevision = this.rejectionRevision;
+    if (this.pending.size === 0) {
+      if (this.rejected.size > 0) throw this.rejectedFlushError();
+      return;
+    }
     if (this.disposed) throw new ReliablePatchQueueFlushError("disposed");
     if (this.authPaused) throw new ReliablePatchQueueFlushError("auth", this.lastAuthError);
 
     const result = await this.startWorker();
+    if (this.rejectionRevision !== rejectionRevision || this.rejected.size > 0) {
+      throw this.rejectedFlushError();
+    }
     if (this.pending.size > 0) {
       throw new ReliablePatchQueueFlushError(result.reason ?? "non-progress", result.cause);
     }
@@ -241,8 +256,17 @@ export class ReliablePatchQueue<T, K> {
 
   retry(): void {
     if (this.disposed) return;
+    if (this.reportingPermanentFailure) return;
     this.authPaused = false;
     this.lastAuthError = null;
+    let restoredRejectedIntent = false;
+    for (const { entry } of this.rejected.values()) {
+      const current = this.pending.get(entry.keyId);
+      if (current && current.generation > entry.generation) continue;
+      this.pending.set(entry.keyId, entry);
+      restoredRejectedIntent = true;
+    }
+    if (restoredRejectedIntent) this.notifyPendingChange();
     if (this.worker !== null || this.activeTransport !== null) {
       this.immediateWakeRequested = true;
       return;
@@ -255,12 +279,20 @@ export class ReliablePatchQueue<T, K> {
     return Array.from(this.pending.values(), ({ patch }) => patch);
   }
 
+  getRejectedSnapshot(): T[] {
+    return Array.from(this.rejected.values(), ({ entry }) => entry.patch);
+  }
+
   discard(): T[] {
-    const discarded = this.getPendingSnapshot();
+    const discardedByKey = new Map<string, T>();
+    for (const { entry } of this.rejected.values()) discardedByKey.set(entry.keyId, entry.patch);
+    for (const entry of this.pending.values()) discardedByKey.set(entry.keyId, entry.patch);
+    const discarded = [...discardedByKey.values()];
     this.lifecycleEpoch += 1;
     this.activeTransport?.controller.abort(new DOMException("Queue discarded", "AbortError"));
     this.clearTimers();
     this.pending.clear();
+    this.rejected.clear();
     this.authPaused = false;
     this.lastAuthError = null;
     this.retryIndex = 0;
@@ -270,7 +302,10 @@ export class ReliablePatchQueue<T, K> {
   }
 
   dispose(): T[] {
-    const snapshot = this.getPendingSnapshot();
+    const snapshotByKey = new Map<string, T>();
+    for (const { entry } of this.rejected.values()) snapshotByKey.set(entry.keyId, entry.patch);
+    for (const entry of this.pending.values()) snapshotByKey.set(entry.keyId, entry.patch);
+    const snapshot = [...snapshotByKey.values()];
     if (this.disposed) return snapshot;
 
     this.disposed = true;
@@ -460,6 +495,7 @@ export class ReliablePatchQueue<T, K> {
           this.scheduleRetry(null);
           return { continue: false, result: this.stopResult("non-progress", outcome) };
         }
+        this.reconcileRejectedAcknowledgments(acknowledgedEntries);
         this.invokeObserver(
           this.options.onAccepted,
           acknowledgedEntries.map(({ patch }) => patch),
@@ -551,9 +587,31 @@ export class ReliablePatchQueue<T, K> {
   }
 
   private rejectEntries(entries: Array<PendingEntry<T, K>>, rejectedKeys: K[], message: string): number {
+    for (const entry of entries) {
+      const current = this.rejected.get(entry.keyId);
+      if (!current || entry.generation >= current.entry.generation) {
+        this.rejected.set(entry.keyId, { entry, message });
+      }
+    }
+    this.rejectionRevision += 1;
     const reconciledCount = this.reconcileEntries(entries);
-    this.invokeObserver(this.options.onPermanentFailure, { type: "rejected", rejectedKeys, message });
+    this.reportingPermanentFailure = true;
+    try {
+      this.invokeObserver(this.options.onPermanentFailure, { type: "rejected", rejectedKeys, message });
+    } finally {
+      this.reportingPermanentFailure = false;
+    }
     return reconciledCount;
+  }
+
+  private reconcileRejectedAcknowledgments(entries: Array<PendingEntry<T, K>>): void {
+    for (const sent of entries) {
+      const rejected = this.rejected.get(sent.keyId);
+      if (!rejected || sent.generation < rejected.entry.generation) continue;
+      const current = this.pending.get(sent.keyId);
+      if (current && current.generation > sent.generation) continue;
+      this.rejected.delete(sent.keyId);
+    }
   }
 
   private reconcileEntries(entries: Array<PendingEntry<T, K>>): number {
@@ -668,6 +726,14 @@ export class ReliablePatchQueue<T, K> {
 
   private stopResult(reason: ReliablePatchQueueFlushErrorReason, cause?: unknown): DrainResult {
     return { reason, cause };
+  }
+
+  private rejectedFlushError(): ReliablePatchQueueFlushError {
+    const messages = [...new Set(Array.from(this.rejected.values(), ({ message }) => message))];
+    return new ReliablePatchQueueFlushError(
+      "rejected",
+      messages.length > 0 ? new Error(messages.join(" ")) : undefined
+    );
   }
 
   private clearTimers(): void {
