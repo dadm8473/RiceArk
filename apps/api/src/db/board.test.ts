@@ -1699,7 +1699,7 @@ describe("board db defaults", () => {
             },
             async first() {
               if (sql.includes("SELECT checklist_orientation")) return null;
-              if (sql.includes("FROM sheets") && sql.includes("is_default = 1")) return { id: "sheet-1" };
+              if (sql.includes("SELECT id FROM sheets WHERE user_id = ? LIMIT 1")) return { id: "sheet-1" };
               if (sql.includes("ORDER BY sort_order LIMIT 1") && sql.includes("FROM board_tables")) return null;
               return null;
             },
@@ -1781,7 +1781,7 @@ describe("board db defaults", () => {
             },
             async first() {
               if (sql.includes("SELECT checklist_orientation")) return null;
-              if (sql.includes("FROM sheets") && sql.includes("is_default = 1")) return { id: "sheet-1" };
+              if (sql.includes("SELECT id FROM sheets WHERE user_id = ? LIMIT 1")) return { id: "sheet-1" };
               if (sql.includes("ORDER BY sort_order LIMIT 1") && sql.includes("FROM board_tables")) return null;
               if (sql.includes("SELECT id FROM sheets WHERE id = ? AND user_id = ?")) return { id: "sheet-1" };
               if (sql.includes("COALESCE(MAX(sort_order), -10) AS maxSortOrder")) return { maxSortOrder: -10, tableCount: 0 };
@@ -1837,7 +1837,7 @@ describe("board db defaults", () => {
             },
             async first() {
               if (sql.includes("SELECT checklist_orientation")) return null;
-              if (sql.includes("FROM sheets") && sql.includes("is_default = 1")) return { id: "sheet-1" };
+              if (sql.includes("SELECT id FROM sheets WHERE user_id = ? LIMIT 1")) return { id: "sheet-1" };
               if (sql.includes("ORDER BY sort_order LIMIT 1") && sql.includes("FROM board_tables")) return null;
               if (sql.includes("SELECT id FROM sheets WHERE id = ? AND user_id = ?")) return { id: "sheet-1" };
               if (sql.includes("COALESCE(MAX(sort_order), -10) AS maxSortOrder")) return { maxSortOrder: 70, tableCount: 8 };

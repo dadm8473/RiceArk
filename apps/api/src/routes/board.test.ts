@@ -1482,6 +1482,20 @@ describe("board share routes", () => {
               return null;
             },
             async all() {
+              if (sql.includes("WITH manifest AS") && sql.includes("LEFT JOIN sheets")) {
+                return {
+                  results: [
+                    {
+                      manifest_version: 0,
+                      id: "sheet-1",
+                      name: "숙제",
+                      sort_order: 0,
+                      is_default: 1,
+                      version: 0
+                    }
+                  ]
+                };
+              }
               if (sql.includes("FROM board_shares") && sql.includes("JOIN sheets")) {
                 return {
                   results: [{ sheet_id: "sheet-1", sheet_name: "숙제", share_id: "AbCdEfGhIjKlMnOpQrStUv", created_at: "2026-06-05 00:00:00" }]

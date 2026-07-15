@@ -108,6 +108,8 @@ const DEFAULT_BOARD_DISPLAY_SETTINGS: BoardDisplaySettings = {
   show_combat_power: 0
 };
 
+const MAX_BOARD_SNAPSHOT_ATTEMPTS = 3;
+
 const BOARD_MANIFEST_SQL = `WITH manifest AS (
   SELECT COALESCE(
     (SELECT version FROM board_manifest_versions WHERE user_id = ?1),
@@ -164,6 +166,45 @@ function selectOwnedSheet(
   return requested ?? sheets.find((sheet) => sheet.is_default === 1) ?? sheets[0] ?? null;
 }
 
+function sameBoardManifest(left: BoardSheetManifest, right: BoardSheetManifest): boolean {
+  return (
+    left.version === right.version &&
+    left.sheets.length === right.sheets.length &&
+    left.sheets.every((sheet, index) => {
+      const other = right.sheets[index];
+      return (
+        other !== undefined &&
+        sheet.id === other.id &&
+        sheet.name === other.name &&
+        sheet.sort_order === other.sort_order &&
+        sheet.is_default === other.is_default &&
+        sheet.version === other.version
+      );
+    })
+  );
+}
+
+function sameBoardSheetMetadata(left: BoardSheetPayloadItem, right: BoardSheetPayloadItem): boolean {
+  return (
+    left.id === right.id &&
+    left.name === right.name &&
+    left.sort_order === right.sort_order &&
+    left.is_default === right.is_default &&
+    left.content_version === right.content_version
+  );
+}
+
+function manifestItemMatchesSheet(item: BoardSheetManifestItem | undefined, sheet: BoardSheetPayloadItem): boolean {
+  return (
+    item !== undefined &&
+    item.id === sheet.id &&
+    item.name === sheet.name &&
+    item.sort_order === sheet.sort_order &&
+    item.is_default === sheet.is_default &&
+    item.version === sheet.content_version
+  );
+}
+
 async function loadBoardDisplaySettings(env: Env, userId: string): Promise<BoardDisplaySettings> {
   const settings = await env.DB.prepare(
     `SELECT show_display_name,
@@ -179,19 +220,27 @@ async function loadBoardDisplaySettings(env: Env, userId: string): Promise<Board
   return settings ?? { ...DEFAULT_BOARD_DISPLAY_SETTINGS };
 }
 
-export async function loadBoardSheet(
+async function loadOwnedBoardSheetMetadata(
   env: Env,
   userId: string,
-  sheetId: string,
-  now = new Date()
-): Promise<BoardSheetPayload | null> {
-  const sheet = await env.DB.prepare(
+  sheetId: string
+): Promise<BoardSheetPayloadItem | null> {
+  return env.DB.prepare(
     `SELECT id, name, sort_order, is_default, content_version
      FROM sheets
      WHERE id = ? AND user_id = ?`
   )
     .bind(sheetId, userId)
     .first<BoardSheetPayloadItem>();
+}
+
+async function loadBoardSheetAttempt(
+  env: Env,
+  userId: string,
+  sheetId: string,
+  now: Date
+): Promise<BoardSheetPayload | null> {
+  const sheet = await loadOwnedBoardSheetMetadata(env, userId, sheetId);
   if (!sheet) return null;
 
   const [tables, notes, axisItems, cellStates] = await Promise.all([
@@ -355,25 +404,58 @@ export async function loadBoardSheet(
   };
 }
 
+export async function loadBoardSheet(
+  env: Env,
+  userId: string,
+  sheetId: string,
+  now = new Date()
+): Promise<BoardSheetPayload | null> {
+  for (let attempt = 0; attempt < MAX_BOARD_SNAPSHOT_ATTEMPTS; attempt += 1) {
+    const payload = await loadBoardSheetAttempt(env, userId, sheetId, now);
+    if (!payload) return null;
+
+    const fence = await loadOwnedBoardSheetMetadata(env, userId, sheetId);
+    if (!fence) return null;
+    if (sameBoardSheetMetadata(payload.sheet, fence)) return payload;
+  }
+
+  throw new Error("Unable to read a stable board sheet snapshot");
+}
+
 export async function loadBoardBootstrap(
   env: Env,
   userId: string,
   requestedSheetId?: string
 ): Promise<BoardBootstrapPayload> {
-  let manifest = await loadBoardManifest(env, userId);
-  if (manifest.sheets.length === 0) {
-    await ensureDefaultBoard(env, userId);
-    manifest = await loadBoardManifest(env, userId);
+  const now = new Date();
+  let settingsPromise: Promise<BoardDisplaySettings> | null = null;
+  let selectedAnySheet = false;
+
+  for (let attempt = 0; attempt < MAX_BOARD_SNAPSHOT_ATTEMPTS; attempt += 1) {
+    let manifest = await loadBoardManifest(env, userId);
+    if (manifest.sheets.length === 0) {
+      await ensureDefaultBoard(env, userId);
+      manifest = await loadBoardManifest(env, userId);
+    }
+
+    const selected = selectOwnedSheet(manifest.sheets, requestedSheetId);
+    if (!selected) continue;
+    selectedAnySheet = true;
+    settingsPromise ??= loadBoardDisplaySettings(env, userId);
+
+    const [activeSheet, settings] = await Promise.all([
+      loadBoardSheetAttempt(env, userId, selected.id, now),
+      settingsPromise
+    ]);
+    const fence = await loadBoardManifest(env, userId);
+    if (!activeSheet) continue;
+
+    const fencedActiveSheet = fence.sheets.find((sheet) => sheet.id === activeSheet.sheet.id);
+    if (sameBoardManifest(manifest, fence) && manifestItemMatchesSheet(fencedActiveSheet, activeSheet.sheet)) {
+      return { userId, settings, manifest: fence, activeSheet };
+    }
   }
 
-  const selected = selectOwnedSheet(manifest.sheets, requestedSheetId);
-  if (!selected) throw new Error("Default board initialization produced no sheet");
-
-  const [activeSheet, settings] = await Promise.all([
-    loadBoardSheet(env, userId, selected.id),
-    loadBoardDisplaySettings(env, userId)
-  ]);
-  if (!activeSheet) throw new Error("Selected board sheet no longer exists");
-
-  return { userId, settings, manifest, activeSheet };
+  if (!selectedAnySheet) throw new Error("Default board initialization produced no sheet");
+  throw new Error("Unable to read a stable board bootstrap snapshot");
 }

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { Env } from "../env";
@@ -25,8 +28,25 @@ interface SqliteD1Statement {
   run(): Promise<{ success: true; meta: { changes: number }; results: unknown[] }>;
 }
 
-function createBoardReadDatabase(): DatabaseSync {
-  const database = new DatabaseSync(":memory:");
+interface StatementExecution {
+  statement: CapturedStatement;
+  method: "first" | "all" | "run";
+  executionIndex: number;
+}
+
+interface BatchStatementExecution {
+  statement: CapturedStatement;
+  batchIndex: number;
+  statementIndex: number;
+}
+
+interface SqliteReadEnvOptions {
+  afterExecute?: (execution: StatementExecution) => void | Promise<void>;
+  afterBatchStatement?: (execution: BatchStatementExecution) => void;
+}
+
+function createBoardReadDatabase(path = ":memory:"): DatabaseSync {
+  const database = new DatabaseSync(path);
   database.exec(`
     CREATE TABLE users (
       id TEXT PRIMARY KEY,
@@ -179,7 +199,8 @@ function createBoardReadDatabase(): DatabaseSync {
       column_item_id TEXT NOT NULL,
       period_key TEXT NOT NULL,
       completed INTEGER NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (user_id, table_id, row_item_id, column_item_id, period_key)
     );
     CREATE TABLE completions (
       id TEXT PRIMARY KEY,
@@ -194,8 +215,21 @@ function createBoardReadDatabase(): DatabaseSync {
   return database;
 }
 
-function createSqliteReadEnv(database: DatabaseSync): { env: Env; statements: CapturedStatement[] } {
+function createSqliteReadEnv(
+  database: DatabaseSync,
+  options: SqliteReadEnvOptions = {}
+): { env: Env; statements: CapturedStatement[] } {
   const statements: CapturedStatement[] = [];
+  let executionIndex = 0;
+  let batchIndex = 0;
+
+  const afterExecute = async (
+    statement: CapturedStatement,
+    method: StatementExecution["method"]
+  ): Promise<void> => {
+    await options.afterExecute?.({ statement, method, executionIndex });
+    executionIndex += 1;
+  };
 
   const createStatement = (captured: CapturedStatement): SqliteD1Statement => ({
     captured,
@@ -204,13 +238,18 @@ function createSqliteReadEnv(database: DatabaseSync): { env: Env; statements: Ca
       return createStatement(captured);
     },
     async first<T>() {
-      return (database.prepare(captured.sql).get(...captured.values) as T | undefined) ?? null;
+      const result = (database.prepare(captured.sql).get(...captured.values) as T | undefined) ?? null;
+      await afterExecute(captured, "first");
+      return result;
     },
     async all<T>() {
-      return { results: database.prepare(captured.sql).all(...captured.values) as T[] };
+      const results = database.prepare(captured.sql).all(...captured.values) as T[];
+      await afterExecute(captured, "all");
+      return { results };
     },
     async run() {
       const result = database.prepare(captured.sql).run(...captured.values);
+      await afterExecute(captured, "run");
       return { success: true, meta: { changes: Number(result.changes) }, results: [] };
     }
   });
@@ -223,15 +262,27 @@ function createSqliteReadEnv(database: DatabaseSync): { env: Env; statements: Ca
         return createStatement(captured);
       },
       async batch(batchStatements: SqliteD1Statement[]) {
+        const currentBatchIndex = batchIndex;
+        batchIndex += 1;
         database.exec("BEGIN IMMEDIATE");
         try {
-          const results = batchStatements.map((statement) => {
+          const results = batchStatements.map((statement, statementIndex) => {
             const prepared = database.prepare(statement.captured.sql);
             if (/\bRETURNING\b/i.test(statement.captured.sql)) {
               const rows = prepared.all(...statement.captured.values);
+              options.afterBatchStatement?.({
+                statement: statement.captured,
+                batchIndex: currentBatchIndex,
+                statementIndex
+              });
               return { success: true, meta: { changes: rows.length }, results: rows };
             }
             const result = prepared.run(...statement.captured.values);
+            options.afterBatchStatement?.({
+              statement: statement.captured,
+              batchIndex: currentBatchIndex,
+              statementIndex
+            });
             return { success: true, meta: { changes: Number(result.changes) }, results: [] };
           });
           database.exec("COMMIT");
@@ -645,7 +696,7 @@ describe("sheet-aware board reads", () => {
       expect(requested.manifest.sheets.find((sheet) => sheet.id === requested.activeSheet.sheet.id)?.version).toBe(
         requested.activeSheet.sheet.content_version
       );
-      expect(statements.length).toBeLessThanOrEqual(9);
+      expect(statements).toHaveLength(9);
       expect(statements.filter((statement) => statement.sql.includes("FROM user_settings"))).toHaveLength(1);
 
       statements.length = 0;
@@ -721,6 +772,310 @@ describe("sheet-aware board reads", () => {
     });
   });
 
+  it("retries a direct sheet read when content changes between its data queries and end fence", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
+    const database = createBoardReadDatabase();
+    seedEstablishedBoard(database);
+    let changed = false;
+    const { env, statements } = createSqliteReadEnv(database, {
+      afterExecute({ statement }) {
+        if (changed || !statement.sql.includes("FROM board_tables\n       JOIN sheets")) return;
+        changed = true;
+        database.prepare("UPDATE board_tables SET name = ? WHERE id = ?").run("Active table after write", "table-active");
+        database.prepare("UPDATE sheets SET content_version = content_version + 1 WHERE id = ?").run("sheet-active");
+      }
+    });
+
+    try {
+      const payload = await loadBoardSheet(env, "user-1", "sheet-active");
+
+      expect(payload?.sheet.content_version).toBe(8);
+      expect(payload?.tables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "Active table after write" })]));
+      expect(statements.filter((statement) => statement.sql.includes("FROM board_tables\n       JOIN sheets"))).toHaveLength(2);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("returns null when a directly requested sheet is deleted before its end fence", async () => {
+    const database = createBoardReadDatabase();
+    seedEstablishedBoard(database);
+    let deleted = false;
+    const { env } = createSqliteReadEnv(database, {
+      afterExecute({ statement }) {
+        if (deleted || !statement.sql.includes("FROM board_cell_states\n       JOIN board_tables")) return;
+        deleted = true;
+        database.prepare("DELETE FROM sheets WHERE id = ?").run("sheet-active");
+      }
+    });
+
+    try {
+      await expect(loadBoardSheet(env, "user-1", "sheet-active")).resolves.toBeNull();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("bounds direct sheet retries when every attempted snapshot is superseded", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
+    const database = createBoardReadDatabase();
+    seedEstablishedBoard(database);
+    const { env, statements } = createSqliteReadEnv(database, {
+      afterExecute({ statement }) {
+        if (!statement.sql.includes("FROM board_tables\n       JOIN sheets")) return;
+        database.prepare("UPDATE sheets SET content_version = content_version + 1 WHERE id = ?").run("sheet-active");
+      }
+    });
+
+    try {
+      await expect(loadBoardSheet(env, "user-1", "sheet-active")).rejects.toThrow(/stable board sheet snapshot/i);
+      expect(statements.filter((statement) => statement.sql.includes("FROM board_tables\n       JOIN sheets"))).toHaveLength(3);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("retries bootstrap after a content write and returns one coherent snapshot", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
+    const database = createBoardReadDatabase();
+    seedEstablishedBoard(database);
+    let changed = false;
+    const { env, statements } = createSqliteReadEnv(database, {
+      afterExecute({ statement }) {
+        if (changed || !statement.sql.includes("FROM board_tables\n       JOIN sheets")) return;
+        changed = true;
+        database.prepare("UPDATE board_tables SET name = ? WHERE id = ?").run("Active table after retry", "table-active");
+        database.prepare("UPDATE sheets SET content_version = content_version + 1 WHERE id = ?").run("sheet-active");
+      }
+    });
+
+    try {
+      const payload = await loadBoardBootstrap(env, "user-1", "sheet-active");
+
+      expect(payload.activeSheet.sheet.content_version).toBe(8);
+      expect(payload.activeSheet.tables).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: "Active table after retry" })])
+      );
+      expect(payload.manifest.sheets.find((sheet) => sheet.id === "sheet-active")?.version).toBe(8);
+      expect(statements.filter((statement) => statement.sql.includes("FROM board_tables\n       JOIN sheets"))).toHaveLength(2);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("bounds bootstrap retries when every attempted snapshot is superseded", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
+    const database = createBoardReadDatabase();
+    seedEstablishedBoard(database);
+    const { env, statements } = createSqliteReadEnv(database, {
+      afterExecute({ statement }) {
+        if (!statement.sql.includes("FROM board_tables\n       JOIN sheets")) return;
+        database.prepare("UPDATE sheets SET content_version = content_version + 1 WHERE id = ?").run("sheet-active");
+      }
+    });
+
+    try {
+      await expect(loadBoardBootstrap(env, "user-1", "sheet-active")).rejects.toThrow(
+        /stable board bootstrap snapshot/i
+      );
+      expect(statements.filter((statement) => statement.sql.includes("FROM board_tables\n       JOIN sheets"))).toHaveLength(3);
+      expect(statements.filter((statement) => statement.sql.includes("WITH manifest AS"))).toHaveLength(6);
+      expect(statements.filter((statement) => statement.sql.includes("FROM user_settings"))).toHaveLength(1);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("retries bootstrap after manifest metadata changes between the sheet read and final fence", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
+    const database = createBoardReadDatabase();
+    seedEstablishedBoard(database);
+    let changed = false;
+    const { env } = createSqliteReadEnv(database, {
+      afterExecute({ statement }) {
+        if (changed || !statement.sql.includes("FROM board_notes\n       JOIN sheets")) return;
+        changed = true;
+        database.prepare("UPDATE sheets SET is_default = 0 WHERE user_id = ?").run("user-1");
+        database
+          .prepare("UPDATE sheets SET name = ?, sort_order = ?, is_default = 1 WHERE id = ?")
+          .run("Renamed active", -10, "sheet-active");
+        database
+          .prepare(
+            `INSERT INTO board_manifest_versions (user_id, version)
+             VALUES (?, 1)
+             ON CONFLICT(user_id) DO UPDATE SET version = version + 1`
+          )
+          .run("user-1");
+      }
+    });
+
+    try {
+      const payload = await loadBoardBootstrap(env, "user-1", "sheet-active");
+
+      expect(payload.manifest.version).toBe(10);
+      expect(payload.manifest.sheets[0]).toMatchObject({
+        id: "sheet-active",
+        name: "Renamed active",
+        sort_order: -10,
+        is_default: 1
+      });
+      expect(payload.activeSheet.sheet).toMatchObject({
+        id: "sheet-active",
+        name: "Renamed active",
+        sort_order: -10,
+        is_default: 1
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("retries bootstrap and falls back when its selected sheet is concurrently deleted", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
+    const database = createBoardReadDatabase();
+    seedEstablishedBoard(database);
+    let deleted = false;
+    const { env } = createSqliteReadEnv(database, {
+      afterExecute({ statement }) {
+        if (deleted || !statement.sql.includes("FROM board_cell_states\n       JOIN board_tables")) return;
+        deleted = true;
+        database.prepare("DELETE FROM sheets WHERE id = ?").run("sheet-active");
+        database.prepare("UPDATE board_manifest_versions SET version = version + 1 WHERE user_id = ?").run("user-1");
+      }
+    });
+
+    try {
+      const payload = await loadBoardBootstrap(env, "user-1", "sheet-active");
+
+      expect(payload.activeSheet.sheet.id).toBe("sheet-default");
+      expect(payload.manifest.version).toBe(10);
+      expect(payload.manifest.sheets.some((sheet) => sheet.id === "sheet-active")).toBe(false);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("initializes one complete default board atomically under interleaved bootstrap calls", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
+    const directory = mkdtempSync(join(tmpdir(), "riceark-board-init-"));
+    const path = join(directory, "board.sqlite");
+    const database = createBoardReadDatabase(path);
+    const observer = new DatabaseSync(path);
+    database.prepare("INSERT INTO users (id, display_name) VALUES (?, ?)").run("user-1", "Owner");
+    seedDefaultTasks(database);
+    seedDefaultCharacters(database, 20);
+    database
+      .prepare(
+        `INSERT INTO completions (
+           id, user_id, task_id, character_id, target_key, period_key, completed
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        "legacy-completion",
+        "user-1",
+        "task-daily-1",
+        "character-0",
+        "character-0",
+        "daily:2026-06-05",
+        1
+      );
+
+    const visibleStates: Array<{
+      sheets: number;
+      tables: number;
+      axes: number;
+      completions: number;
+      manifestVersion: number;
+      sheetVersion: number;
+    }> = [];
+    const captureVisibleState = () => {
+      const count = (table: string) =>
+        Number((observer.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count);
+      visibleStates.push({
+        sheets: count("sheets"),
+        tables: count("board_tables"),
+        axes: count("board_axis_items"),
+        completions: count("board_cell_completions"),
+        manifestVersion: Number(
+          (
+            observer
+              .prepare(
+                `SELECT COALESCE(
+                   (SELECT version FROM board_manifest_versions WHERE user_id = 'user-1'),
+                   0
+                 ) AS version`
+              )
+              .get() as { version: number }
+          ).version
+        ),
+        sheetVersion: Number(
+          (
+            observer
+              .prepare(
+                `SELECT COALESCE(
+                   (SELECT content_version FROM sheets WHERE user_id = 'user-1' LIMIT 1),
+                   0
+                 ) AS version`
+              )
+              .get() as { version: number }
+          ).version
+        )
+      });
+    };
+    const { env } = createSqliteReadEnv(database, {
+      afterExecute: captureVisibleState,
+      afterBatchStatement: captureVisibleState
+    });
+
+    try {
+      const [first, second] = await Promise.all([
+        loadBoardBootstrap(env, "user-1"),
+        loadBoardBootstrap(env, "user-1")
+      ]);
+
+      expect(
+        visibleStates.filter(
+          (state) =>
+            state.sheets > 0 &&
+            (state.tables !== 1 ||
+              state.axes !== 24 ||
+              state.completions !== 1 ||
+              state.manifestVersion !== 1 ||
+              state.sheetVersion !== 1)
+        )
+      ).toEqual([]);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM sheets WHERE user_id = ?").get("user-1")).toEqual({ count: 1 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM board_tables WHERE user_id = ?").get("user-1")).toEqual({
+        count: 1
+      });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM board_axis_items WHERE user_id = ?").get("user-1")).toEqual({
+        count: 24
+      });
+      expect(
+        database.prepare("SELECT COUNT(*) AS count FROM board_cell_completions WHERE user_id = ?").get("user-1")
+      ).toEqual({ count: 1 });
+      for (const payload of [first, second]) {
+        expect(payload.manifest.version).toBe(1);
+        expect(payload.manifest.sheets).toHaveLength(1);
+        expect(payload.activeSheet.tables).toHaveLength(1);
+        expect(payload.activeSheet.axisItems).toHaveLength(24);
+        expect(payload.activeSheet.completions).toHaveLength(1);
+        expect(payload.manifest.sheets[0]?.version).toBe(payload.activeSheet.sheet.content_version);
+      }
+    } finally {
+      observer.close();
+      database.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("initializes an empty owner board within the first-load statement budget", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
@@ -734,6 +1089,8 @@ describe("sheet-aware board reads", () => {
       const bootstrap = await loadBoardBootstrap(env, "user-1");
 
       expect(bootstrap.activeSheet.sheet).toMatchObject({ name: "기본", is_default: 1 });
+      expect(bootstrap.activeSheet.sheet.content_version).toBe(1);
+      expect(bootstrap.manifest.version).toBe(1);
       expect(bootstrap.manifest.sheets).toHaveLength(1);
       expect(bootstrap.activeSheet.axisItems).toHaveLength(24);
       expect(bootstrap.settings).toEqual({
@@ -743,9 +1100,11 @@ describe("sheet-aware board reads", () => {
         show_item_level: 1,
         show_combat_power: 0
       });
-      expect(statements.length).toBeLessThanOrEqual(30);
+      expect(statements).toHaveLength(21);
+      expect(statements.length).toBeLessThanOrEqual(29);
       expect(statements[0]?.sql).toContain("WITH manifest AS");
-      expect(statements.filter((statement) => statement.sql.includes("WITH manifest AS"))).toHaveLength(2);
+      expect(statements.filter((statement) => statement.sql.includes("WITH manifest AS"))).toHaveLength(3);
+      expect(bootstrap.manifest.sheets[0]?.version).toBe(bootstrap.activeSheet.sheet.content_version);
     } finally {
       database.close();
     }

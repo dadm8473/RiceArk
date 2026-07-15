@@ -936,67 +936,6 @@ async function readChecklistOrientation(env: Env, userId: string): Promise<Check
   return settings?.checklist_orientation === "tasks_columns" ? "tasks_columns" : "tasks_rows";
 }
 
-async function getOrCreateDefaultSheet(env: Env, userId: string): Promise<{ id: string; created: boolean }> {
-  const existing = await env.DB.prepare("SELECT id FROM sheets WHERE user_id = ? AND is_default = 1 ORDER BY sort_order LIMIT 1")
-    .bind(userId)
-    .first<{ id: string }>();
-  if (existing) return { id: existing.id, created: false };
-
-  const id = crypto.randomUUID();
-  await env.DB.prepare(
-    `INSERT INTO sheets (id, user_id, name, sort_order, is_default)
-     VALUES (?, ?, ?, 0, 1)
-     ON CONFLICT(user_id, name)
-     DO UPDATE SET is_default = 1, updated_at = CURRENT_TIMESTAMP`
-  )
-    .bind(id, userId, DEFAULT_SHEET_NAME)
-    .run();
-
-  const sheet = await env.DB.prepare("SELECT id FROM sheets WHERE user_id = ? AND name = ?")
-    .bind(userId, DEFAULT_SHEET_NAME)
-    .first<{ id: string }>();
-  if (!sheet) throw new Error("Failed to create default sheet");
-  return { id: sheet.id, created: true };
-}
-
-async function getOrCreateDefaultTable(
-  env: Env,
-  userId: string,
-  sheetId: string,
-  orientation: ChecklistOrientation,
-  canCreate: boolean
-): Promise<{ id: string; orientation: ChecklistOrientation; created: boolean } | null> {
-  const existing = await env.DB.prepare(
-    "SELECT id, row_role, column_role FROM board_tables WHERE user_id = ? AND sheet_id = ? ORDER BY sort_order LIMIT 1"
-  )
-    .bind(userId, sheetId)
-    .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole }>();
-  if (existing) {
-    return {
-      id: existing.id,
-      orientation: defaultOrientationForTableRoles(
-        { rowRole: existing.row_role, columnRole: existing.column_role },
-        orientation
-      ),
-      created: false
-    };
-  }
-
-  if (!canCreate) return null;
-
-  const roles = defaultBoardRolesForOrientation(orientation);
-  const id = crypto.randomUUID();
-  await env.DB.prepare(
-    `INSERT INTO board_tables (
-       id, user_id, sheet_id, name, sort_order, x, y, row_role, column_role, task_axis
-     )
-     VALUES (?, ?, ?, ?, 0, 0, 0, ?, ?, ?)`
-  )
-    .bind(id, userId, sheetId, DEFAULT_TABLE_NAME, roles.rowRole, roles.columnRole, roles.taskAxis)
-    .run();
-  return { id, orientation, created: true };
-}
-
 async function loadDefaultBoardTasks(env: Env, userId: string): Promise<DefaultBoardTaskSource[]> {
   const tasks = await env.DB.prepare(
     `SELECT tasks.id,
@@ -1050,33 +989,50 @@ async function hasAnyBoardTable(env: Env, userId: string): Promise<boolean> {
   return Boolean(table);
 }
 
+async function hasAnyBoardSheet(env: Env, userId: string): Promise<boolean> {
+  const sheet = await env.DB.prepare("SELECT id FROM sheets WHERE user_id = ? LIMIT 1").bind(userId).first();
+  return Boolean(sheet);
+}
+
 export async function ensureDefaultBoard(env: Env, userId: string): Promise<void> {
   if (await hasAnyBoardTable(env, userId)) return;
+  if (await hasAnyBoardSheet(env, userId)) return;
 
-  const orientation = await readChecklistOrientation(env, userId);
-  const sheet = await getOrCreateDefaultSheet(env, userId);
-  const table = await getOrCreateDefaultTable(env, userId, sheet.id, orientation, sheet.created);
-  if (!table) return;
-  const [tasks, characters, existingAxisItems] = await Promise.all([
+  const [orientation, tasks, characters] = await Promise.all([
+    readChecklistOrientation(env, userId),
     loadDefaultBoardTasks(env, userId),
-    loadDefaultBoardCharacters(env, userId),
-    env.DB.prepare(
-      "SELECT axis, kind, task_id, character_id, sort_order FROM board_axis_items WHERE user_id = ? AND table_id = ?"
-    )
-      .bind(userId, table.id)
-      .all<{ axis: BoardAxis; kind: "character" | "task" | "custom"; task_id: string | null; character_id: string | null; sort_order: number }>()
+    loadDefaultBoardCharacters(env, userId)
   ]);
-
-  const seeds = buildMissingDefaultAxisItemSeeds({
-    orientation: table.orientation,
-    defaultTableCreated: table.created,
-    existingAxisItems: existingAxisItems.results,
+  const sheetId = crypto.randomUUID();
+  const tableId = crypto.randomUUID();
+  const roles = defaultBoardRolesForOrientation(orientation);
+  const seeds = buildDefaultAxisItemSeeds({
+    orientation,
     tasks,
     characters
   }).map((seed) => ({ id: crypto.randomUUID(), ...seed }));
 
-  if (seeds.length > 0) {
-    await env.DB.prepare(
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO sheets (
+         id, user_id, name, sort_order, is_default, content_version
+       )
+       SELECT ?2, ?1, ?3, 0, 1, 1
+       WHERE NOT EXISTS (SELECT 1 FROM sheets WHERE user_id = ?1)
+         AND NOT EXISTS (SELECT 1 FROM board_tables WHERE user_id = ?1)`
+    ).bind(userId, sheetId, DEFAULT_SHEET_NAME),
+    env.DB.prepare(
+      `INSERT INTO board_tables (
+         id, user_id, sheet_id, name, sort_order, x, y,
+         row_role, column_role, task_axis
+       )
+       SELECT ?2, ?1, ?3, ?4, 0, 0, 0, ?5, ?6, ?7
+       WHERE EXISTS (
+         SELECT 1 FROM sheets WHERE id = ?3 AND user_id = ?1
+       )
+         AND NOT EXISTS (SELECT 1 FROM board_tables WHERE user_id = ?1)`
+    ).bind(userId, tableId, sheetId, DEFAULT_TABLE_NAME, roles.rowRole, roles.columnRole, roles.taskAxis),
+    env.DB.prepare(
       `INSERT INTO board_axis_items (
          id,
          user_id,
@@ -1092,62 +1048,85 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
          task_color,
          sort_order
        )
-       SELECT json_extract(value, '$.id'),
+       SELECT json_extract(input.value, '$.id'),
               ?1,
               ?2,
-              json_extract(value, '$.axis'),
-              json_extract(value, '$.kind'),
-              json_extract(value, '$.label'),
-              json_extract(value, '$.characterId'),
-              json_extract(value, '$.taskId'),
-              json_extract(value, '$.taskScope'),
-              json_extract(value, '$.taskResetType'),
-              json_extract(value, '$.taskResetRuleJson'),
-              json_extract(value, '$.taskColor'),
-              json_extract(value, '$.sortOrder')
-       FROM json_each(?3)`
-    )
-      .bind(userId, table.id, JSON.stringify(seeds))
-      .run();
-  }
-
-  await syncLegacyCompletionsToBoard(env, userId, table.id);
-}
-
-async function syncLegacyCompletionsToBoard(env: Env, userId: string, tableId: string): Promise<void> {
-  const [axisItems, completions] = await Promise.all([
-    env.DB.prepare("SELECT id, axis, kind, task_id, character_id FROM board_axis_items WHERE user_id = ? AND table_id = ?")
-      .bind(userId, tableId)
-      .all<{
-        id: string;
-        axis: BoardAxis;
-        kind: "character" | "task" | "custom";
-        task_id: string | null;
-        character_id: string | null;
-      }>(),
-    env.DB.prepare("SELECT task_id, character_id, period_key, completed FROM completions WHERE user_id = ?")
-      .bind(userId)
-      .all<{ task_id: string; character_id: string | null; period_key: string; completed: number }>()
+              json_extract(input.value, '$.axis'),
+              json_extract(input.value, '$.kind'),
+              json_extract(input.value, '$.label'),
+              json_extract(input.value, '$.characterId'),
+              json_extract(input.value, '$.taskId'),
+              json_extract(input.value, '$.taskScope'),
+              json_extract(input.value, '$.taskResetType'),
+              json_extract(input.value, '$.taskResetRuleJson'),
+              json_extract(input.value, '$.taskColor'),
+              json_extract(input.value, '$.sortOrder')
+       FROM json_each(?3) AS input
+       WHERE EXISTS (
+         SELECT 1
+         FROM board_tables
+         JOIN sheets ON sheets.id = board_tables.sheet_id AND sheets.user_id = ?1
+         WHERE board_tables.id = ?2
+           AND board_tables.user_id = ?1
+       )`
+    ).bind(userId, tableId, JSON.stringify(seeds)),
+    env.DB.prepare(
+      `INSERT INTO board_cell_completions (
+         id, user_id, table_id, row_item_id, column_item_id,
+         period_key, completed, updated_at
+       )
+       SELECT 'legacy:' || ?2 || ':' || completions.id,
+              ?1,
+              ?2,
+              CASE WHEN task_items.axis = 'row' THEN task_items.id ELSE character_items.id END,
+              CASE WHEN task_items.axis = 'column' THEN task_items.id ELSE character_items.id END,
+              completions.period_key,
+              completions.completed,
+              CURRENT_TIMESTAMP
+       FROM completions
+       JOIN board_axis_items AS task_items
+         ON task_items.user_id = ?1
+        AND task_items.table_id = ?2
+        AND task_items.kind = 'task'
+        AND task_items.task_id = completions.task_id
+       JOIN board_axis_items AS character_items
+         ON character_items.user_id = ?1
+        AND character_items.table_id = ?2
+        AND character_items.kind = 'character'
+        AND character_items.character_id = completions.character_id
+       WHERE completions.user_id = ?1
+         AND completions.character_id IS NOT NULL
+         AND task_items.axis <> character_items.axis
+       ON CONFLICT(user_id, table_id, row_item_id, column_item_id, period_key)
+       DO UPDATE SET completed = excluded.completed, updated_at = CURRENT_TIMESTAMP`
+    ).bind(userId, tableId),
+    env.DB.prepare(
+      `INSERT INTO board_manifest_versions (user_id, version, updated_at)
+       SELECT ?1, 1, CURRENT_TIMESTAMP
+       WHERE EXISTS (SELECT 1 FROM sheets WHERE id = ?2 AND user_id = ?1)
+       ON CONFLICT(user_id)
+       DO UPDATE SET version = board_manifest_versions.version + 1,
+                     updated_at = CURRENT_TIMESTAMP`
+    ).bind(userId, sheetId),
+    env.DB.prepare(
+      `INSERT INTO board_axis_items (
+         id, user_id, table_id, axis, kind, label, sort_order
+       )
+       SELECT 'board-default-init-guard', NULL, ?2, 'row', 'custom', '', 0
+       WHERE EXISTS (SELECT 1 FROM sheets WHERE id = ?3 AND user_id = ?1)
+         AND (
+           NOT EXISTS (
+             SELECT 1 FROM board_tables
+             WHERE id = ?2 AND user_id = ?1 AND sheet_id = ?3
+           )
+           OR (SELECT COUNT(*) FROM board_axis_items WHERE user_id = ?1 AND table_id = ?2)
+                <> json_array_length(?4)
+           OR NOT EXISTS (
+             SELECT 1 FROM board_manifest_versions WHERE user_id = ?1
+           )
+         )`
+    ).bind(userId, tableId, sheetId, JSON.stringify(seeds))
   ]);
-
-  const patches = buildBoardCompletionPatchesFromLegacy({
-    tableId,
-    axisItems: axisItems.results.map((item) => ({
-      id: item.id,
-      axis: item.axis,
-      kind: item.kind,
-      taskId: item.task_id,
-      characterId: item.character_id
-    })),
-    completions: completions.results.map((completion) => ({
-      taskId: completion.task_id,
-      characterId: completion.character_id,
-      periodKey: completion.period_key,
-      completed: completion.completed === 1
-    }))
-  });
-
-  await saveBoardCompletionPatches(env, userId, patches);
 }
 
 export async function loadBoard(env: Env, userId: string): Promise<BoardPayload> {
