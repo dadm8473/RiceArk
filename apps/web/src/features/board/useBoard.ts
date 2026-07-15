@@ -49,6 +49,35 @@ export function mergeBoardVersionSummary(
   };
 }
 
+export interface BoardVersionTrackerState {
+  observed: BoardVersionSummary | null;
+  applied: BoardVersionSummary | null;
+}
+
+export interface BoardVersionTracker {
+  observe: (summary: BoardVersionUpdate) => BoardVersionSummary;
+  apply: (summary: BoardVersionUpdate) => BoardVersionSummary;
+  getState: () => BoardVersionTrackerState;
+}
+
+export function createBoardVersionTracker(): BoardVersionTracker {
+  let observed: BoardVersionSummary | null = null;
+  let applied: BoardVersionSummary | null = null;
+
+  return {
+    observe: (summary) => {
+      observed = mergeBoardVersionSummary(observed, summary);
+      return observed;
+    },
+    apply: (summary) => {
+      observed = mergeBoardVersionSummary(observed, summary);
+      applied = mergeBoardVersionSummary(applied, summary);
+      return applied;
+    },
+    getState: () => ({ observed, applied })
+  };
+}
+
 export type BoardReadGateResult =
   | { type: "applied"; payload: BoardPayload }
   | { type: "failed"; error: unknown }
@@ -61,6 +90,7 @@ export interface BoardReadGate<Context = void> {
 }
 
 export function createBoardReadGate<Context = void>(options: {
+  prepare?: ((context: Context) => Promise<Context>) | undefined;
   read: () => Promise<BoardPayload>;
   onApplied: (payload: BoardPayload, context: Context) => void;
   onFailure: (error: unknown, context: Context) => void;
@@ -72,9 +102,11 @@ export function createBoardReadGate<Context = void>(options: {
     load: async (context) => {
       const requestGeneration = ++generation;
       try {
+        const preparedContext = options.prepare ? await options.prepare(context) : context;
+        if (disposed || requestGeneration !== generation) return { type: "stale" };
         const payload = await options.read();
         if (disposed || requestGeneration !== generation) return { type: "stale" };
-        options.onApplied(payload, context);
+        options.onApplied(payload, preparedContext);
         return { type: "applied", payload };
       } catch (error) {
         if (disposed || requestGeneration !== generation) return { type: "stale" };
@@ -111,6 +143,7 @@ interface BoardQueueControl<T> {
 interface BoardWriteCoordinatorOptions {
   attachLifecycle?: boolean | undefined;
   onChange?: ((snapshot: BoardWriteSnapshot) => void) | undefined;
+  onBeforeAccepted?: (() => void) | undefined;
   onVersions?: ((versions: BoardMutationVersions) => void) | undefined;
   patch?: BoardPatchApi | undefined;
   queueOverrides?: {
@@ -222,6 +255,11 @@ export function createBoardWriteCoordinator(
     },
     onAccepted: (patches) => {
       if (disposed) return;
+      try {
+        options.onBeforeAccepted?.();
+      } catch {
+        // Read invalidation is isolated from the accepted base commit.
+      }
       if (authoritativeBase) {
         authoritativeBase = {
           ...authoritativeBase,
@@ -249,6 +287,11 @@ export function createBoardWriteCoordinator(
     },
     onAccepted: (patches) => {
       if (disposed) return;
+      try {
+        options.onBeforeAccepted?.();
+      } catch {
+        // Read invalidation is isolated from the accepted base commit.
+      }
       if (authoritativeBase) {
         authoritativeBase = {
           ...authoritativeBase,
@@ -712,6 +755,7 @@ export function buildBoardVersionKey(
 
 interface BoardReadContext {
   refreshVersion: boolean;
+  lowerBoundSummary?: BoardVersionSummary | null | undefined;
 }
 
 interface BoardReadScope {
@@ -733,8 +777,8 @@ export function useBoard({
   const enabledRef = useRef(enabled);
   const coordinatorRef = useRef<BoardWriteCoordinator | null>(null);
   const boardReadScopeRef = useRef<BoardReadScope | null>(null);
-  const versionKeyRef = useRef<string | null>(null);
-  const lastVersionSummaryRef = useRef<BoardVersionSummary | null>(null);
+  const appliedVersionKeyRef = useRef<string | null>(null);
+  const versionTrackerRef = useRef<BoardVersionTracker>(createBoardVersionTracker());
   const lastActivityAtRef = useRef(Date.now());
   const pollingClientIdRef = useRef<string | null>(null);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
@@ -746,23 +790,10 @@ export function useBoard({
     setData(payload);
   }
 
-  async function refreshVersionKey(
-    boardForFingerprint: BoardPayload | null = dataRef.current,
-    expectedCoordinator = coordinatorRef.current
-  ) {
-    const summary = await apiGet<BoardVersionSummary>("/api/board/versions");
-    if (!expectedCoordinator || coordinatorRef.current !== expectedCoordinator) return null;
-    const merged = mergeBoardVersionSummary(lastVersionSummaryRef.current, summary);
-    lastVersionSummaryRef.current = merged;
-    versionKeyRef.current = buildBoardVersionKey(merged, boardForFingerprint);
-    return merged;
-  }
-
   const handleMutationVersions = useCallback((versions: BoardMutationVersions) => {
-    const summary = mergeBoardVersionSummary(lastVersionSummaryRef.current, versions);
-    lastVersionSummaryRef.current = summary;
+    const summary = versionTrackerRef.current.apply(versions);
     const versionKey = buildBoardVersionKey(summary, dataRef.current);
-    versionKeyRef.current = versionKey;
+    appliedVersionKeyRef.current = versionKey;
     invalidationPublisherRef.current?.schedule(summary);
   }, []);
 
@@ -779,8 +810,9 @@ export function useBoard({
     setBoardData(null);
     setHasPendingWrites(false);
     setPendingWriteError(null);
-    versionKeyRef.current = null;
-    lastVersionSummaryRef.current = null;
+    appliedVersionKeyRef.current = null;
+    const versionTracker = createBoardVersionTracker();
+    versionTrackerRef.current = versionTracker;
     if (!userId) return;
 
     const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
@@ -792,22 +824,35 @@ export function useBoard({
       versionKeyFor: (summary) => buildBoardVersionKey(summary, dataRef.current)
     });
     invalidationPublisherRef.current = invalidationPublisher;
+    let readGate: BoardReadGate<BoardReadContext> | null = null;
     const coordinator = createBoardWriteCoordinator(userId, {
       onChange: (snapshot) => {
         setHasPendingWrites(snapshot.hasPendingWrites);
         setPendingWriteError(snapshot.pendingWriteError);
         setBoardData(enabledRef.current ? snapshot.data : null);
       },
+      onBeforeAccepted: () => readGate?.invalidate(),
       onVersions: handleMutationVersions
     });
     coordinatorRef.current = coordinator;
-    const readGate = createBoardReadGate<BoardReadContext>({
+    readGate = createBoardReadGate<BoardReadContext>({
+      prepare: async (context) => {
+        if (!context.refreshVersion) return { ...context, lowerBoundSummary: null };
+        try {
+          const summary = await apiGet<BoardVersionSummary>("/api/board/versions");
+          versionTracker.observe(summary);
+          return { ...context, lowerBoundSummary: summary };
+        } catch {
+          return { ...context, lowerBoundSummary: null };
+        }
+      },
       read: () => apiGet<BoardPayload>("/api/board"),
       onApplied: (payload, context) => {
         coordinator.setAuthoritativeBase(payload);
-        if (context.refreshVersion) void refreshVersionKey(payload, coordinator).catch(() => {
-          // Version checks are an optimization; the loaded board can still be used.
-        });
+        if (context.lowerBoundSummary) {
+          const applied = versionTracker.apply(context.lowerBoundSummary);
+          appliedVersionKeyRef.current = buildBoardVersionKey(applied, payload);
+        }
       },
       onFailure: (readError) => {
         setError(formatBoardError(readError));
@@ -829,7 +874,7 @@ export function useBoard({
 
   const reload = useCallback(async (options: {
     refreshVersion?: boolean;
-    onApplied?: (() => void) | undefined;
+    onApplied?: ((payload: BoardPayload) => void) | undefined;
   } = {}) => {
     const coordinator = coordinatorRef.current;
     const readScope = boardReadScopeRef.current;
@@ -844,19 +889,20 @@ export function useBoard({
     setError(null);
     const result = await readScope.gate.load({ refreshVersion: options.refreshVersion ?? pollingEnabled });
     if (result.type === "failed") throw result.error;
-    if (result.type === "applied") options.onApplied?.();
+    if (result.type === "applied") options.onApplied?.(result.payload);
     return coordinator.getVisibleData();
   }, [enabled, pollingEnabled, userId]);
 
   const reloadBoardForInvalidation = useCallback(async () => {
-    let applied = false;
+    let appliedPayload: BoardPayload | null = null;
     await reload({
       refreshVersion: false,
-      onApplied: () => {
-        applied = true;
+      onApplied: (payload) => {
+        appliedPayload = payload;
       }
     });
-    if (!applied) throw new Error("Board reload was superseded before it could apply");
+    if (!appliedPayload) throw new Error("Board reload was superseded before it could apply");
+    return appliedPayload;
   }, [reload]);
 
   useEffect(() => {
@@ -889,6 +935,7 @@ export function useBoard({
     const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
     pollingClientIdRef.current = clientId;
     const storage = getBrowserLocalStorage();
+    const versionTracker = versionTrackerRef.current;
 
     function clearTimer() {
       if (timer !== null) {
@@ -911,13 +958,14 @@ export function useBoard({
       try {
         const responseSummary = await apiGet<BoardVersionSummary>("/api/board/versions");
         if (!active) return;
-        const summary = mergeBoardVersionSummary(lastVersionSummaryRef.current, responseSummary);
+        const summary = versionTracker.observe(responseSummary);
         const nextVersionKey = buildBoardVersionKey(summary, dataRef.current);
-        lastVersionSummaryRef.current = summary;
-        if (dataRef.current && versionKeyRef.current !== nextVersionKey) {
+        if (dataRef.current && appliedVersionKeyRef.current !== nextVersionKey) {
           postBoardPollingMessage({ type: "board-reload", summary, versionKey: nextVersionKey });
-          await reloadBoardForInvalidation();
-          versionKeyRef.current = nextVersionKey;
+          const payload = await reloadBoardForInvalidation();
+          if (!active) return;
+          const applied = versionTracker.apply(summary);
+          appliedVersionKeyRef.current = buildBoardVersionKey(applied, payload);
           return;
         }
         postBoardPollingMessage({ type: "board-version-key", summary, versionKey: nextVersionKey });
@@ -986,23 +1034,24 @@ export function useBoard({
     if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") return;
     const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
     pollingClientIdRef.current = clientId;
+    const versionTracker = versionTrackerRef.current;
     const channel = new BroadcastChannel(BOARD_VERSION_BROADCAST_CHANNEL);
     const reloadGate = createBoardReloadGate({
       userId,
       reload: reloadBoardForInvalidation,
       onApplied: (message) => {
-        versionKeyRef.current = message.versionKey;
+        const applied = versionTracker.apply(message.summary);
+        appliedVersionKeyRef.current = buildBoardVersionKey(applied, dataRef.current);
       }
     });
     broadcastChannelRef.current = channel;
     channel.onmessage = (event: MessageEvent<BoardPollingBroadcastMessage>) => {
       const message = event.data;
       if (!message || message.sourceId === clientId || message.userId !== userId) return;
-      const previousVersionKey = versionKeyRef.current;
+      const previousVersionKey = appliedVersionKeyRef.current;
       const hasLoadedBoard = dataRef.current !== null;
-      const summary = mergeBoardVersionSummary(lastVersionSummaryRef.current, message.summary);
+      const summary = versionTracker.observe(message.summary);
       const nextVersionKey = buildBoardVersionKey(summary, dataRef.current);
-      lastVersionSummaryRef.current = summary;
       if (shouldReloadForBoardBroadcast(message.type, previousVersionKey, nextVersionKey, hasLoadedBoard)) {
         reloadGate.receive({ ...message, type: "board-reload", summary, versionKey: nextVersionKey });
       }
@@ -1042,8 +1091,9 @@ export function useBoard({
     const timer = window.setTimeout(() => {
       const current = dataRef.current;
       if (!current) return;
-      if (lastVersionSummaryRef.current) {
-        versionKeyRef.current = buildBoardVersionKey(lastVersionSummaryRef.current, current);
+      const appliedSummary = versionTrackerRef.current.getState().applied;
+      if (appliedSummary) {
+        appliedVersionKeyRef.current = buildBoardVersionKey(appliedSummary, current);
       }
       setBoardData({ ...current });
     }, delay);

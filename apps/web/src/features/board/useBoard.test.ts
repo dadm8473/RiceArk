@@ -11,6 +11,7 @@ import {
   createBoardInvalidationPublisher,
   createBoardReadGate,
   createBoardReloadGate,
+  createBoardVersionTracker,
   createBoardWriteCoordinator,
   formatBoardError,
   getBoardPollingDelayMs,
@@ -237,6 +238,107 @@ describe("board read generation isolation", () => {
     expect(applied).toHaveBeenCalledTimes(1);
     expect(onFailure).not.toHaveBeenCalled();
     gate.dispose();
+  });
+
+  it("prefetches a version lower bound before the board GET", async () => {
+    type VersionContext = {
+      summary: null | { manifestVersion: number; sheets: Array<{ id: string; version: number }>; periodFingerprint: string };
+    };
+    const versionSummary = deferred<NonNullable<VersionContext["summary"]>>();
+    const boardRead = deferred<BoardPayload>();
+    const calls: string[] = [];
+    const gate = createBoardReadGate<VersionContext>({
+      prepare: async () => {
+        calls.push("versions");
+        return { summary: await versionSummary.promise };
+      },
+      read: async () => {
+        calls.push("board");
+        return boardRead.promise;
+      },
+      onApplied: vi.fn(),
+      onFailure: vi.fn()
+    });
+
+    const loading = gate.load({ summary: null });
+    expect(calls).toEqual(["versions"]);
+    versionSummary.resolve({ manifestVersion: 1, sheets: [], periodFingerprint: "" });
+    await vi.waitFor(() => expect(calls).toEqual(["versions", "board"]));
+    boardRead.resolve(emptyBoard);
+    await expect(loading).resolves.toMatchObject({ type: "applied" });
+    gate.dispose();
+  });
+
+  it("invalidates a pre-acknowledgment GET before overlay removal and preserves the local mutation version", async () => {
+    const oldBoardRead = deferred<BoardPayload>();
+    const tracker = createBoardVersionTracker();
+    tracker.apply({ manifestVersion: 1, sheets: [{ id: "sheet-1", version: 1 }], periodFingerprint: "" });
+    let gate!: ReturnType<typeof createBoardReadGate<{ summary: { manifestVersion: number; sheets: Array<{ id: string; version: number }>; periodFingerprint: string } }>>;
+    const coordinator = createBoardWriteCoordinator("user-1", {
+      attachLifecycle: false,
+      onBeforeAccepted: () => gate.invalidate(),
+      onVersions: (versions) => tracker.apply(versions),
+      patch: vi.fn(async () => ({
+        ok: true as const,
+        versions: { manifestVersion: 2, sheets: [{ id: "sheet-1", version: 5 }] }
+      }))
+    });
+    coordinator.setAuthoritativeBase(emptyBoard);
+    gate = createBoardReadGate({
+      prepare: async (context) => {
+        tracker.observe(context.summary);
+        return context;
+      },
+      read: () => oldBoardRead.promise,
+      onApplied: (payload, context) => {
+        coordinator.setAuthoritativeBase(payload);
+        tracker.apply(context.summary);
+      },
+      onFailure: vi.fn()
+    });
+    const oldLoad = gate.load({
+      summary: { manifestVersion: 1, sheets: [{ id: "sheet-1", version: 2 }], periodFingerprint: "" }
+    });
+    const localPatch = {
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      periodKey: "daily:2026-07-15",
+      completed: true
+    };
+    coordinator.enqueueCompletion(localPatch);
+
+    await coordinator.flushPendingWrites();
+    oldBoardRead.resolve(emptyBoard);
+    await expect(oldLoad).resolves.toEqual({ type: "stale" });
+
+    expect(coordinator.getAuthoritativeBase()?.completions).toEqual([
+      expect.objectContaining({ row_item_id: "row-1", completed: 1 })
+    ]);
+    expect(tracker.getState()).toEqual({
+      observed: { manifestVersion: 2, sheets: [{ id: "sheet-1", version: 5 }], periodFingerprint: "" },
+      applied: { manifestVersion: 2, sheets: [{ id: "sheet-1", version: 5 }], periodFingerprint: "" }
+    });
+    gate.dispose();
+    coordinator.discardAndDispose();
+  });
+});
+
+describe("board observed and applied versions", () => {
+  it("does not apply failed observations and never regresses a newer local mutation", () => {
+    const tracker = createBoardVersionTracker();
+    tracker.apply({ manifestVersion: 1, sheets: [{ id: "sheet-1", version: 1 }], periodFingerprint: "" });
+    tracker.observe({ manifestVersion: 2, sheets: [{ id: "sheet-1", version: 2 }], periodFingerprint: "remote" });
+
+    expect(tracker.getState().applied?.sheets).toEqual([{ id: "sheet-1", version: 1 }]);
+
+    tracker.apply({ manifestVersion: 3, sheets: [{ id: "sheet-1", version: 5 }] });
+    tracker.apply({ manifestVersion: 2, sheets: [{ id: "sheet-1", version: 2 }], periodFingerprint: "remote" });
+
+    expect(tracker.getState()).toEqual({
+      observed: { manifestVersion: 3, sheets: [{ id: "sheet-1", version: 5 }], periodFingerprint: "remote" },
+      applied: { manifestVersion: 3, sheets: [{ id: "sheet-1", version: 5 }], periodFingerprint: "remote" }
+    });
   });
 });
 
@@ -676,7 +778,12 @@ describe("board cross-tab invalidation", () => {
   });
 
   it("keeps a failed version-key catch-up unapplied, retries it, then deduplicates it", async () => {
-    let appliedVersionKey = "v1";
+    const tracker = createBoardVersionTracker();
+    tracker.apply({ manifestVersion: 1, sheets: [], periodFingerprint: "" });
+    const appliedVersionKey = () => {
+      const applied = tracker.getState().applied;
+      return applied ? buildBoardVersionKey(applied, emptyBoard) : null;
+    };
     const reload = vi.fn()
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValueOnce(undefined);
@@ -684,7 +791,7 @@ describe("board cross-tab invalidation", () => {
       userId: "user-1",
       reload,
       onApplied: (message) => {
-        appliedVersionKey = message.versionKey;
+        tracker.apply(message.summary);
       }
     });
     const announcement = {
@@ -695,22 +802,30 @@ describe("board cross-tab invalidation", () => {
       versionKey: "v2"
     };
     const receive = () => {
-      if (shouldReloadForBoardBroadcast(announcement.type, appliedVersionKey, announcement.versionKey, true)) {
-        gate.receive({ ...announcement, type: "board-reload" });
+      const observed = tracker.observe(announcement.summary);
+      const observedVersionKey = buildBoardVersionKey(observed, emptyBoard);
+      if (shouldReloadForBoardBroadcast(announcement.type, appliedVersionKey(), observedVersionKey, true)) {
+        gate.receive({ ...announcement, type: "board-reload", summary: observed, versionKey: observedVersionKey });
       }
     };
 
     receive();
     await Promise.resolve();
     await Promise.resolve();
-    expect(appliedVersionKey).toBe("v1");
+    expect(tracker.getState().applied?.manifestVersion).toBe(1);
 
     receive();
     await Promise.resolve();
     await Promise.resolve();
-    expect(appliedVersionKey).toBe("v2");
+    expect(tracker.getState().applied?.manifestVersion).toBe(2);
 
     receive();
+    tracker.apply({ manifestVersion: 3, sheets: [{ id: "sheet-1", version: 5 }] });
+    receive();
+    expect(tracker.getState().applied).toMatchObject({
+      manifestVersion: 3,
+      sheets: [{ id: "sheet-1", version: 5 }]
+    });
     expect(reload).toHaveBeenCalledTimes(2);
     gate.dispose();
   });
