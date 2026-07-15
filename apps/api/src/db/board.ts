@@ -19,6 +19,7 @@ import {
   bumpBoardManifestVersionStatement as bumpBoardManifestVersion,
   bumpBoardSheetVersionForAxisItemStatement as bumpBoardSheetVersionForAxisItem,
   bumpBoardSheetVersionForNoteStatement as bumpBoardSheetVersionForNote,
+  bumpBoardSheetVersionForTableAtExpectedLockStatement as bumpBoardSheetVersionForTableAtExpectedLock,
   bumpBoardSheetVersionStatement as bumpBoardSheetVersion,
   bumpBoardSheetVersionsForTablesStatement as bumpBoardSheetVersionsForTables,
   type BoardMutationResult,
@@ -1876,7 +1877,8 @@ export async function updateBoardTableSettings(
     return "locked";
   }
 
-  const [updatedResult, sheetVersionResult] = await env.DB.batch([
+  const [sheetVersionResult, updatedResult] = await env.DB.batch([
+    bumpBoardSheetVersionForTableAtExpectedLock(env, userId, tableId, current.locked === 1 ? 1 : 0),
     env.DB.prepare(
       `UPDATE board_tables
        SET name = ?,
@@ -1898,8 +1900,7 @@ export async function updateBoardTableSettings(
       tableId,
       userId,
       current.locked
-    ),
-    bumpBoardSheetVersionsForTables(env, userId, [tableId])
+    )
   ]);
   const updatedId = returnedMutationId(updatedResult, tableId);
   const sheetVersion = returnedAnySheetVersion(sheetVersionResult);
@@ -1917,9 +1918,30 @@ export async function deleteBoardTable(env: Env, userId: string, tableId: string
 
   const results = await env.DB.batch([
     bumpBoardSheetVersionsForTables(env, userId, [tableId]),
-    env.DB.prepare("DELETE FROM board_cell_completions WHERE user_id = ? AND table_id = ?").bind(userId, tableId),
-    env.DB.prepare("DELETE FROM board_cell_states WHERE user_id = ? AND table_id = ?").bind(userId, tableId),
-    env.DB.prepare("DELETE FROM board_axis_items WHERE user_id = ? AND table_id = ?").bind(userId, tableId),
+    env.DB.prepare(
+      `DELETE FROM board_cell_completions
+       WHERE user_id = ?1 AND table_id = ?2
+         AND EXISTS (
+           SELECT 1 FROM board_tables
+           WHERE board_tables.id = ?2 AND board_tables.user_id = ?1 AND board_tables.locked = 0
+         )`
+    ).bind(userId, tableId),
+    env.DB.prepare(
+      `DELETE FROM board_cell_states
+       WHERE user_id = ?1 AND table_id = ?2
+         AND EXISTS (
+           SELECT 1 FROM board_tables
+           WHERE board_tables.id = ?2 AND board_tables.user_id = ?1 AND board_tables.locked = 0
+         )`
+    ).bind(userId, tableId),
+    env.DB.prepare(
+      `DELETE FROM board_axis_items
+       WHERE user_id = ?1 AND table_id = ?2
+         AND EXISTS (
+           SELECT 1 FROM board_tables
+           WHERE board_tables.id = ?2 AND board_tables.user_id = ?1 AND board_tables.locked = 0
+         )`
+    ).bind(userId, tableId),
     env.DB.prepare("DELETE FROM board_tables WHERE id = ? AND user_id = ? AND locked = 0 RETURNING id").bind(tableId, userId)
   ]);
   const sheetVersion = returnedAnySheetVersion(results[0]);
@@ -1964,7 +1986,10 @@ export async function importBoardCharactersForTable(
     statements.push(
       env.DB.prepare(
         `INSERT INTO characters (id, user_id, name, server_name, class_name, item_level, combat_power, sort_order, enabled, deleted_at, source, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'lostark', CURRENT_TIMESTAMP)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'lostark', CURRENT_TIMESTAMP
+         WHERE EXISTS (
+           SELECT 1 FROM board_tables WHERE id = ? AND user_id = ? AND locked = 0
+         )
          ON CONFLICT(user_id, name, server_name)
          DO UPDATE SET class_name = excluded.class_name,
                        item_level = excluded.item_level,
@@ -1982,7 +2007,9 @@ export async function importBoardCharactersForTable(
         character.className,
         character.itemLevel,
         character.combatPower ?? null,
-        index * 10
+        index * 10,
+        tableId,
+        userId
       )
     );
     const existing = await env.DB.prepare(
@@ -2063,8 +2090,11 @@ export async function importBoardCharactersForTable(
   const roleOffset = roleRepair.statement ? 1 : 0;
   const axisResults = normalizedCharacters.map((_, index) => results[roleOffset + index * 2 + 1]);
   const everyAxisItemReturned = axisResults.every((result, index) => returnedMutationId(result, axisItemIds[index]!) !== null);
+  const anyAxisItemReturned = axisResults.some((result, index) => returnedMutationId(result, axisItemIds[index]!) !== null);
   const sheetVersion = returnedAnySheetVersion(results.at(-1));
-  const roleReturned = !roleRepair.statement || returnedMutationId(results[0], tableId) !== null;
+  const roleResultId = roleRepair.statement ? returnedMutationId(results[0], tableId) : null;
+  const roleReturned = !roleRepair.statement || roleResultId !== null;
+  if (!sheetVersion && !anyAxisItemReturned && !roleResultId) return null;
   if (!everyAxisItemReturned || !sheetVersion || !roleReturned) return incompleteBoardMutation();
   return { ok: true, versions: buildBoardMutationVersions([sheetVersion]) };
 }
@@ -2192,11 +2222,14 @@ export async function createManualBoardCharacterForTable(
 
   const results = await env.DB.batch([...statements, bumpBoardSheetVersionsForTables(env, userId, [tableId])]);
   let resultIndex = 0;
-  if (roleRepair.statement && !returnedMutationId(results[resultIndex++], tableId)) return incompleteBoardMutation();
-  if (!existingCharacter && !returnedMutationId(results[resultIndex++], characterId)) return incompleteBoardMutation();
-  if (!returnedMutationId(results[resultIndex], axisItemId)) return incompleteBoardMutation();
+  const roleResultId = roleRepair.statement ? returnedMutationId(results[resultIndex++], tableId) : null;
+  const characterResultId = !existingCharacter ? returnedMutationId(results[resultIndex++], characterId) : null;
+  const axisResultId = returnedMutationId(results[resultIndex], axisItemId);
   const sheetVersion = returnedAnySheetVersion(results.at(-1));
-  if (!sheetVersion) return incompleteBoardMutation();
+  if (!roleResultId && !characterResultId && !axisResultId && !sheetVersion) return null;
+  if ((roleRepair.statement && !roleResultId) || (!existingCharacter && !characterResultId) || !axisResultId || !sheetVersion) {
+    return incompleteBoardMutation();
+  }
   return { id: axisItemId, versions: buildBoardMutationVersions([sheetVersion]) };
 }
 
@@ -2309,11 +2342,14 @@ export async function createBoardTaskForTable(
 
   const results = await env.DB.batch([...statements, bumpBoardSheetVersionsForTables(env, userId, [tableId])]);
   let resultIndex = 0;
-  if (roleRepair.statement && !returnedMutationId(results[resultIndex++], tableId)) return incompleteBoardMutation();
-  if (!existingTask && !returnedMutationId(results[resultIndex++], taskId)) return incompleteBoardMutation();
-  if (!returnedMutationId(results[resultIndex], id)) return incompleteBoardMutation();
+  const roleResultId = roleRepair.statement ? returnedMutationId(results[resultIndex++], tableId) : null;
+  const taskResultId = !existingTask ? returnedMutationId(results[resultIndex++], taskId) : null;
+  const axisResultId = returnedMutationId(results[resultIndex], id);
   const sheetVersion = returnedAnySheetVersion(results.at(-1));
-  if (!sheetVersion) return incompleteBoardMutation();
+  if (!roleResultId && !taskResultId && !axisResultId && !sheetVersion) return null;
+  if ((roleRepair.statement && !roleResultId) || (!existingTask && !taskResultId) || !axisResultId || !sheetVersion) {
+    return incompleteBoardMutation();
+  }
   return { id, versions: buildBoardMutationVersions([sheetVersion]) };
 }
 
@@ -2449,6 +2485,7 @@ export async function reorderBoardAxisItems(
   const temporaryIds = returnedIds(temporaryResult);
   const finalIds = returnedIds(finalResult);
   const sheetVersion = returnedAnySheetVersion(sheetVersionResult);
+  if (temporaryIds?.length === 0 && finalIds?.length === 0 && !sheetVersion) return null;
   if (!temporaryIds || !finalIds || !sheetVersion) return incompleteBoardMutation();
   if (temporaryIds.length !== orderedIds.length || finalIds.length !== orderedIds.length) return incompleteBoardMutation();
   return { ok: true, versions: buildBoardMutationVersions([sheetVersion]) };
@@ -2509,6 +2546,12 @@ export async function transposeBoardTable(env: Env, userId: string, tableId: str
         `UPDATE board_axis_items
          SET sort_order = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ? AND user_id = ? AND table_id = ?
+           AND EXISTS (
+             SELECT 1 FROM board_tables
+             WHERE board_tables.id = board_axis_items.table_id
+               AND board_tables.user_id = board_axis_items.user_id
+               AND board_tables.locked = 0
+           )
          RETURNING id`
       ).bind(item.temporarySortOrder, item.id, userId, tableId)
     ),
@@ -2517,6 +2560,12 @@ export async function transposeBoardTable(env: Env, userId: string, tableId: str
         `UPDATE board_axis_items
          SET axis = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ? AND user_id = ? AND table_id = ?
+           AND EXISTS (
+             SELECT 1 FROM board_tables
+             WHERE board_tables.id = board_axis_items.table_id
+               AND board_tables.user_id = board_axis_items.user_id
+               AND board_tables.locked = 0
+           )
          RETURNING id`
       ).bind(item.toAxis, item.id, userId, tableId)
     ),
@@ -2528,6 +2577,12 @@ export async function transposeBoardTable(env: Env, userId: string, tableId: str
              cross_size_px = ?,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ? AND user_id = ? AND table_id = ?
+           AND EXISTS (
+             SELECT 1 FROM board_tables
+             WHERE board_tables.id = board_axis_items.table_id
+               AND board_tables.user_id = board_axis_items.user_id
+               AND board_tables.locked = 0
+           )
          RETURNING id`
       ).bind(item.finalSortOrder, item.finalSizePx, item.finalCrossSizePx, item.id, userId, tableId)
     ),
@@ -2536,14 +2591,22 @@ export async function transposeBoardTable(env: Env, userId: string, tableId: str
        SET row_item_id = column_item_id,
            column_item_id = row_item_id,
            updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = ? AND table_id = ?`
+       WHERE user_id = ?1 AND table_id = ?2
+         AND EXISTS (
+           SELECT 1 FROM board_tables
+           WHERE board_tables.id = ?2 AND board_tables.user_id = ?1 AND board_tables.locked = 0
+         )`
     ).bind(userId, tableId),
     env.DB.prepare(
       `UPDATE board_cell_completions
        SET row_item_id = column_item_id,
            column_item_id = row_item_id,
            updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = ? AND table_id = ?`
+       WHERE user_id = ?1 AND table_id = ?2
+         AND EXISTS (
+           SELECT 1 FROM board_tables
+           WHERE board_tables.id = ?2 AND board_tables.user_id = ?1 AND board_tables.locked = 0
+         )`
     ).bind(userId, tableId),
     bumpBoardSheetVersionsForTables(env, userId, [tableId])
   ]);
@@ -2652,13 +2715,26 @@ export async function saveBoardCompletionPatches(
     return null;
   }
 
+  const tableIds = unique(merged.map((patch) => patch.tableId));
+  const tableIdsJson = JSON.stringify(tableIds);
   const statements = merged.map((patch) =>
     env.DB.prepare(
       `INSERT INTO board_cell_completions
          (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
-       SELECT ?, ?, board_tables.id, ?, ?, ?, ?, CURRENT_TIMESTAMP
+       SELECT ?1, ?2, board_tables.id, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP
        FROM board_tables
-       WHERE board_tables.id = ? AND board_tables.user_id = ? AND board_tables.locked = 0
+       WHERE board_tables.id = ?7 AND board_tables.user_id = ?8 AND board_tables.locked = 0
+         AND NOT EXISTS (
+           SELECT 1
+           FROM json_each(?9) AS requested
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM board_tables AS target
+             WHERE target.id = requested.value
+               AND target.user_id = ?8
+               AND target.locked = 0
+           )
+         )
        ON CONFLICT(user_id, table_id, row_item_id, column_item_id, period_key)
        DO UPDATE SET completed = excluded.completed, updated_at = CURRENT_TIMESTAMP
        RETURNING table_id AS id`
@@ -2670,21 +2746,17 @@ export async function saveBoardCompletionPatches(
       patch.periodKey,
       patch.completed ? 1 : 0,
       patch.tableId,
-      userId
+      userId,
+      tableIdsJson
     )
   );
 
-  const tableIds = unique(merged.map((patch) => patch.tableId));
-  const results = await env.DB.batch([
-    guardBoardTablesForMutationStatement(env, userId, tableIds),
-    ...statements,
-    bumpBoardSheetVersionsForTables(env, userId, tableIds)
-  ]);
-  const guardedIds = returnedIds(results[0]);
-  const everyCompletionReturned = merged.every((patch, index) => returnedMutationId(results[index + 1], patch.tableId));
+  const results = await env.DB.batch([...statements, bumpBoardSheetVersionsForTables(env, userId, tableIds)]);
+  const everyCompletionReturned = merged.every((patch, index) => returnedMutationId(results[index], patch.tableId));
+  const anyCompletionReturned = merged.some((patch, index) => returnedMutationId(results[index], patch.tableId));
   const sheetVersions = returnedSheetVersions(results.at(-1));
-  if (!guardedIds || guardedIds.length === 0 || !sheetVersions || sheetVersions.length === 0) return null;
-  if (guardedIds.length !== tableIds.length || !everyCompletionReturned) return incompleteBoardMutation();
+  if (!anyCompletionReturned && sheetVersions?.length === 0) return null;
+  if (!sheetVersions || sheetVersions.length === 0 || !everyCompletionReturned) return incompleteBoardMutation();
   return { ok: true, versions: buildBoardMutationVersions(sheetVersions) };
 }
 
@@ -2727,15 +2799,35 @@ export async function saveBoardCellStatePatches(
     return null;
   }
 
+  const tableIds = unique(merged.map((patch) => patch.tableId));
+  const tableIdsJson = JSON.stringify(tableIds);
   const statements = merged.map((patch) => {
     const memo = patch.markType === "disabled" || patch.memo === "" ? null : patch.memo;
     const markIcon = patch.markType === "disabled" ? null : (patch.markIcon ?? null);
     if (patch.markType === "default" && memo === null && markIcon === null) {
       return env.DB.prepare(
         `DELETE FROM board_cell_states
-         WHERE user_id = ? AND table_id = ? AND row_item_id = ? AND column_item_id = ?
+         WHERE user_id = ?1 AND table_id = ?2 AND row_item_id = ?3 AND column_item_id = ?4
+           AND EXISTS (
+             SELECT 1
+             FROM board_tables
+             WHERE board_tables.id = ?2
+               AND board_tables.user_id = ?1
+               AND board_tables.locked = 0
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM json_each(?5) AS requested
+             WHERE NOT EXISTS (
+               SELECT 1
+               FROM board_tables AS target
+               WHERE target.id = requested.value
+                 AND target.user_id = ?1
+                 AND target.locked = 0
+             )
+           )
          RETURNING table_id AS id`
-      ).bind(userId, patch.tableId, patch.rowItemId, patch.columnItemId);
+      ).bind(userId, patch.tableId, patch.rowItemId, patch.columnItemId, tableIdsJson);
     }
 
     const markPeriodKey = patch.markType === "reserved" ? (patch.periodKey ?? null) : null;
@@ -2743,9 +2835,20 @@ export async function saveBoardCellStatePatches(
     return env.DB.prepare(
       `INSERT INTO board_cell_states
          (id, user_id, table_id, row_item_id, column_item_id, checkbox_visible, mark_type, mark_icon, memo, mark_period_key, updated_at)
-       SELECT ?, ?, board_tables.id, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
+       SELECT ?1, ?2, board_tables.id, ?3, ?4, ?5, ?6, ?7, ?8, ?9, CURRENT_TIMESTAMP
        FROM board_tables
-       WHERE board_tables.id = ? AND board_tables.user_id = ? AND board_tables.locked = 0
+       WHERE board_tables.id = ?10 AND board_tables.user_id = ?11 AND board_tables.locked = 0
+         AND NOT EXISTS (
+           SELECT 1
+           FROM json_each(?12) AS requested
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM board_tables AS target
+             WHERE target.id = requested.value
+               AND target.user_id = ?11
+               AND target.locked = 0
+           )
+         )
        ON CONFLICT(table_id, row_item_id, column_item_id)
        DO UPDATE SET checkbox_visible = excluded.checkbox_visible,
                      mark_type = excluded.mark_type,
@@ -2757,7 +2860,6 @@ export async function saveBoardCellStatePatches(
     ).bind(
       crypto.randomUUID(),
       userId,
-      patch.tableId,
       patch.rowItemId,
       patch.columnItemId,
       checkboxVisible,
@@ -2766,41 +2868,27 @@ export async function saveBoardCellStatePatches(
       memo,
       markPeriodKey,
       patch.tableId,
-      userId
+      userId,
+      tableIdsJson
     );
   });
 
-  const tableIds = unique(merged.map((patch) => patch.tableId));
-  const results = await env.DB.batch([
-    guardBoardTablesForMutationStatement(env, userId, tableIds),
-    ...statements,
-    bumpBoardSheetVersionsForTables(env, userId, tableIds)
-  ]);
-  const guardedIds = returnedIds(results[0]);
+  const results = await env.DB.batch([...statements, bumpBoardSheetVersionsForTables(env, userId, tableIds)]);
   const everyRequiredMutationReturned = merged.every((patch, index) => {
     const memo = patch.markType === "disabled" || patch.memo === "" ? null : patch.memo;
     const markIcon = patch.markType === "disabled" ? null : (patch.markIcon ?? null);
     const deletesDefault = patch.markType === "default" && memo === null && markIcon === null;
-    return deletesDefault || returnedMutationId(results[index + 1], patch.tableId) !== null;
+    return deletesDefault || returnedMutationId(results[index], patch.tableId) !== null;
   });
+  const anyMutationReturned = merged.some((patch, index) => returnedMutationId(results[index], patch.tableId) !== null);
   const sheetVersions = returnedSheetVersions(results.at(-1));
-  if (!guardedIds || guardedIds.length === 0 || !sheetVersions || sheetVersions.length === 0) return null;
-  if (guardedIds.length !== tableIds.length || !everyRequiredMutationReturned) return incompleteBoardMutation();
+  if (!anyMutationReturned && sheetVersions?.length === 0) return null;
+  if (!sheetVersions || sheetVersions.length === 0 || !everyRequiredMutationReturned) return incompleteBoardMutation();
   return { ok: true, versions: buildBoardMutationVersions(sheetVersions) };
 }
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
-}
-
-function guardBoardTablesForMutationStatement(env: Env, userId: string, tableIds: string[]) {
-  return env.DB.prepare(
-    `UPDATE board_tables
-     SET updated_at = CURRENT_TIMESTAMP
-     WHERE user_id = ? AND locked = 0
-       AND id IN (SELECT value FROM json_each(?))
-     RETURNING id`
-  ).bind(userId, JSON.stringify(unique(tableIds)));
 }
 
 function placeholders(values: string[]): string {

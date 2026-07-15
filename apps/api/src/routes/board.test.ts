@@ -717,7 +717,9 @@ describe("board mutation routes", () => {
     return { env, batches };
   }
 
-  function createRemainingMutationRouteEnv() {
+  function createRemainingMutationRouteEnv(
+    options: { invalidTargets?: boolean; lockedTable?: boolean; missingTable?: boolean; rejectBatch?: boolean } = {}
+  ) {
     const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
 
     const execute = (statement: { sql: string; values: unknown[] }) => {
@@ -772,6 +774,7 @@ describe("board mutation routes", () => {
               if (sql.includes("FROM sessions")) return { id: "user-1", display_name: "Tester", avatar_url: null };
               if (sql.includes("SELECT id FROM board_tables WHERE user_id = ? LIMIT 1")) return { id: "table-1" };
               if (sql.includes("SELECT name, default_row_height")) {
+                if (options.missingTable) return null;
                 return {
                   name: "Table",
                   default_row_height: 40,
@@ -779,17 +782,21 @@ describe("board mutation routes", () => {
                   display_options_json: null,
                   event_options_json: null,
                   template_type: "custom",
-                  locked: 0
+                  locked: options.lockedTable ? 1 : 0
                 };
               }
               if (sql.includes("row_role, column_role, task_axis")) {
-                return { id: "table-1", row_role: "task", column_role: "character", task_axis: "rows", locked: 0 };
+                return options.missingTable
+                  ? null
+                  : { id: "table-1", row_role: "task", column_role: "character", task_axis: "rows", locked: options.lockedTable ? 1 : 0 };
               }
               if (sql.includes("row_role, column_role, locked")) {
-                return { id: "table-1", row_role: "task", column_role: "character", locked: 0 };
+                return options.missingTable
+                  ? null
+                  : { id: "table-1", row_role: "task", column_role: "character", locked: options.lockedTable ? 1 : 0 };
               }
               if (sql.includes("SELECT id, locked FROM board_tables") || sql.includes("SELECT locked FROM board_tables")) {
-                return { id: "table-1", locked: 0 };
+                return options.missingTable ? null : { id: "table-1", locked: options.lockedTable ? 1 : 0 };
               }
               if (normalizedSql.includes("SELECT id FROM characters") && sql.includes("name = ?")) return { id: "character-1" };
               if (sql.includes("SELECT id, name") && sql.includes("FROM characters")) {
@@ -809,6 +816,7 @@ describe("board mutation routes", () => {
                 return { results: [{ id: "axis-1", visible: 1 }, { id: "axis-2", visible: 1 }] };
               }
               if (sql.includes("JOIN board_axis_items row_items")) {
+                if (options.invalidTargets) return { results: [] };
                 return {
                   results: [
                     {
@@ -841,6 +849,9 @@ describe("board mutation routes", () => {
         },
         async batch(statements: Array<{ sql: string; values: unknown[] }>) {
           batches.push(statements);
+          if (options.rejectBatch) {
+            return statements.map(() => ({ success: true, meta: { changes: 0 }, results: [] }));
+          }
           return statements.map(execute);
         }
       }
@@ -1096,6 +1107,96 @@ describe("board mutation routes", () => {
       statement.sql.includes("content_version = content_version + 1")
     );
     expect(versionStatements).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      name: "locked table settings",
+      options: { lockedTable: true },
+      method: "PATCH",
+      path: "/api/board/tables/table-1",
+      body: { name: "Changed", defaultRowHeight: 40, defaultColumnWidth: 132 },
+      status: 423,
+      code: "board_table_locked"
+    },
+    {
+      name: "locked table delete",
+      options: { lockedTable: true },
+      method: "DELETE",
+      path: "/api/board/tables/table-1",
+      status: 404,
+      code: "board_table_not_found"
+    },
+    {
+      name: "missing table layout",
+      options: { missingTable: true, rejectBatch: true },
+      method: "PATCH",
+      path: "/api/board/tables/table-1/layout",
+      body: { x: 10, y: 20, width: 320, height: 180 },
+      status: 404,
+      code: "board_table_not_found"
+    },
+    {
+      name: "locked axis update",
+      options: { lockedTable: true, rejectBatch: true },
+      method: "PATCH",
+      path: "/api/board/axis-items/axis-1",
+      body: { label: "Changed" },
+      status: 404,
+      code: "board_axis_item_not_found"
+    },
+    {
+      name: "missing axis size",
+      options: { rejectBatch: true },
+      method: "PATCH",
+      path: "/api/board/axis-items/missing-axis/size",
+      body: { sizePx: 44 },
+      status: 404,
+      code: "board_axis_item_not_found"
+    },
+    {
+      name: "invalid completion target",
+      options: { invalidTargets: true },
+      method: "PATCH",
+      path: "/api/board/completions",
+      body: {
+        patches: [
+          { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1", periodKey: "none:permanent", completed: true }
+        ]
+      },
+      status: 400,
+      code: "invalid_board_completion_target"
+    },
+    {
+      name: "invalid cell-state target",
+      options: { invalidTargets: true },
+      method: "PATCH",
+      path: "/api/board/cell-states",
+      body: {
+        patches: [
+          { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1", markType: "fixed", memo: "memo" }
+        ]
+      },
+      status: 400,
+      code: "invalid_board_cell_state_target"
+    }
+  ])("preserves the rejected response for $name", async ({ options, method, path, body, status, code }) => {
+    const { env } = createRemainingMutationRouteEnv(options);
+    const response = await app.request(
+      path,
+      {
+        method,
+        headers: {
+          Cookie: "riceark_session=test-token",
+          ...(body ? { "Content-Type": "application/json" } : {})
+        },
+        ...(body ? { body: JSON.stringify(body) } : {})
+      },
+      env
+    );
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toMatchObject({ error: { code } });
   });
 
   it.each(["/api/board/completions", "/api/board/cell-states"])(

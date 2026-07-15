@@ -7,6 +7,7 @@ import {
   bumpBoardManifestVersionStatement,
   bumpBoardSheetVersionForNoteStatement,
   bumpBoardSheetVersionForAxisItemStatement,
+  bumpBoardSheetVersionForTableAtExpectedLockStatement,
   bumpBoardSheetVersionStatement,
   bumpBoardSheetVersionsForCharacterStatement,
   bumpBoardSheetVersionsForTablesStatement
@@ -160,7 +161,7 @@ describe("board mutation versions", () => {
     expect(statements[0]?.sql).toContain("RETURNING id, content_version AS version");
   });
 
-  it("updates each owned sheet for table targets once with one JSON binding", () => {
+  it("updates each sheet once only when every table target is owned and unlocked", () => {
     const { env, statements } = createEnv();
     const tableIds = Array.from({ length: 200 }, (_, index) => `table-${index % 100}`);
 
@@ -171,9 +172,20 @@ describe("board mutation versions", () => {
     });
     expect(statements[0]?.values).toHaveLength(3);
     expect(statements[0]?.sql).toContain("SELECT DISTINCT sheet_id");
-    expect(statements[0]?.sql).toContain("json_each(?)");
-    expect(statements[0]?.sql).toContain("WHERE user_id = ?");
-    expect(statements[0]?.sql.match(/user_id = \?/g)).toHaveLength(2);
+    expect(statements[0]?.sql).toContain("json_each(?3)");
+    expect(statements[0]?.sql).toContain("NOT EXISTS");
+    expect(statements[0]?.sql).toContain("locked = 0");
+    expect(statements[0]?.sql).toContain("RETURNING id, content_version AS version");
+  });
+
+  it("matches a single table's expected lock state for settings writes", () => {
+    const { env, statements } = createEnv();
+
+    bumpBoardSheetVersionForTableAtExpectedLockStatement(env, "user-1", "table-1", 1);
+
+    expect(statements[0]).toMatchObject({ values: ["user-1", "table-1", 1] });
+    expect(statements[0]?.sql).toContain("board_tables.locked = ?");
+    expect(statements[0]?.sql).toContain("board_tables.user_id = sheets.user_id");
     expect(statements[0]?.sql).toContain("RETURNING id, content_version AS version");
   });
 
@@ -252,21 +264,45 @@ describe("board mutation versions", () => {
       });
     });
 
-    it("updates only one owned sheet for duplicate, foreign, unknown, and empty table targets", () => {
+    it("rejects every sheet bump when any table target is foreign, unknown, or locked", () => {
       withVersionDatabase((database) => {
         database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-1", "user-1");
         database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-2", "user-2");
         database.prepare("INSERT INTO board_tables (id, user_id, sheet_id) VALUES (?, ?, ?)").run("table-1", "user-1", "sheet-1");
         database.prepare("INSERT INTO board_tables (id, user_id, sheet_id) VALUES (?, ?, ?)").run("table-2", "user-2", "sheet-2");
-        const targets = captureStatement((env) =>
+        const invalidTargets = captureStatement((env) =>
           bumpBoardSheetVersionsForTablesStatement(env, "user-1", ["table-1", "table-1", "table-2", "missing"])
+        );
+        const validTargets = captureStatement((env) =>
+          bumpBoardSheetVersionsForTablesStatement(env, "user-1", ["table-1", "table-1"])
         );
         const emptyTargets = captureStatement((env) => bumpBoardSheetVersionsForTablesStatement(env, "user-1", []));
 
-        expect(executeStatement(database, targets)).toEqual([{ id: "sheet-1", version: 1 }]);
+        expect(executeStatement(database, invalidTargets)).toEqual([]);
+        expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("sheet-1")).toEqual({ content_version: 0 });
+        expect(executeStatement(database, validTargets)).toEqual([{ id: "sheet-1", version: 1 }]);
+        database.prepare("UPDATE board_tables SET locked = 1 WHERE id = ?").run("table-1");
+        expect(executeStatement(database, validTargets)).toEqual([]);
         expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("sheet-2")).toEqual({ content_version: 0 });
         expect(executeStatement(database, emptyTargets)).toEqual([]);
         expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("sheet-1")).toEqual({ content_version: 1 });
+      });
+    });
+
+    it("bumps settings versions only at the expected current lock state", () => {
+      withVersionDatabase((database) => {
+        database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-1", "user-1");
+        database.prepare("INSERT INTO board_tables (id, user_id, sheet_id, locked) VALUES (?, ?, ?, 1)")
+          .run("table-1", "user-1", "sheet-1");
+        const expectLocked = captureStatement((env) =>
+          bumpBoardSheetVersionForTableAtExpectedLockStatement(env, "user-1", "table-1", 1)
+        );
+        const expectUnlocked = captureStatement((env) =>
+          bumpBoardSheetVersionForTableAtExpectedLockStatement(env, "user-1", "table-1", 0)
+        );
+
+        expect(executeStatement(database, expectUnlocked)).toEqual([]);
+        expect(executeStatement(database, expectLocked)).toEqual([{ id: "sheet-1", version: 1 }]);
       });
     });
 

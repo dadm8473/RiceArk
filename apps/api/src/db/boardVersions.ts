@@ -76,15 +76,50 @@ export function bumpBoardSheetVersionsForTablesStatement(env: Env, userId: strin
     `UPDATE sheets
      SET content_version = content_version + 1,
          updated_at = CURRENT_TIMESTAMP
-     WHERE user_id = ?
-       AND id IN (
+     WHERE sheets.user_id = ?1
+       AND EXISTS (SELECT 1 FROM json_each(?3))
+       AND NOT EXISTS (
+         SELECT 1
+         FROM json_each(?3) AS requested
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM board_tables AS target
+           WHERE target.id = requested.value
+             AND target.user_id = ?2
+             AND target.locked = 0
+         )
+       )
+       AND sheets.id IN (
          SELECT DISTINCT sheet_id
          FROM board_tables
-         WHERE user_id = ?
-           AND id IN (SELECT value FROM json_each(?))
+         WHERE user_id = ?2
+           AND locked = 0
+           AND id IN (SELECT value FROM json_each(?3))
        )
      RETURNING id, content_version AS version`
   ).bind(userId, userId, JSON.stringify(ids));
+}
+
+export function bumpBoardSheetVersionForTableAtExpectedLockStatement(
+  env: Env,
+  userId: string,
+  tableId: string,
+  expectedLock: 0 | 1
+) {
+  return env.DB.prepare(
+    `UPDATE sheets
+     SET content_version = content_version + 1,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE sheets.user_id = ?
+       AND sheets.id IN (
+         SELECT board_tables.sheet_id
+         FROM board_tables
+         WHERE board_tables.id = ?
+           AND board_tables.user_id = sheets.user_id
+           AND board_tables.locked = ?
+       )
+     RETURNING id, content_version AS version`
+  ).bind(userId, tableId, expectedLock);
 }
 
 export function bumpBoardSheetVersionForNoteStatement(env: Env, userId: string, noteId: string) {

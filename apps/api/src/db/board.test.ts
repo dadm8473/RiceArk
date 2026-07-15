@@ -44,6 +44,7 @@ import {
   reorderBoardAxisItems,
   saveBoardCellStatePatches,
   saveBoardCompletionPatches,
+  transposeBoardTable,
   transposeBoardRoles,
   updateBoardTableLayout,
   updateBoardNote,
@@ -316,26 +317,55 @@ function createBoardMutationDatabase(): DatabaseSync {
     CREATE TABLE board_tables (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      sheet_id TEXT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE
+      sheet_id TEXT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+      x INTEGER NOT NULL DEFAULT 0,
+      y INTEGER NOT NULL DEFAULT 0,
+      width INTEGER,
+      height INTEGER,
+      row_role TEXT NOT NULL DEFAULT 'task',
+      column_role TEXT NOT NULL DEFAULT 'character',
+      task_axis TEXT NOT NULL DEFAULT 'rows',
+      locked INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE board_axis_items (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      table_id TEXT NOT NULL REFERENCES board_tables(id) ON DELETE CASCADE
+      table_id TEXT NOT NULL REFERENCES board_tables(id) ON DELETE CASCADE,
+      axis TEXT NOT NULL DEFAULT 'row',
+      kind TEXT NOT NULL DEFAULT 'custom',
+      visible INTEGER NOT NULL DEFAULT 1,
+      task_reset_rule_json TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      size_px INTEGER,
+      cross_size_px INTEGER,
+      label TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE board_cell_states (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       table_id TEXT NOT NULL REFERENCES board_tables(id) ON DELETE CASCADE,
       row_item_id TEXT NOT NULL REFERENCES board_axis_items(id) ON DELETE CASCADE,
-      column_item_id TEXT NOT NULL REFERENCES board_axis_items(id) ON DELETE CASCADE
+      column_item_id TEXT NOT NULL REFERENCES board_axis_items(id) ON DELETE CASCADE,
+      checkbox_visible INTEGER NOT NULL DEFAULT 1,
+      mark_type TEXT NOT NULL DEFAULT 'default',
+      mark_icon TEXT,
+      memo TEXT,
+      mark_period_key TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (table_id, row_item_id, column_item_id)
     );
     CREATE TABLE board_cell_completions (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       table_id TEXT NOT NULL REFERENCES board_tables(id) ON DELETE CASCADE,
       row_item_id TEXT NOT NULL REFERENCES board_axis_items(id) ON DELETE CASCADE,
-      column_item_id TEXT NOT NULL REFERENCES board_axis_items(id) ON DELETE CASCADE
+      column_item_id TEXT NOT NULL REFERENCES board_axis_items(id) ON DELETE CASCADE,
+      period_key TEXT NOT NULL DEFAULT 'none:permanent',
+      completed INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (user_id, table_id, row_item_id, column_item_id, period_key)
     );
     CREATE TABLE board_notes (
       id TEXT PRIMARY KEY,
@@ -377,9 +407,9 @@ function seedSqliteBoard(database: DatabaseSync, sheetIds: string[]): void {
   });
 
   const firstSheet = sheetIds[0]!;
-  database.prepare("INSERT INTO board_axis_items (id, user_id, table_id) VALUES (?, ?, ?)")
-    .run("axis-row", "user-1", `table-${firstSheet}`);
-  database.prepare("INSERT INTO board_axis_items (id, user_id, table_id) VALUES (?, ?, ?)")
+  database.prepare("INSERT INTO board_axis_items (id, user_id, table_id, axis, kind, task_reset_rule_json) VALUES (?, ?, ?, 'row', 'task', ?)")
+    .run("axis-row", "user-1", `table-${firstSheet}`, '{"type":"none"}');
+  database.prepare("INSERT INTO board_axis_items (id, user_id, table_id, axis, kind) VALUES (?, ?, ?, 'column', 'character')")
     .run("axis-column", "user-1", `table-${firstSheet}`);
   database.prepare(
     "INSERT INTO board_cell_states (id, user_id, table_id, row_item_id, column_item_id) VALUES (?, ?, ?, ?, ?)"
@@ -389,7 +419,25 @@ function seedSqliteBoard(database: DatabaseSync, sheetIds: string[]): void {
   ).run("completion", "user-1", `table-${firstSheet}`, "axis-row", "axis-column");
 }
 
-function createSqliteD1Env(database: DatabaseSync, options: { interleaveDeletePreflights?: boolean } = {}) {
+function seedSqliteAxisPair(database: DatabaseSync, tableId: string, suffix: string): { rowId: string; columnId: string } {
+  const rowId = `axis-row-${suffix}`;
+  const columnId = `axis-column-${suffix}`;
+  database.prepare(
+    "INSERT INTO board_axis_items (id, user_id, table_id, axis, kind, task_reset_rule_json) VALUES (?, 'user-1', ?, 'row', 'task', ?)"
+  ).run(rowId, tableId, '{"type":"none"}');
+  database.prepare(
+    "INSERT INTO board_axis_items (id, user_id, table_id, axis, kind) VALUES (?, 'user-1', ?, 'column', 'character')"
+  ).run(columnId, tableId);
+  return { rowId, columnId };
+}
+
+function createSqliteD1Env(
+  database: DatabaseSync,
+  options: {
+    interleaveDeletePreflights?: boolean;
+    beforeBatch?: (statements: SqliteD1Statement[], database: DatabaseSync) => void;
+  } = {}
+) {
   const preparedSql: string[] = [];
   const batches: SqliteD1Statement[][] = [];
   let countPreflights = 0;
@@ -432,6 +480,7 @@ function createSqliteD1Env(database: DatabaseSync, options: { interleaveDeletePr
       async batch(statements: SqliteD1Statement[]) {
         batches.push(statements);
         const executeBatch = () => {
+          options.beforeBatch?.(statements, database);
           database.exec("BEGIN IMMEDIATE");
           try {
             const results = statements.map((statement) => {
@@ -2837,6 +2886,256 @@ describe("board db defaults", () => {
       versions: { sheets: [] }
     });
     expect(batchCalls).toBe(0);
+  });
+
+  it("executes non-default cell-state insert and upsert bindings in SQLite", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      database.prepare("DELETE FROM board_cell_states").run();
+      const { env } = createSqliteD1Env(database);
+      const patch = {
+        tableId: "table-A",
+        rowItemId: "axis-row",
+        columnItemId: "axis-column",
+        markType: "fixed" as const,
+        memo: "first"
+      };
+
+      await expect(saveBoardCellStatePatches(env, "user-1", [patch])).resolves.toEqual({
+        ok: true,
+        versions: { sheets: [{ id: "A", version: 1 }] }
+      });
+      expect(
+        database.prepare(
+          "SELECT table_id, row_item_id, column_item_id, mark_type, memo FROM board_cell_states"
+        ).all()
+      ).toEqual([
+        {
+          table_id: "table-A",
+          row_item_id: "axis-row",
+          column_item_id: "axis-column",
+          mark_type: "fixed",
+          memo: "first"
+        }
+      ]);
+
+      await expect(saveBoardCellStatePatches(env, "user-1", [{ ...patch, memo: "second" }])).resolves.toEqual({
+        ok: true,
+        versions: { sheets: [{ id: "A", version: 2 }] }
+      });
+      expect(database.prepare("SELECT COUNT(*) AS count, MAX(memo) AS memo FROM board_cell_states").get()).toEqual({
+        count: 1,
+        memo: "second"
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps layout and versions unchanged when the table locks before the batch", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      let raced = false;
+      const { env } = createSqliteD1Env(database, {
+        beforeBatch(_statements, currentDatabase) {
+          if (raced) return;
+          raced = true;
+          currentDatabase.prepare("UPDATE board_tables SET locked = 1 WHERE id = ?").run("table-A");
+        }
+      });
+
+      await expect(
+        updateBoardTableLayout(env, "user-1", "table-A", { x: 40, y: 50, width: 320, height: 180 })
+      ).resolves.toBeNull();
+      expect(database.prepare("SELECT x, y, width, height, locked FROM board_tables WHERE id = ?").get("table-A")).toEqual({
+        x: 0,
+        y: 0,
+        width: null,
+        height: null,
+        locked: 1
+      });
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("A")).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps table children and versions unchanged when delete races with a lock", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      let raced = false;
+      const { env } = createSqliteD1Env(database, {
+        beforeBatch(_statements, currentDatabase) {
+          if (raced) return;
+          raced = true;
+          currentDatabase.prepare("UPDATE board_tables SET locked = 1 WHERE id = ?").run("table-A");
+        }
+      });
+
+      await expect(deleteBoardTable(env, "user-1", "table-A")).resolves.toBeNull();
+      expect(database.prepare("SELECT id, locked FROM board_tables WHERE id = ?").get("table-A")).toEqual({
+        id: "table-A",
+        locked: 1
+      });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM board_axis_items").get()).toEqual({ count: 2 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM board_cell_states").get()).toEqual({ count: 1 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM board_cell_completions").get()).toEqual({ count: 1 });
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("A")).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps transpose children and versions unchanged when the table locks before the batch", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      const beforeAxes = database.prepare(
+        "SELECT id, axis, sort_order, size_px, cross_size_px FROM board_axis_items ORDER BY id"
+      ).all();
+      const beforeCells = database.prepare(
+        "SELECT row_item_id, column_item_id FROM board_cell_states"
+      ).all();
+      let raced = false;
+      const { env } = createSqliteD1Env(database, {
+        beforeBatch(_statements, currentDatabase) {
+          if (raced) return;
+          raced = true;
+          currentDatabase.prepare("UPDATE board_tables SET locked = 1 WHERE id = ?").run("table-A");
+        }
+      });
+
+      await expect(transposeBoardTable(env, "user-1", "table-A")).resolves.toBeNull();
+      expect(database.prepare(
+        "SELECT id, axis, sort_order, size_px, cross_size_px FROM board_axis_items ORDER BY id"
+      ).all()).toEqual(beforeAxes);
+      expect(database.prepare("SELECT row_item_id, column_item_id FROM board_cell_states").all()).toEqual(beforeCells);
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("A")).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps completion batches all-or-none when one table locks before the batch", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A", "B"]);
+      const second = seedSqliteAxisPair(database, "table-B", "B");
+      let raced = false;
+      const { env } = createSqliteD1Env(database, {
+        beforeBatch(_statements, currentDatabase) {
+          if (raced) return;
+          raced = true;
+          currentDatabase.prepare("UPDATE board_tables SET locked = 1 WHERE id = ?").run("table-B");
+        }
+      });
+
+      await expect(
+        saveBoardCompletionPatches(env, "user-1", [
+          {
+            tableId: "table-A",
+            rowItemId: "axis-row",
+            columnItemId: "axis-column",
+            periodKey: "none:permanent",
+            completed: true
+          },
+          {
+            tableId: "table-B",
+            rowItemId: second.rowId,
+            columnItemId: second.columnId,
+            periodKey: "none:permanent",
+            completed: true
+          }
+        ])
+      ).resolves.toBeNull();
+      expect(database.prepare("SELECT table_id, completed FROM board_cell_completions ORDER BY table_id").all()).toEqual([
+        { table_id: "table-A", completed: 0 }
+      ]);
+      expect(database.prepare("SELECT id, content_version FROM sheets ORDER BY id").all()).toEqual([
+        { id: "A", content_version: 0 },
+        { id: "B", content_version: 0 }
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps cell-state batches all-or-none when one table locks before the batch", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A", "B"]);
+      const second = seedSqliteAxisPair(database, "table-B", "B");
+      let raced = false;
+      const { env } = createSqliteD1Env(database, {
+        beforeBatch(_statements, currentDatabase) {
+          if (raced) return;
+          raced = true;
+          currentDatabase.prepare("UPDATE board_tables SET locked = 1 WHERE id = ?").run("table-B");
+        }
+      });
+
+      await expect(
+        saveBoardCellStatePatches(env, "user-1", [
+          {
+            tableId: "table-A",
+            rowItemId: "axis-row",
+            columnItemId: "axis-column",
+            markType: "fixed",
+            memo: "changed"
+          },
+          {
+            tableId: "table-B",
+            rowItemId: second.rowId,
+            columnItemId: second.columnId,
+            markType: "fixed",
+            memo: "new"
+          }
+        ])
+      ).resolves.toBeNull();
+      expect(database.prepare("SELECT table_id, mark_type, memo FROM board_cell_states ORDER BY table_id").all()).toEqual([
+        { table_id: "table-A", mark_type: "default", memo: null }
+      ]);
+      expect(database.prepare("SELECT id, content_version FROM sheets ORDER BY id").all()).toEqual([
+        { id: "A", content_version: 0 },
+        { id: "B", content_version: 0 }
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps default cell-state delete and versions unchanged when the table locks before the batch", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      let raced = false;
+      const { env } = createSqliteD1Env(database, {
+        beforeBatch(_statements, currentDatabase) {
+          if (raced) return;
+          raced = true;
+          currentDatabase.prepare("UPDATE board_tables SET locked = 1 WHERE id = ?").run("table-A");
+        }
+      });
+
+      await expect(
+        saveBoardCellStatePatches(env, "user-1", [
+          {
+            tableId: "table-A",
+            rowItemId: "axis-row",
+            columnItemId: "axis-column",
+            markType: "default",
+            memo: null
+          }
+        ])
+      ).resolves.toBeNull();
+      expect(database.prepare("SELECT id FROM board_cell_states").all()).toEqual([{ id: "cell-state" }]);
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("A")).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
   });
 
   it("keeps share start and stop ownership-guarded without board version statements", async () => {
