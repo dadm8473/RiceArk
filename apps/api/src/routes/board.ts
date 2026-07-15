@@ -41,6 +41,7 @@ import {
   type BoardCellStatePatch,
   type BoardCompletionPatch
 } from "../db/board";
+import { BoardSnapshotConflictError, loadBoardBootstrap, loadBoardSheet } from "../db/boardReads";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
 import { periodKeySchema, resourceIdSchema, safeText } from "../http/input";
@@ -101,6 +102,10 @@ export const updateBoardSheetSchema = createBoardSheetSchema;
 
 export const boardSheetIdParamSchema = z.object({
   id: resourceIdSchema
+}).strict();
+
+export const boardBootstrapQuerySchema = z.object({
+  sheetId: resourceIdSchema.optional()
 }).strict();
 
 export const boardShareIdParamSchema = z.object({
@@ -295,17 +300,60 @@ export const boardNoteLayoutPatchSchema = z.object({
 
 export const boardRoutes = new Hono<{ Bindings: Env }>();
 
+function rethrowBoardReadError(error: unknown): never {
+  if (error instanceof BoardSnapshotConflictError) {
+    throw new ApiError(
+      503,
+      "board_snapshot_conflict",
+      "쌀통 상태가 변경되었습니다. 잠시 후 다시 시도해 주세요.",
+      { headers: { "Retry-After": "1" } }
+    );
+  }
+  throw error;
+}
+
+boardRoutes.get("/board/bootstrap", zValidator("query", boardBootstrapQuerySchema), async (c) => {
+  const user = await requireUser(c);
+  try {
+    const payload = await loadBoardBootstrap(c.env, user.id, c.req.valid("query").sheetId);
+    c.header("Cache-Control", "private, no-store");
+    c.header("Vary", "Cookie");
+    return c.json(payload);
+  } catch (error) {
+    rethrowBoardReadError(error);
+  }
+});
+
 boardRoutes.get("/board/versions", async (c) => {
   const user = await requireUser(c);
   const versions = await loadBoardVersionSummary(c.env, user.id);
   c.header("Cache-Control", "private, no-store");
+  c.header("Vary", "Cookie");
   return c.json(versions);
 });
 
 boardRoutes.get("/board", async (c) => {
   const user = await requireUser(c);
   const board = await loadBoard(c.env, user.id);
+  c.header("Cache-Control", "private, no-store");
+  c.header("Vary", "Cookie");
   return c.json(board);
+});
+
+boardRoutes.get("/board/sheets/:id", zValidator("param", boardSheetIdParamSchema), async (c) => {
+  const user = await requireUser(c);
+  try {
+    const { id } = c.req.valid("param");
+    const sheet = await loadBoardSheet(c.env, user.id, id);
+    if (!sheet) {
+      throw new ApiError(404, "board_sheet_not_found", "탭을 찾을 수 없습니다.");
+    }
+    c.header("Cache-Control", "private, no-store");
+    c.header("Vary", "Cookie");
+    return c.json(sheet);
+  } catch (error) {
+    rethrowBoardReadError(error);
+  }
 });
 
 boardRoutes.get("/board/shares", async (c) => {

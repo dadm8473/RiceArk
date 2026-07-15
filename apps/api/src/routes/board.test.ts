@@ -3,6 +3,7 @@ import app from "../index";
 import {
   boardAxisItemIdParamSchema,
   boardAxisOrderSchema,
+  boardBootstrapQuerySchema,
   boardCellStatePatchBatchSchema,
   boardAxisSizePatchSchema,
   boardCellStatePatchSchema,
@@ -33,6 +34,13 @@ const routeEnv = {
 };
 
 describe("board route schemas", () => {
+  it("accepts only an optional safe bootstrap sheet id", () => {
+    expect(boardBootstrapQuerySchema.safeParse({}).success).toBe(true);
+    expect(boardBootstrapQuerySchema.safeParse({ sheetId: "sheet-1" }).success).toBe(true);
+    expect(boardBootstrapQuerySchema.safeParse({ sheetId: "sheet🙂" }).success).toBe(false);
+    expect(boardBootstrapQuerySchema.safeParse({ sheetId: "sheet-1", unexpected: true }).success).toBe(false);
+  });
+
   it("accepts small board completion batches", () => {
     expect(
       boardCompletionPatchSchema.safeParse({
@@ -1690,6 +1698,440 @@ describe("board mutation routes", () => {
   });
 });
 
+describe("board owner read routes", () => {
+  interface BoardReadRouteOptions {
+    noDefaultSheet?: boolean;
+    snapshotConflict?: "bootstrap" | "sheet";
+    databaseError?: boolean;
+  }
+
+  const settings = {
+    show_display_name: 1,
+    show_server_name: 1,
+    show_class_name: 0,
+    show_item_level: 1,
+    show_combat_power: 0
+  };
+
+  function createBoardReadRouteEnv(options: BoardReadRouteOptions = {}) {
+    const statements: Array<{ sql: string; values: unknown[] }> = [];
+    let manifestReads = 0;
+    let metadataReads = 0;
+    const manifestSheets = [
+      { id: "sheet-first", name: "First", sort_order: 0, is_default: 0, version: 2 },
+      { id: "sheet-default", name: "Default", sort_order: 10, is_default: options.noDefaultSheet ? 0 : 1, version: 4 },
+      { id: "sheet-active", name: "Active", sort_order: 20, is_default: 0, version: 7 }
+    ];
+
+    function sheetMetadata(sheetId: string) {
+      const sheet = manifestSheets.find((candidate) => candidate.id === sheetId);
+      if (!sheet) return null;
+      metadataReads += 1;
+      const contentVersion =
+        options.snapshotConflict === "sheet" && sheetId === "sheet-active"
+          ? sheet.version + metadataReads
+          : sheet.version;
+      return {
+        id: sheet.id,
+        name: sheet.name,
+        sort_order: sheet.sort_order,
+        is_default: sheet.is_default,
+        content_version: contentVersion
+      };
+    }
+
+    function sheetPayloadRows(sheetId: string) {
+      return {
+        tables: [
+          {
+            id: `table-${sheetId}`,
+            sheet_id: sheetId,
+            name: `${sheetId} table`,
+            sort_order: 0,
+            x: 24,
+            y: 24
+          }
+        ],
+        notes: [
+          {
+            id: `note-${sheetId}`,
+            sheet_id: sheetId,
+            title: `${sheetId} note`,
+            body: "",
+            sort_order: 0,
+            x: 48,
+            y: 48
+          }
+        ],
+        axisItems: [
+          {
+            id: `axis-${sheetId}`,
+            table_id: `table-${sheetId}`,
+            axis: "row",
+            kind: "task",
+            label: "Permanent",
+            character_id: null,
+            task_id: "task-none",
+            task_scope: "character",
+            task_reset_type: "none",
+            task_reset_rule_json: '{"type":"none"}',
+            task_color: null,
+            size_px: null,
+            cross_size_px: null,
+            sort_order: 0,
+            visible: 1,
+            separator_json: null,
+            display_options_json: null,
+            character_name: null,
+            character_display_name: null,
+            character_server_name: null,
+            character_class_name: null,
+            character_item_level: null,
+            character_combat_power: null,
+            character_source: null
+          }
+        ],
+        cellStates: [
+          {
+            table_id: `table-${sheetId}`,
+            row_item_id: `axis-${sheetId}`,
+            column_item_id: `column-${sheetId}`,
+            checkbox_visible: 1,
+            mark_type: "default",
+            mark_icon: null,
+            memo: null,
+            mark_period_key: null
+          }
+        ],
+        completions: [
+          {
+            table_id: `table-${sheetId}`,
+            row_item_id: `axis-${sheetId}`,
+            column_item_id: `column-${sheetId}`,
+            period_key: "none:permanent",
+            completed: 1
+          }
+        ]
+      };
+    }
+
+    const env = {
+      ...routeEnv,
+      DB: {
+        prepare(sql: string) {
+          const captured = { sql, values: [] as unknown[] };
+          statements.push(captured);
+          return {
+            sql,
+            values: captured.values,
+            bind(...values: unknown[]) {
+              captured.values = values;
+              return { ...this, values };
+            },
+            async first() {
+              if (sql.includes("FROM sessions")) {
+                return { id: "user-1", display_name: "Owner", avatar_url: null };
+              }
+              if (sql.includes("SELECT EXISTS(SELECT id FROM board_tables")) {
+                return { has_table: 1, has_sheet: 1, checklist_orientation: "tasks_rows" };
+              }
+              if (sql.includes("FROM sheets\n     WHERE id = ? AND user_id = ?")) {
+                return sheetMetadata(String(this.values[0]));
+              }
+              if (sql.includes("FROM user_settings")) return settings;
+              return null;
+            },
+            async all() {
+              if (options.databaseError && sql.includes("FROM board_tables\n       JOIN sheets")) {
+                throw new Error("database unavailable");
+              }
+              if (sql.includes("WITH manifest AS")) {
+                manifestReads += 1;
+                const manifestVersion = options.snapshotConflict === "bootstrap" ? manifestReads : 9;
+                return {
+                  results: manifestSheets.map((sheet) => ({
+                    manifest_version: manifestVersion,
+                    ...settings,
+                    ...sheet
+                  }))
+                };
+              }
+
+              const sheetId = String(this.values[1] ?? "sheet-active");
+              const payload = sheetPayloadRows(sheetId);
+              if (sql.includes("FROM board_tables\n       JOIN sheets")) return { results: payload.tables };
+              if (sql.includes("FROM board_notes\n       JOIN sheets")) return { results: payload.notes };
+              if (sql.includes("FROM board_axis_items\n       JOIN board_tables")) return { results: payload.axisItems };
+              if (sql.includes("FROM board_cell_states\n       JOIN board_tables")) return { results: payload.cellStates };
+              if (sql.includes("FROM board_cell_completions\n           JOIN board_tables")) {
+                return { results: payload.completions };
+              }
+
+              if (sql.startsWith("SELECT * FROM sheets")) {
+                return {
+                  results: manifestSheets.map(({ version, ...sheet }) => ({ ...sheet, user_id: "user-1", content_version: version }))
+                };
+              }
+              if (sql.startsWith("SELECT * FROM board_tables")) return { results: sheetPayloadRows("sheet-active").tables };
+              if (sql.startsWith("SELECT * FROM board_notes")) return { results: sheetPayloadRows("sheet-active").notes };
+              if (sql.includes("FROM board_axis_items\n       LEFT JOIN characters")) {
+                return { results: sheetPayloadRows("sheet-active").axisItems };
+              }
+              if (sql.startsWith("SELECT * FROM board_cell_states")) {
+                return { results: sheetPayloadRows("sheet-active").cellStates };
+              }
+              if (sql.includes("FROM board_cell_completions\n           WHERE user_id")) {
+                return { results: sheetPayloadRows("sheet-active").completions };
+              }
+              return { results: [] };
+            }
+          };
+        }
+      }
+    };
+
+    return {
+      env,
+      statements,
+      getManifestReads: () => manifestReads,
+      getMetadataReads: () => metadataReads,
+      manifestSheets,
+      sheetPayloadRows
+    };
+  }
+
+  function expectPrivateOwnerReadHeaders(response: Response) {
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Vary")?.split(",").map((value) => value.trim()).sort()).toEqual([
+      "Cookie",
+      "Origin"
+    ]);
+  }
+
+  function expectStructuredValidationError(response: Response, body: unknown) {
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({
+      success: false,
+      error: { issues: expect.any(Array) }
+    });
+  }
+
+  it("returns the exact bootstrap contract for an owned requested sheet within nine statements", async () => {
+    const { env, statements, manifestSheets, sheetPayloadRows } = createBoardReadRouteEnv();
+    const response = await app.request(
+      "/api/board/bootstrap?sheetId=sheet-active",
+      { headers: { Cookie: "riceark_session=test-token" } },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expectPrivateOwnerReadHeaders(response);
+    const body = await response.json();
+    expect(body).toEqual({
+      userId: "user-1",
+      settings,
+      manifest: { version: 9, sheets: manifestSheets },
+      activeSheet: {
+        sheet: {
+          id: "sheet-active",
+          name: "Active",
+          sort_order: 20,
+          is_default: 0,
+          content_version: 7
+        },
+        ...sheetPayloadRows("sheet-active"),
+        periodFingerprint: "none:permanent"
+      }
+    });
+    expect(Object.keys(body as Record<string, unknown>).sort()).toEqual([
+      "activeSheet",
+      "manifest",
+      "settings",
+      "userId"
+    ]);
+    expect(body).not.toHaveProperty("versions");
+    expect(body).not.toHaveProperty("manifestVersion");
+    expect(statements).toHaveLength(9);
+    expect(statements.filter((statement) => statement.sql.includes("FROM sessions"))).toHaveLength(1);
+    expect(statements.filter((statement) => statement.sql.includes("WITH manifest AS"))).toHaveLength(2);
+  });
+
+  it.each(["sheet-foreign", "sheet-missing"])(
+    "falls back from requested %s to the owned default sheet",
+    async (requestedSheetId) => {
+      const { env, statements } = createBoardReadRouteEnv();
+      const response = await app.request(
+        `/api/board/bootstrap?sheetId=${requestedSheetId}`,
+        { headers: { Cookie: "riceark_session=test-token" } },
+        env
+      );
+
+      expect(response.status).toBe(200);
+      expect((await response.json()) as object).toMatchObject({ activeSheet: { sheet: { id: "sheet-default" } } });
+      expect(statements).toHaveLength(9);
+    }
+  );
+
+  it("falls back to the first sorted sheet when no owned sheet is default", async () => {
+    const { env } = createBoardReadRouteEnv({ noDefaultSheet: true });
+    const response = await app.request(
+      "/api/board/bootstrap?sheetId=sheet-missing",
+      { headers: { Cookie: "riceark_session=test-token" } },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()) as object).toMatchObject({ activeSheet: { sheet: { id: "sheet-first" } } });
+  });
+
+  it.each([
+    "/api/board/bootstrap?sheetId=sheet%F0%9F%99%82",
+    "/api/board/bootstrap?sheetId=sheet-active&unexpected=true",
+    "/api/board/sheets/sheet%F0%9F%99%82"
+  ])("returns the existing structured validation response for %s", async (path) => {
+    const response = await app.request(path, {}, routeEnv);
+    expectStructuredValidationError(response, await response.json());
+  });
+
+  it("returns one owned sheet payload within the completion-query statement budget", async () => {
+    const { env, statements, sheetPayloadRows } = createBoardReadRouteEnv();
+    const response = await app.request(
+      "/api/board/sheets/sheet-active",
+      { headers: { Cookie: "riceark_session=test-token" } },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expectPrivateOwnerReadHeaders(response);
+    expect(await response.json()).toEqual({
+      sheet: {
+        id: "sheet-active",
+        name: "Active",
+        sort_order: 20,
+        is_default: 0,
+        content_version: 7
+      },
+      ...sheetPayloadRows("sheet-active"),
+      periodFingerprint: "none:permanent"
+    });
+    expect(statements.length).toBeLessThanOrEqual(8);
+    expect(statements).toHaveLength(8);
+  });
+
+  it.each(["sheet-foreign", "sheet-missing"])(
+    "returns the mutation-compatible missing-sheet response for direct %s reads",
+    async (sheetId) => {
+      const { env } = createBoardReadRouteEnv();
+      const response = await app.request(
+        `/api/board/sheets/${sheetId}`,
+        { headers: { Cookie: "riceark_session=test-token" } },
+        env
+      );
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: { code: "board_sheet_not_found", message: "탭을 찾을 수 없습니다." }
+      });
+    }
+  );
+
+  it.each([
+    { path: "/api/board/bootstrap?sheetId=sheet-active", conflict: "bootstrap" as const },
+    { path: "/api/board/sheets/sheet-active", conflict: "sheet" as const }
+  ])("maps bounded $conflict snapshot exhaustion to a retryable 503", async ({ path, conflict }) => {
+    const { env, getManifestReads, getMetadataReads } = createBoardReadRouteEnv({ snapshotConflict: conflict });
+    const response = await app.request(
+      path,
+      { headers: { Cookie: "riceark_session=test-token" } },
+      env
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
+    expect(await response.json()).toEqual({
+      error: {
+        code: "board_snapshot_conflict",
+        message: "쌀통 상태가 변경되었습니다. 잠시 후 다시 시도해 주세요."
+      }
+    });
+    if (conflict === "bootstrap") {
+      expect(getManifestReads()).toBe(6);
+      expect(getMetadataReads()).toBe(3);
+    } else {
+      expect(getManifestReads()).toBe(0);
+      expect(getMetadataReads()).toBe(6);
+    }
+  });
+
+  it("leaves non-snapshot read failures as normal internal errors", async () => {
+    const { env } = createBoardReadRouteEnv({ databaseError: true });
+    const originalConsoleError = console.error;
+    console.error = () => undefined;
+    try {
+      const response = await app.request(
+        "/api/board/sheets/sheet-active",
+        { headers: { Cookie: "riceark_session=test-token" } },
+        env
+      );
+
+      expect(response.status).toBe(500);
+      expect(response.headers.get("Retry-After")).toBeNull();
+      expect(await response.json()).toEqual({
+        error: { code: "internal_error", message: "Internal server error" }
+      });
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
+
+  it("keeps legacy owner reads compatible while applying private headers", async () => {
+    const { env, manifestSheets, sheetPayloadRows } = createBoardReadRouteEnv();
+    const legacy = await app.request(
+      "/api/board",
+      { headers: { Cookie: "riceark_session=test-token" } },
+      env
+    );
+
+    expect(legacy.status).toBe(200);
+    expectPrivateOwnerReadHeaders(legacy);
+    const body = await legacy.json();
+    expect(body).toEqual({
+      userId: "user-1",
+      settings,
+      sheets: manifestSheets.map(({ version, ...sheet }) => ({ ...sheet, user_id: "user-1", content_version: version })),
+      tables: sheetPayloadRows("sheet-active").tables,
+      notes: sheetPayloadRows("sheet-active").notes,
+      axisItems: sheetPayloadRows("sheet-active").axisItems,
+      cellStates: sheetPayloadRows("sheet-active").cellStates,
+      completions: sheetPayloadRows("sheet-active").completions
+    });
+    expect(Object.keys(body as Record<string, unknown>).sort()).toEqual([
+      "axisItems",
+      "cellStates",
+      "completions",
+      "notes",
+      "settings",
+      "sheets",
+      "tables",
+      "userId"
+    ]);
+
+    const versions = await app.request(
+      "/api/board/versions",
+      { headers: { Cookie: "riceark_session=test-token" } },
+      env
+    );
+    expect(versions.status).toBe(200);
+    expectPrivateOwnerReadHeaders(versions);
+    expect(await versions.json()).toEqual({
+      manifestVersion: 9,
+      sheets: manifestSheets,
+      periodFingerprint: "",
+      settings
+    });
+  });
+});
+
 describe("board share routes", () => {
   function createShareRouteEnv() {
     const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
@@ -1828,7 +2270,8 @@ describe("board share routes", () => {
     const response = await app.request("/api/shared-rice-bins/AbCdEfGhIjKlMnOpQrStUv", {}, env);
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("vary")?.split(",").map((value) => value.trim())).toEqual(["Origin"]);
     expect(await response.json()).toMatchObject({
       shareId: "AbCdEfGhIjKlMnOpQrStUv",
       readOnly: true,
@@ -1902,7 +2345,8 @@ describe("board share routes", () => {
 
     const shared = await app.request("/api/shared-rice-bins/AbCdEfGhIjKlMnOpQrStUv/version", {}, env);
     expect(shared.status).toBe(200);
-    expect(shared.headers.get("cache-control")).toContain("no-store");
+    expect(shared.headers.get("cache-control")).toBe("no-store");
+    expect(shared.headers.get("vary")?.split(",").map((value) => value.trim())).toEqual(["Origin"]);
     expect(await shared.json()).toEqual({
       shareId: "AbCdEfGhIjKlMnOpQrStUv",
       sheetId: "sheet-1",
