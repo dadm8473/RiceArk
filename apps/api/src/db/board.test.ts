@@ -1,3 +1,4 @@
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_SHEET_NAME,
@@ -80,11 +81,11 @@ function createAtomicMutationEnv() {
 
   const execute = (statement: MutationStatement, target: MutationState) => {
     const sql = statement.sql.replace(/\s+/g, " ").trim();
-    const returning = /\bRETURNING\b/i.test(sql);
+    const returnsRows = /\bRETURNING\b/i.test(sql) || sql.startsWith("SELECT");
     const result = (rows: Record<string, unknown>[], changes: number) => ({
       success: true,
       meta: { changes },
-      results: returning ? rows : []
+      results: returnsRows ? rows : []
     });
 
     if (sql.includes("INSERT INTO board_manifest_versions")) {
@@ -93,6 +94,14 @@ function createAtomicMutationEnv() {
       if (conditionalSheetId) {
         const sheet = target.sheets.get(conditionalSheetId);
         if (!sheet || sheet.userId !== conditionalUserId) return result([], 0);
+        if (
+          sql.includes("other.id <> target.id") &&
+          ![...target.sheets].some(
+            ([id, other]) => id !== conditionalSheetId && other.userId === String(statement.values[3])
+          )
+        ) {
+          return result([], 0);
+        }
       }
       target.manifestVersion += 1;
       return result([{ user_id: String(statement.values[0]), version: target.manifestVersion }], 1);
@@ -133,12 +142,36 @@ function createAtomicMutationEnv() {
       return result([{ id: sheetId, version: sheet.version }], 1);
     }
 
+    if (sql.startsWith("UPDATE sheets") && sql.includes("SET is_default = CASE")) {
+      const targetSheetId = String(statement.values[1]);
+      const userId = String(statement.values[2]);
+      const targetSheet = target.sheets.get(targetSheetId);
+      const otherSheetId = [...target.sheets].find(([id, sheet]) => id !== targetSheetId && sheet.userId === userId)?.[0];
+      if (!targetSheet || targetSheet.userId !== userId || targetSheet.isDefault !== 1 || !otherSheetId) return result([], 0);
+      for (const [id, sheet] of target.sheets) {
+        if (sheet.userId === userId) sheet.isDefault = id === otherSheetId ? 1 : 0;
+      }
+      return result([], 1);
+    }
+
     if (sql.startsWith("DELETE FROM sheets")) {
       const [sheetId, userId] = statement.values.map(String);
       const sheet = target.sheets.get(sheetId!);
       if (!sheet || sheet.userId !== userId) return result([], 0);
+      if (
+        sql.includes("other.id <> sheets.id") &&
+        ![...target.sheets].some(([id, other]) => id !== sheetId && other.userId === String(statement.values[2]))
+      ) {
+        return result([], 0);
+      }
       target.sheets.delete(sheetId!);
       return result([{ id: sheetId }], 1);
+    }
+
+    if (sql.startsWith("SELECT CASE") && sql.includes("FROM sheets WHERE id = ? AND user_id = ?")) {
+      const [sheetId, userId] = statement.values.map(String);
+      const sheet = target.sheets.get(sheetId!);
+      return result([{ type: sheet?.userId === userId ? "last_sheet" : "not_found" }], 0);
     }
 
     if (sql.startsWith("INSERT INTO board_tables")) {
@@ -157,16 +190,19 @@ function createAtomicMutationEnv() {
     }
 
     if (sql.startsWith("UPDATE board_notes")) {
-      const noteId = String(statement.values.at(-2));
-      const userId = String(statement.values.at(-1));
+      const noteId = String(statement.values.at(-3));
+      const userId = String(statement.values.at(-2));
+      const sheetUserId = String(statement.values.at(-1));
       const note = target.notes.get(noteId);
-      return note?.userId === userId ? result([{ id: noteId }], 1) : result([], 0);
+      const sheet = note ? target.sheets.get(note.sheetId) : null;
+      return note?.userId === userId && sheet?.userId === sheetUserId ? result([{ id: noteId }], 1) : result([], 0);
     }
 
     if (sql.startsWith("DELETE FROM board_notes") && sql.includes("WHERE id = ? AND user_id = ?")) {
       const [noteId, userId] = statement.values.map(String);
       const note = target.notes.get(noteId!);
-      if (!note || note.userId !== userId) return result([], 0);
+      const sheet = note ? target.sheets.get(note.sheetId) : null;
+      if (!note || note.userId !== userId || sheet?.userId !== String(statement.values[2])) return result([], 0);
       target.notes.delete(noteId!);
       return result([{ id: noteId }], 1);
     }
@@ -227,6 +263,179 @@ function createAtomicMutationEnv() {
   } as unknown as Parameters<typeof createBoardSheet>[0];
 
   return { env, state, batches, preparedSql };
+}
+
+interface SqliteD1Statement {
+  sql: string;
+  values: SQLInputValue[];
+}
+
+function createBoardMutationDatabase(): DatabaseSync {
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE users (id TEXT PRIMARY KEY);
+    CREATE TABLE sheets (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      content_version INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (user_id, name)
+    );
+    CREATE TABLE board_manifest_versions (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      version INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE board_tables (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      sheet_id TEXT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE
+    );
+    CREATE TABLE board_axis_items (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      table_id TEXT NOT NULL REFERENCES board_tables(id) ON DELETE CASCADE
+    );
+    CREATE TABLE board_cell_states (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      table_id TEXT NOT NULL REFERENCES board_tables(id) ON DELETE CASCADE,
+      row_item_id TEXT NOT NULL REFERENCES board_axis_items(id) ON DELETE CASCADE,
+      column_item_id TEXT NOT NULL REFERENCES board_axis_items(id) ON DELETE CASCADE
+    );
+    CREATE TABLE board_cell_completions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      table_id TEXT NOT NULL REFERENCES board_tables(id) ON DELETE CASCADE,
+      row_item_id TEXT NOT NULL REFERENCES board_axis_items(id) ON DELETE CASCADE,
+      column_item_id TEXT NOT NULL REFERENCES board_axis_items(id) ON DELETE CASCADE
+    );
+    CREATE TABLE board_notes (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      sheet_id TEXT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT '#fef3c7',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      x INTEGER NOT NULL DEFAULT 0,
+      y INTEGER NOT NULL DEFAULT 0,
+      width INTEGER NOT NULL DEFAULT 220,
+      height INTEGER NOT NULL DEFAULT 160,
+      locked INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE board_shares (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      sheet_id TEXT NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+      share_id TEXT NOT NULL UNIQUE
+    );
+  `);
+  return database;
+}
+
+function seedSqliteBoard(database: DatabaseSync, sheetIds: string[]): void {
+  database.prepare("INSERT INTO users (id) VALUES (?)").run("user-1");
+  sheetIds.forEach((sheetId, index) => {
+    database.prepare("INSERT INTO sheets (id, user_id, name, sort_order, is_default) VALUES (?, ?, ?, ?, ?)")
+      .run(sheetId, "user-1", sheetId, index * 10, index === 0 ? 1 : 0);
+    database.prepare("INSERT INTO board_tables (id, user_id, sheet_id) VALUES (?, ?, ?)")
+      .run(`table-${sheetId}`, "user-1", sheetId);
+    database.prepare("INSERT INTO board_notes (id, user_id, sheet_id, title, body) VALUES (?, ?, ?, ?, ?)")
+      .run(`note-${sheetId}`, "user-1", sheetId, `Note ${sheetId}`, `Body ${sheetId}`);
+    database.prepare("INSERT INTO board_shares (id, owner_user_id, sheet_id, share_id) VALUES (?, ?, ?, ?)")
+      .run(`share-row-${sheetId}`, "user-1", sheetId, `share-${sheetId}`);
+  });
+
+  const firstSheet = sheetIds[0]!;
+  database.prepare("INSERT INTO board_axis_items (id, user_id, table_id) VALUES (?, ?, ?)")
+    .run("axis-row", "user-1", `table-${firstSheet}`);
+  database.prepare("INSERT INTO board_axis_items (id, user_id, table_id) VALUES (?, ?, ?)")
+    .run("axis-column", "user-1", `table-${firstSheet}`);
+  database.prepare(
+    "INSERT INTO board_cell_states (id, user_id, table_id, row_item_id, column_item_id) VALUES (?, ?, ?, ?, ?)"
+  ).run("cell-state", "user-1", `table-${firstSheet}`, "axis-row", "axis-column");
+  database.prepare(
+    "INSERT INTO board_cell_completions (id, user_id, table_id, row_item_id, column_item_id) VALUES (?, ?, ?, ?, ?)"
+  ).run("completion", "user-1", `table-${firstSheet}`, "axis-row", "axis-column");
+}
+
+function createSqliteD1Env(database: DatabaseSync, options: { interleaveDeletePreflights?: boolean } = {}) {
+  const preparedSql: string[] = [];
+  const batches: SqliteD1Statement[][] = [];
+  let countPreflights = 0;
+  let releasePreflights: (() => void) | null = null;
+  const preflightBarrier = new Promise<void>((resolve) => {
+    releasePreflights = resolve;
+  });
+  let batchQueue = Promise.resolve();
+
+  const createStatement = (sql: string, values: SQLInputValue[] = []) => ({
+    sql,
+    values,
+    bind(...boundValues: SQLInputValue[]) {
+      return createStatement(sql, boundValues);
+    },
+    async first() {
+      const row = database.prepare(sql).get(...values) ?? null;
+      if (options.interleaveDeletePreflights && sql.includes("SELECT COUNT(*) AS count FROM sheets")) {
+        countPreflights += 1;
+        if (countPreflights === 2) releasePreflights?.();
+        await preflightBarrier;
+      }
+      return row;
+    },
+    async all() {
+      return { results: database.prepare(sql).all(...values) };
+    },
+    async run() {
+      const result = database.prepare(sql).run(...values);
+      return { success: true, meta: { changes: Number(result.changes) }, results: [] };
+    }
+  });
+
+  const env = {
+    DB: {
+      prepare(sql: string) {
+        preparedSql.push(sql);
+        return createStatement(sql);
+      },
+      async batch(statements: SqliteD1Statement[]) {
+        batches.push(statements);
+        const executeBatch = () => {
+          database.exec("BEGIN IMMEDIATE");
+          try {
+            const results = statements.map((statement) => {
+              const prepared = database.prepare(statement.sql);
+              if (/^\s*SELECT\b/i.test(statement.sql) || /\bRETURNING\b/i.test(statement.sql)) {
+                const rows = prepared.all(...statement.values);
+                return { success: true, meta: { changes: rows.length }, results: rows };
+              }
+              const result = prepared.run(...statement.values);
+              return { success: true, meta: { changes: Number(result.changes) }, results: [] };
+            });
+            database.exec("COMMIT");
+            return results;
+          } catch (error) {
+            database.exec("ROLLBACK");
+            throw error;
+          }
+        };
+        const result = batchQueue.then(executeBatch, executeBatch);
+        batchQueue = result.then(() => undefined, () => undefined);
+        return result;
+      }
+    }
+  } as unknown as Parameters<typeof deleteBoardSheet>[0];
+
+  return { env, batches, preparedSql };
 }
 
 describe("board db defaults", () => {
@@ -485,8 +694,12 @@ describe("board db defaults", () => {
     const sheetHarness = createAtomicMutationEnv();
     await deleteBoardSheet(sheetHarness.env, "user-1", "sheet-1");
     const sheetStatements = sheetHarness.batches[0] ?? [];
-    expect(sheetStatements[0]?.sql).toContain("board_manifest_versions");
-    expect(sheetStatements.at(-1)?.sql).toMatch(/DELETE FROM sheets[\s\S]*RETURNING id/);
+    expect(sheetStatements.map((statement) => statement.sql)).toEqual([
+      expect.stringMatching(/board_manifest_versions[\s\S]*other\.id <> target\.id/),
+      expect.stringMatching(/UPDATE sheets[\s\S]*target\.is_default = 1[\s\S]*other\.id <> target\.id/),
+      expect.stringMatching(/DELETE FROM sheets[\s\S]*other\.id <> sheets\.id[\s\S]*RETURNING id/),
+      expect.stringMatching(/SELECT CASE[\s\S]*THEN 'last_sheet'[\s\S]*ELSE 'not_found'/)
+    ]);
 
     const renameHarness = createAtomicMutationEnv();
     await updateBoardSheet(renameHarness.env, "user-1", "sheet-1", { name: "Renamed" });
@@ -495,6 +708,122 @@ describe("board db defaults", () => {
       expect.stringContaining("content_version = content_version + 1"),
       expect.stringContaining("board_manifest_versions")
     ]);
+  });
+
+  it("serializes stale deletion attempts through guarded batches without deleting the last sheet", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A", "B"]);
+      const { env, batches, preparedSql } = createSqliteD1Env(database, { interleaveDeletePreflights: true });
+
+      const [deleteA, deleteB] = await Promise.all([
+        deleteBoardSheet(env, "user-1", "A"),
+        deleteBoardSheet(env, "user-1", "B")
+      ]);
+
+      expect(deleteA).toEqual({
+        type: "deleted",
+        result: { ok: true, versions: { sheets: [], manifestVersion: 1 } }
+      });
+      expect(deleteB).toEqual({ type: "last_sheet" });
+      expect(database.prepare("SELECT id, is_default FROM sheets ORDER BY sort_order").all()).toEqual([
+        { id: "B", is_default: 1 }
+      ]);
+      expect(database.prepare("SELECT id FROM board_tables ORDER BY id").all()).toEqual([{ id: "table-B" }]);
+      expect(database.prepare("SELECT id FROM board_notes ORDER BY id").all()).toEqual([{ id: "note-B" }]);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM board_axis_items").get()).toEqual({ count: 0 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM board_cell_states").get()).toEqual({ count: 0 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM board_cell_completions").get()).toEqual({ count: 0 });
+      expect(database.prepare("SELECT version FROM board_manifest_versions WHERE user_id = ?").get("user-1")).toEqual({ version: 1 });
+
+      const beforeDuplicate = {
+        sheets: database.prepare("SELECT id, is_default FROM sheets ORDER BY sort_order").all(),
+        tables: database.prepare("SELECT id FROM board_tables ORDER BY id").all(),
+        notes: database.prepare("SELECT id FROM board_notes ORDER BY id").all(),
+        manifest: database.prepare("SELECT version FROM board_manifest_versions WHERE user_id = ?").get("user-1")
+      };
+      await expect(deleteBoardSheet(env, "user-1", "A")).resolves.toEqual({ type: "not_found" });
+      expect({
+        sheets: database.prepare("SELECT id, is_default FROM sheets ORDER BY sort_order").all(),
+        tables: database.prepare("SELECT id FROM board_tables ORDER BY id").all(),
+        notes: database.prepare("SELECT id FROM board_notes ORDER BY id").all(),
+        manifest: database.prepare("SELECT version FROM board_manifest_versions WHERE user_id = ?").get("user-1")
+      }).toEqual(beforeDuplicate);
+
+      expect(preparedSql.some((sql) => sql.includes("SELECT id, is_default FROM sheets"))).toBe(false);
+      expect(preparedSql.some((sql) => sql.includes("SELECT COUNT(*) AS count FROM sheets"))).toBe(false);
+      expect(batches).toHaveLength(3);
+      expect(
+        batches.every((statements) =>
+          statements.every(
+            (statement) =>
+              !/^\s*(INSERT|UPDATE|DELETE)\b/i.test(statement.sql) ||
+              (statement.sql.includes("sheets") && statement.sql.includes("EXISTS"))
+          )
+        )
+      ).toBe(true);
+      expect(batches.every((statements) => statements.at(-1)?.sql.includes("SELECT CASE"))).toBe(true);
+      expect(
+        batches.some((statements) => statements.some((statement) => /DELETE FROM board_(notes|tables|axis|cell)/.test(statement.sql)))
+      ).toBe(false);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("reassigns the current default on each guarded deletion in a three-sheet board", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A", "B", "C"]);
+      const { env } = createSqliteD1Env(database);
+
+      await expect(deleteBoardSheet(env, "user-1", "A")).resolves.toEqual({
+        type: "deleted",
+        result: { ok: true, versions: { sheets: [], manifestVersion: 1 } }
+      });
+      expect(database.prepare("SELECT id, is_default FROM sheets ORDER BY sort_order").all()).toEqual([
+        { id: "B", is_default: 1 },
+        { id: "C", is_default: 0 }
+      ]);
+
+      await expect(deleteBoardSheet(env, "user-1", "B")).resolves.toEqual({
+        type: "deleted",
+        result: { ok: true, versions: { sheets: [], manifestVersion: 2 } }
+      });
+      expect(database.prepare("SELECT id, is_default FROM sheets ORDER BY sort_order").all()).toEqual([
+        { id: "C", is_default: 1 }
+      ]);
+      expect(database.prepare("SELECT id FROM board_tables ORDER BY id").all()).toEqual([{ id: "table-C" }]);
+      expect(database.prepare("SELECT id FROM board_notes ORDER BY id").all()).toEqual([{ id: "note-C" }]);
+      expect(database.prepare("SELECT version FROM board_manifest_versions WHERE user_id = ?").get("user-1")).toEqual({ version: 2 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects note writes when the note user and sheet owner do not match", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      database.prepare("INSERT INTO users (id) VALUES (?), (?)").run("user-1", "user-2");
+      database.prepare("INSERT INTO sheets (id, user_id, name, is_default) VALUES (?, ?, ?, 1)")
+        .run("foreign-sheet", "user-2", "Foreign");
+      database.prepare("INSERT INTO board_notes (id, user_id, sheet_id, title, body) VALUES (?, ?, ?, ?, ?)")
+        .run("malformed-note", "user-1", "foreign-sheet", "Original", "Original body");
+      const { env } = createSqliteD1Env(database);
+
+      await expect(updateBoardNote(env, "user-1", "malformed-note", { body: "Mutated" })).resolves.toEqual({ type: "not_found" });
+      await expect(
+        updateBoardNoteLayout(env, "user-1", "malformed-note", { x: 10, y: 20, width: 240, height: 180 })
+      ).resolves.toBeNull();
+      await expect(deleteBoardNote(env, "user-1", "malformed-note")).resolves.toBeNull();
+
+      expect(
+        database.prepare("SELECT title, body, x, y, width, height FROM board_notes WHERE id = ?").get("malformed-note")
+      ).toEqual({ title: "Original", body: "Original body", x: 0, y: 0, width: 220, height: 160 });
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("foreign-sheet")).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
   });
 
   it("lists owner shares and user share favorites", async () => {

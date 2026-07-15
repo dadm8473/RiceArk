@@ -14,6 +14,7 @@ import { createUserTask } from "./tasks";
 import type { LostArkEventRewardFilter } from "../lostark/events";
 import {
   buildBoardMutationVersions,
+  bumpBoardManifestVersionForDeletableSheetStatement as bumpBoardManifestVersionForDeletableSheet,
   bumpBoardManifestVersionForOwnedSheetStatement as bumpBoardManifestVersionForOwnedSheet,
   bumpBoardManifestVersionStatement as bumpBoardManifestVersion,
   bumpBoardSheetVersionForNoteStatement as bumpBoardSheetVersionForNote,
@@ -1522,57 +1523,65 @@ export async function updateBoardSheet(
 export async function deleteBoardSheet(env: Env, userId: string, sheetId: string): Promise<DeleteBoardSheetResult> {
   await ensureDefaultBoard(env, userId);
 
-  const sheet = await env.DB.prepare("SELECT id, is_default FROM sheets WHERE id = ? AND user_id = ?")
-    .bind(sheetId, userId)
-    .first<{ id: string; is_default: number }>();
-  if (!sheet) return { type: "not_found" };
-
-  const sheetCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM sheets WHERE user_id = ?")
-    .bind(userId)
-    .first<{ count: number }>();
-  if ((sheetCount?.count ?? 0) <= 1) return { type: "last_sheet" };
-
-  const tableIdsForSheet = "SELECT id FROM board_tables WHERE user_id = ? AND sheet_id = ?";
-  const statements = [bumpBoardManifestVersionForOwnedSheet(env, userId, sheetId)];
-
-  if (sheet.is_default === 1) {
-    statements.push(
-      env.DB.prepare(
-        `UPDATE sheets
-         SET is_default = CASE
-           WHEN id = (
-             SELECT id FROM sheets
-             WHERE user_id = ? AND id <> ?
-             ORDER BY sort_order, name
-             LIMIT 1
-           ) THEN 1
-           ELSE 0
-         END,
-         updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = ?`
-      ).bind(userId, sheetId, userId)
-    );
-  }
-
-  statements.push(
-    env.DB.prepare(`DELETE FROM board_cell_completions WHERE user_id = ? AND table_id IN (${tableIdsForSheet})`).bind(
-      userId,
-      userId,
-      sheetId
-    ),
-    env.DB.prepare(`DELETE FROM board_cell_states WHERE user_id = ? AND table_id IN (${tableIdsForSheet})`).bind(userId, userId, sheetId),
-    env.DB.prepare(`DELETE FROM board_axis_items WHERE user_id = ? AND table_id IN (${tableIdsForSheet})`).bind(userId, userId, sheetId),
-    env.DB.prepare("DELETE FROM board_notes WHERE user_id = ? AND sheet_id = ?").bind(userId, sheetId),
-    env.DB.prepare("DELETE FROM board_tables WHERE user_id = ? AND sheet_id = ?").bind(userId, sheetId),
-    env.DB.prepare("DELETE FROM sheets WHERE id = ? AND user_id = ? RETURNING id").bind(sheetId, userId)
-  );
-
-  const results = await env.DB.batch(statements);
+  const results = await env.DB.batch([
+    bumpBoardManifestVersionForDeletableSheet(env, userId, sheetId),
+    env.DB.prepare(
+      `UPDATE sheets
+       SET is_default = CASE
+         WHEN id = (
+           SELECT other.id
+           FROM sheets AS other
+           WHERE other.user_id = ?
+             AND other.id <> ?
+           ORDER BY other.sort_order, other.name
+           LIMIT 1
+         ) THEN 1
+         ELSE 0
+       END,
+       updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM sheets AS target
+           WHERE target.id = ?
+             AND target.user_id = ?
+             AND target.is_default = 1
+             AND EXISTS (
+               SELECT 1
+               FROM sheets AS other
+               WHERE other.user_id = ?
+                 AND other.id <> target.id
+             )
+         )`
+    ).bind(userId, sheetId, userId, sheetId, userId, userId),
+    env.DB.prepare(
+      `DELETE FROM sheets
+       WHERE id = ?
+         AND user_id = ?
+         AND EXISTS (
+           SELECT 1
+           FROM sheets AS other
+           WHERE other.user_id = ?
+             AND other.id <> sheets.id
+         )
+       RETURNING id`
+    ).bind(sheetId, userId, userId),
+    env.DB.prepare(
+      `SELECT CASE
+         WHEN EXISTS (
+           SELECT 1 FROM sheets WHERE id = ? AND user_id = ?
+         ) THEN 'last_sheet'
+         ELSE 'not_found'
+       END AS type`
+    ).bind(sheetId, userId)
+  ]);
   const manifestVersion = returnedManifestVersion(results[0], userId);
-  const deletedId = returnedMutationId(results.at(-1), sheetId);
+  const deletedId = returnedMutationId(results[2], sheetId);
   if (!deletedId) {
     if (manifestVersion !== null) return incompleteBoardMutation();
-    return { type: "not_found" };
+    const status = firstBatchRow<{ type?: unknown }>(results[3])?.type;
+    if (status === "last_sheet" || status === "not_found") return { type: status };
+    return incompleteBoardMutation();
   }
   if (manifestVersion === null) return incompleteBoardMutation();
 
@@ -1730,6 +1739,7 @@ export async function updateBoardNote(
            locked = COALESCE(?, locked),
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ? AND user_id = ?
+         AND sheet_id IN (SELECT id FROM sheets WHERE user_id = ?)
        RETURNING id`
     ).bind(
       input.title ?? null,
@@ -1739,6 +1749,7 @@ export async function updateBoardNote(
       input.height ?? null,
       input.locked ?? null,
       noteId,
+      userId,
       userId
     ),
     bumpBoardSheetVersionForNote(env, userId, noteId)
@@ -1769,8 +1780,9 @@ export async function updateBoardNoteLayout(
            height = ?,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ? AND user_id = ?
+         AND sheet_id IN (SELECT id FROM sheets WHERE user_id = ?)
        RETURNING id`
-    ).bind(patch.x, patch.y, patch.width, patch.height, noteId, userId),
+    ).bind(patch.x, patch.y, patch.width, patch.height, noteId, userId, userId),
     bumpBoardSheetVersionForNote(env, userId, noteId)
   ]);
   const updatedId = returnedMutationId(updatedResult, noteId);
@@ -1784,7 +1796,12 @@ export async function updateBoardNoteLayout(
 export async function deleteBoardNote(env: Env, userId: string, noteId: string): Promise<BoardMutationResult | null> {
   const [sheetVersionResult, deletedResult] = await env.DB.batch([
     bumpBoardSheetVersionForNote(env, userId, noteId),
-    env.DB.prepare("DELETE FROM board_notes WHERE id = ? AND user_id = ? RETURNING id").bind(noteId, userId)
+    env.DB.prepare(
+      `DELETE FROM board_notes
+       WHERE id = ? AND user_id = ?
+         AND sheet_id IN (SELECT id FROM sheets WHERE user_id = ?)
+       RETURNING id`
+    ).bind(noteId, userId, userId)
   ]);
   const deletedId = returnedMutationId(deletedResult, noteId);
   const sheetVersion = returnedAnySheetVersion(sheetVersionResult);

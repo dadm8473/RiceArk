@@ -633,11 +633,11 @@ describe("board mutation routes", () => {
 
     const execute = (statement: { sql: string; values: unknown[] }) => {
       const sql = statement.sql.replace(/\s+/g, " ").trim();
-      const returning = /\bRETURNING\b/i.test(sql);
+      const returnsRows = /\bRETURNING\b/i.test(sql) || sql.startsWith("SELECT");
       const result = (rows: Record<string, unknown>[], changes = rows.length) => ({
         success: true,
         meta: { changes },
-        results: returning ? rows : []
+        results: returnsRows ? rows : []
       });
 
       if (sql.startsWith("UPDATE sheets") && sql.includes("SET name =")) {
@@ -646,14 +646,19 @@ describe("board mutation routes", () => {
       }
       if (sql.startsWith("INSERT INTO sheets")) return result([{ id: String(statement.values[0]) }]);
       if (sql.includes("INSERT INTO board_manifest_versions")) {
-        return options.missingSheet && sql.includes("WHERE EXISTS") ? result([]) : result([{ user_id: "user-1", version: 8 }]);
+        if (options.missingSheet && sql.includes("WHERE EXISTS")) return result([]);
+        if (options.lastSheet && sql.includes("other.id <> target.id")) return result([]);
+        return result([{ user_id: "user-1", version: 8 }]);
       }
       if (sql.startsWith("UPDATE sheets") && sql.includes("content_version = content_version + 1")) {
         return options.missingSheet || (sql.includes("FROM board_notes") && options.missingNote)
           ? result([])
           : result([{ id: "sheet-1", version: 4 }]);
       }
-      if (sql.startsWith("DELETE FROM sheets")) return options.missingSheet ? result([]) : result([{ id: "sheet-1" }]);
+      if (sql.startsWith("DELETE FROM sheets")) return options.missingSheet || options.lastSheet ? result([]) : result([{ id: "sheet-1" }]);
+      if (sql.startsWith("SELECT CASE") && sql.includes("FROM sheets WHERE id = ? AND user_id = ?")) {
+        return result([{ type: options.missingSheet ? "not_found" : "last_sheet" }]);
+      }
       if (sql.startsWith("INSERT INTO board_tables")) {
         return options.missingSheet ? result([]) : result([{ id: String(statement.values[0]) }]);
       }

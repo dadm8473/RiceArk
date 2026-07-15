@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import {
   buildBoardMutationVersions,
+  bumpBoardManifestVersionForDeletableSheetStatement,
   bumpBoardManifestVersionForOwnedSheetStatement,
   bumpBoardManifestVersionStatement,
   bumpBoardSheetVersionForNoteStatement,
@@ -124,6 +125,25 @@ describe("board mutation versions", () => {
         version: 1
       });
       expect(database.prepare("SELECT version FROM board_manifest_versions WHERE user_id = ?").get("user-2")).toBeUndefined();
+    });
+  });
+
+  it("conditionally bumps the manifest only while the owned sheet is deletable", () => {
+    withVersionDatabase((database) => {
+      database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?), (?, ?)")
+        .run("sheet-1", "user-1", "sheet-2", "user-1");
+      const statement = captureStatement((env) =>
+        bumpBoardManifestVersionForDeletableSheetStatement(env, "user-1", "sheet-1")
+      );
+
+      expect(statement.values).toEqual(["user-1", "sheet-1", "user-1", "user-1"]);
+      expect(statement.sql).toContain("other.user_id = ?");
+      expect(statement.sql).toContain("other.id <> target.id");
+      expect(executeStatement(database, statement)).toEqual([{ user_id: "user-1", version: 1 }]);
+
+      database.prepare("DELETE FROM sheets WHERE id = ?").run("sheet-2");
+      expect(executeStatement(database, statement)).toEqual([]);
+      expect(database.prepare("SELECT version FROM board_manifest_versions WHERE user_id = ?").get("user-1")).toEqual({ version: 1 });
     });
   });
 
