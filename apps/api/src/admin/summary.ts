@@ -60,6 +60,9 @@ type DataMetricsRow = {
 type SummaryCapacity = CloudflareUsageSummary["capacity"] & {
   sampleLimited: true;
   fixedAdminReads: number;
+  fixedAdminReadsScope: "one-uncached-metrics-refresh-estimate";
+  observedTotalD1Reads: number | null;
+  observedTotalD1Writes: number | null;
   observedEndUserReads: number | null;
   observedEndUserWrites: number | null;
   activeUserSampleSize: number;
@@ -152,19 +155,15 @@ function buildCapacity(
   const rowsWritten24h = cloudflare.d1?.rowsWritten24h ?? null;
   const uncertaintyReasons = [
     "Capacity is sample-limited; completion-active users may not represent all end-user traffic.",
-    "Fixed admin reads represent one uncached admin metrics refresh; the 24-hour admin refresh count is not tracked."
+    "Fixed admin reads are an estimate for one uncached admin metrics refresh.",
+    "The 24-hour admin refresh count and attribution are unavailable. No admin-read subtraction was applied to observed total D1 reads.",
+    "Admin write attribution is unavailable; observed total D1 writes are not labeled as end-user writes."
   ];
 
-  let observedEndUserReads: number | null = null;
   if (rowsRead24h === null) {
     uncertaintyReasons.push("Cloudflare D1 rows read counter is unavailable; observed end-user reads cannot be derived.");
-  } else if (rowsRead24h < fixedAdminReads) {
-    uncertaintyReasons.push("Cloudflare D1 rows read is lower than the fixed admin-read estimate; adjusted reads are unavailable.");
-  } else {
-    observedEndUserReads = rowsRead24h - fixedAdminReads;
   }
 
-  const observedEndUserWrites = rowsWritten24h;
   if (rowsWritten24h === null) {
     uncertaintyReasons.push("Cloudflare D1 rows written counter is unavailable; observed end-user writes cannot be derived.");
   }
@@ -177,20 +176,18 @@ function buildCapacity(
     uncertaintyReasons.push("The active-user sample is too small for a confident capacity projection.");
   }
 
-  const perActiveUser = (observed: number | null): number | null => {
-    if (observed === null || activeUserSampleSize === 0) return null;
-    return observed / activeUserSampleSize;
-  };
-
   return {
     activeUsers24h: activeUserSampleSize,
     activeUserSampleSize,
     sampleLimited: true,
     fixedAdminReads,
-    observedEndUserReads,
-    observedEndUserWrites,
-    observedEndUserReadsPerActiveUser: perActiveUser(observedEndUserReads),
-    observedEndUserWritesPerActiveUser: perActiveUser(observedEndUserWrites),
+    fixedAdminReadsScope: "one-uncached-metrics-refresh-estimate",
+    observedTotalD1Reads: rowsRead24h,
+    observedTotalD1Writes: rowsWritten24h,
+    observedEndUserReads: null,
+    observedEndUserWrites: null,
+    observedEndUserReadsPerActiveUser: null,
+    observedEndUserWritesPerActiveUser: null,
     uncertaintyReasons,
     guaranteedMultiplier: null,
     estimatedDauByD1Reads: null,

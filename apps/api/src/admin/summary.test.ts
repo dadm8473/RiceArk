@@ -156,6 +156,9 @@ describe("admin summary metrics", () => {
     expect(summary.cloudflare.capacity).toMatchObject({
       sampleLimited: true,
       fixedAdminReads: 1_559,
+      fixedAdminReadsScope: "one-uncached-metrics-refresh-estimate",
+      observedTotalD1Reads: null,
+      observedTotalD1Writes: null,
       observedEndUserReads: null,
       observedEndUserWrites: null,
       activeUserSampleSize: 2,
@@ -176,7 +179,7 @@ describe("admin summary metrics", () => {
     );
   });
 
-  it("derives sample-limited end-user observations only from available Cloudflare counters", async () => {
+  it("keeps total Cloudflare counters separate from unavailable end-user attribution", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.includes("/d1/database/database-capacity")) {
@@ -232,11 +235,14 @@ describe("admin summary metrics", () => {
     expect(summary.cloudflare.capacity).toMatchObject({
       sampleLimited: true,
       fixedAdminReads: 1_559,
-      observedEndUserReads: 74_403,
-      observedEndUserWrites: 261,
+      fixedAdminReadsScope: "one-uncached-metrics-refresh-estimate",
+      observedTotalD1Reads: 75_962,
+      observedTotalD1Writes: 261,
+      observedEndUserReads: null,
+      observedEndUserWrites: null,
       activeUserSampleSize: 2,
-      observedEndUserReadsPerActiveUser: 37_201.5,
-      observedEndUserWritesPerActiveUser: 130.5,
+      observedEndUserReadsPerActiveUser: null,
+      observedEndUserWritesPerActiveUser: null,
       guaranteedMultiplier: null,
       estimatedDauByD1Reads: null,
       estimatedDauByD1Writes: null,
@@ -244,7 +250,12 @@ describe("admin summary metrics", () => {
       bottleneck: null
     });
     expect(summary.cloudflare.capacity.uncertaintyReasons).toEqual(
-      expect.arrayContaining([expect.stringContaining("sample"), expect.stringContaining("one uncached admin metrics refresh")])
+      expect.arrayContaining([
+        expect.stringContaining("sample"),
+        expect.stringContaining("24-hour admin refresh count and attribution are unavailable"),
+        expect.stringContaining("No admin-read subtraction was applied"),
+        expect.stringContaining("Admin write attribution is unavailable")
+      ])
     );
   });
 });
