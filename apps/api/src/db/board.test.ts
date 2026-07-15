@@ -449,6 +449,7 @@ function createSqliteD1Env(
     malformedResultIndex?: number;
     malformedPreflight?: boolean;
     extraBatchResult?: boolean;
+    deleteReturningRows?: Array<Record<string, SQLInputValue>>;
   } = {}
 ) {
   const preparedSql: string[] = [];
@@ -503,7 +504,9 @@ function createSqliteD1Env(
             const results = statements.map((statement, index) => {
               const prepared = database.prepare(statement.sql);
               if (/^\s*SELECT\b/i.test(statement.sql) || /\bRETURNING\b/i.test(statement.sql)) {
-                const rows = prepared.all(...statement.values);
+                const rows = statement.sql.includes("DELETE FROM board_cell_states") && options.deleteReturningRows
+                  ? options.deleteReturningRows
+                  : prepared.all(...statement.values);
                 if (options.reverseReturningRows) rows.reverse();
                 if (options.malformedResultIndex === index) {
                   return { success: true, meta: { changes: rows.length }, results: [{ malformed: true }] };
@@ -1221,8 +1224,7 @@ describe("board db defaults", () => {
                   rowKind: "task",
                   columnKind: "character",
                   rowTaskResetRuleJson: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}',
-                  columnTaskResetRuleJson: null,
-                  cellStateExists: 0
+                  columnTaskResetRuleJson: null
                 }))
               };
               return { results: [] };
@@ -3111,6 +3113,97 @@ describe("board db defaults", () => {
       ).all()).toEqual([{ row_item_id: upsert!.rowId, mark_type: "reserved", mark_icon: "clock", memo: "soon", mark_period_key: "none:permanent" }]);
     } finally {
       database.close();
+    }
+  });
+
+  it("accepts a delete returning a requested key inserted after preflight", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      database.prepare("DELETE FROM board_cell_states").run();
+      const { env, batches, preparedSql } = createSqliteD1Env(database, {
+        beforeBatch(_statements, currentDatabase) {
+          currentDatabase.prepare(
+            `INSERT INTO board_cell_states
+               (id, user_id, table_id, row_item_id, column_item_id, mark_type)
+             VALUES ('raced-state', 'user-1', 'table-A', 'axis-row', 'axis-column', 'fixed')`
+          ).run();
+        }
+      });
+
+      await expect(saveBoardCellStatePatches(env, "user-1", [{
+        tableId: "table-A",
+        rowItemId: "axis-row",
+        columnItemId: "axis-column",
+        markType: "default",
+        memo: null
+      }])).resolves.toEqual({ ok: true, versions: { sheets: [{ id: "A", version: 1 }] } });
+
+      expect(database.prepare("SELECT id FROM board_cell_states").all()).toEqual([]);
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = 'A'").get()).toEqual({ content_version: 1 });
+      expect(preparedSql).toHaveLength(5);
+      expect(batches).toHaveLength(1);
+      expect(batches[0]).toHaveLength(4);
+      expect(batches[0]?.every((statement) => statement.values.length === 2)).toBe(true);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("accepts a requested delete as a no-op when another writer deletes after preflight", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      const { env, batches, preparedSql } = createSqliteD1Env(database, {
+        beforeBatch(_statements, currentDatabase) {
+          currentDatabase.prepare("DELETE FROM board_cell_states WHERE id = 'cell-state'").run();
+        }
+      });
+
+      await expect(saveBoardCellStatePatches(env, "user-1", [{
+        tableId: "table-A",
+        rowItemId: "axis-row",
+        columnItemId: "axis-column",
+        markType: "default",
+        memo: null
+      }])).resolves.toEqual({ ok: true, versions: { sheets: [{ id: "A", version: 1 }] } });
+
+      expect(database.prepare("SELECT id FROM board_cell_states").all()).toEqual([]);
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = 'A'").get()).toEqual({ content_version: 1 });
+      expect(preparedSql).toHaveLength(5);
+      expect(batches).toHaveLength(1);
+      expect(batches[0]).toHaveLength(4);
+      expect(batches[0]?.every((statement) => statement.values.length === 2)).toBe(true);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("requires DELETE RETURNING keys to be a unique subset of all requested delete keys", async () => {
+    const malformedRows = [
+      [{ tableId: "table-A", rowItemId: "other-row", columnItemId: "axis-column" }],
+      [
+        { tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column" },
+        { tableId: "table-A", rowItemId: "axis-row", columnItemId: "axis-column" }
+      ]
+    ];
+
+    for (const deleteReturningRows of malformedRows) {
+      const database = createBoardMutationDatabase();
+      try {
+        seedSqliteBoard(database, ["A"]);
+        const { env } = createSqliteD1Env(database, { deleteReturningRows });
+
+        await expect(saveBoardCellStatePatches(env, "user-1", [{
+          tableId: "table-A",
+          rowItemId: "axis-row",
+          columnItemId: "axis-column",
+          markType: "default",
+          memo: null
+        }])).rejects.toThrow("did not return every required row");
+      } finally {
+        database.close();
+      }
     }
   });
 

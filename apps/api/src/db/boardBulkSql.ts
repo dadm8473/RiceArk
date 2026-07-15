@@ -36,8 +36,7 @@ export interface BoardCellStatePayloadRow {
   delete_state: 0 | 1;
 }
 
-export type GuardedBoardCellStatePayloadRow = BoardCellStatePayloadRow &
-  BoardBulkGuardSnapshot & { cell_state_exists: 0 | 1 };
+export type GuardedBoardCellStatePayloadRow = BoardCellStatePayloadRow & BoardBulkGuardSnapshot;
 
 export interface BoardBulkPreflightRow {
   ordinal: number;
@@ -50,7 +49,6 @@ export interface BoardBulkPreflightRow {
   columnKind: "character" | "task" | "custom" | null;
   rowTaskResetRuleJson: string | null;
   columnTaskResetRuleJson: string | null;
-  cellStateExists: number;
 }
 
 const randomId: IdFactory = () => crypto.randomUUID();
@@ -164,8 +162,7 @@ export function prepareBoardBulkPreflightStatement(env: Env, userId: string, pay
             row_items.kind AS rowKind,
             column_items.kind AS columnKind,
             row_items.task_reset_rule_json AS rowTaskResetRuleJson,
-            column_items.task_reset_rule_json AS columnTaskResetRuleJson,
-            CASE WHEN cell_states.id IS NULL THEN 0 ELSE 1 END AS cellStateExists
+            column_items.task_reset_rule_json AS columnTaskResetRuleJson
      FROM input
      LEFT JOIN board_tables AS tables
        ON tables.id = input.table_id AND tables.user_id = ?1 AND tables.locked = 0
@@ -183,11 +180,6 @@ export function prepareBoardBulkPreflightStatement(env: Env, userId: string, pay
       AND column_items.table_id = input.table_id
       AND column_items.axis = 'column'
       AND column_items.visible = 1
-     LEFT JOIN board_cell_states AS cell_states
-       ON cell_states.user_id = ?1
-      AND cell_states.table_id = input.table_id
-      AND cell_states.row_item_id = input.row_item_id
-      AND cell_states.column_item_id = input.column_item_id
      ORDER BY input.ordinal`,
     userId,
     payloadJson

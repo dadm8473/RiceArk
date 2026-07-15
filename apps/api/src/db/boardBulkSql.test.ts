@@ -81,6 +81,7 @@ describe("board bulk SQL", () => {
     expect(prepared.every((statement) => statement.values[0] === "user-1")).toBe(true);
     expect(prepared.every((statement) => typeof statement.values[1] === "string")).toBe(true);
     expect(prepared.every((statement) => statement.sql.includes("json_each(?2)"))).toBe(true);
+    expect(prepared[0]?.sql).not.toContain("board_cell_states");
     expect(prepared.some((statement) => statement.sql.includes("VALUES (?,"))).toBe(false);
   });
 
@@ -115,8 +116,7 @@ describe("board bulk SQL", () => {
       column_kind: "character",
       row_task_reset_rule_json: '{"type":"none"}',
       column_task_reset_rule_json: null,
-      guard_expires_at: null,
-      cell_state_exists: 0
+      guard_expires_at: null
     }];
     const { env, prepared } = captureEnv();
 

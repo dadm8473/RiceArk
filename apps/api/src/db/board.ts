@@ -2814,8 +2814,7 @@ export async function saveBoardCellStatePatches(
 
   const guardedRows: GuardedBoardCellStatePayloadRow[] = rows.map((row, ordinal) => ({
     ...row,
-    ...preflightGuardSnapshot(preflight[ordinal]!, now),
-    cell_state_exists: preflight[ordinal]!.cellStateExists === 1 ? 1 : 0
+    ...preflightGuardSnapshot(preflight[ordinal]!, now)
   }));
   const payloadJson = JSON.stringify(guardedRows);
   let results: unknown[];
@@ -2830,14 +2829,12 @@ export async function saveBoardCellStatePatches(
   }
   const returnedDeleteKeys = returnedObjectKeySet(results[0], cellStateRowKey);
   const returnedUpsertKeys = returnedObjectKeySet(results[1], cellStateRowKey);
-  const expectedDeleteKeys = new Set(
-    guardedRows.filter((row) => row.delete_state === 1 && row.cell_state_exists === 1).map(cellStatePayloadKey)
-  );
+  const requestedDeleteKeys = new Set(guardedRows.filter((row) => row.delete_state === 1).map(cellStatePayloadKey));
   const expectedUpsertKeys = new Set(guardedRows.filter((row) => row.delete_state === 0).map(cellStatePayloadKey));
   const sheetVersions = returnedSheetVersions(results[3]);
   const expectedSheetIds = new Set(guardedRows.map((row) => row.sheet_id));
   if (
-    !sameStringSet(returnedDeleteKeys, expectedDeleteKeys) ||
+    !isReturnedKeySubset(returnedDeleteKeys, requestedDeleteKeys) ||
     !sameStringSet(returnedUpsertKeys, expectedUpsertKeys) ||
     !hasExactSheetVersions(sheetVersions, expectedSheetIds)
   ) {
@@ -2863,7 +2860,6 @@ async function loadBoardBulkPreflight(env: Env, userId: string, rows: BoardBulkP
       row.rowItemId !== expected.row_item_id ||
       row.columnItemId !== expected.column_item_id ||
       (row.eligible !== 0 && row.eligible !== 1) ||
-      (row.cellStateExists !== 0 && row.cellStateExists !== 1) ||
       (row.eligible === 1 &&
         (typeof row.sheetId !== "string" ||
           !isBoardAxisItemKind(row.rowKind) ||
@@ -2984,6 +2980,10 @@ function isNullableString(value: unknown): value is string | null {
 
 function sameStringSet(actual: Set<string> | null, expected: Set<string>): boolean {
   return actual !== null && actual.size === expected.size && [...expected].every((value) => actual.has(value));
+}
+
+function isReturnedKeySubset(actual: Set<string> | null, requested: Set<string>): boolean {
+  return actual !== null && [...actual].every((value) => requested.has(value));
 }
 
 function hasExactSheetVersions(actual: BoardSheetVersion[] | null, expectedIds: Set<string>): actual is BoardSheetVersion[] {

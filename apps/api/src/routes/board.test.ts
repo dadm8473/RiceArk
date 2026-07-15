@@ -758,7 +758,7 @@ describe("board mutation routes", () => {
         const payload = JSON.parse(String(statement.values[1])) as Array<Record<string, unknown>>;
         const rows = payload
           .filter((row) => !sql.includes("INSERT INTO board_cell_states") || row.delete_state === 0)
-          .filter((row) => !sql.includes("DELETE FROM board_cell_states") || row.delete_state === 1 && row.cell_state_exists === 1)
+          .filter((row) => !sql.includes("DELETE FROM board_cell_states") || row.delete_state === 1)
           .map((row) => ({
             tableId: row.table_id,
             rowItemId: row.row_item_id,
@@ -846,8 +846,7 @@ describe("board mutation routes", () => {
                   rowKind: options.invalidTargets ? null : "task",
                   columnKind: options.invalidTargets ? null : "character",
                   rowTaskResetRuleJson: options.invalidTargets ? null : '{"type":"none"}',
-                  columnTaskResetRuleJson: null,
-                  cellStateExists: 0
+                  columnTaskResetRuleJson: null
                 }))
               };
               return { results: [] };
