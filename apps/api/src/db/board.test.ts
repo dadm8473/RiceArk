@@ -37,6 +37,7 @@ import {
   loadSharedBoard,
   loadSharedBoardVersionSummary,
   hideBoardAxisItem,
+  importBoardCharactersForTable,
   startBoardSheetShare,
   stopBoardSheetShare,
   mergeBoardCellStatePatches,
@@ -298,6 +299,10 @@ function createBoardMutationDatabase(): DatabaseSync {
   database.exec(`
     PRAGMA foreign_keys = ON;
     CREATE TABLE users (id TEXT PRIMARY KEY);
+    CREATE TABLE user_settings (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      checklist_orientation TEXT
+    );
     CREATE TABLE sheets (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -328,6 +333,21 @@ function createBoardMutationDatabase(): DatabaseSync {
       locked INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE characters (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      server_name TEXT NOT NULL,
+      class_name TEXT NOT NULL,
+      item_level TEXT NOT NULL,
+      combat_power TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      deleted_at TEXT,
+      source TEXT NOT NULL DEFAULT 'lostark',
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (user_id, name, server_name)
+    );
     CREATE TABLE board_axis_items (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -335,7 +355,12 @@ function createBoardMutationDatabase(): DatabaseSync {
       axis TEXT NOT NULL DEFAULT 'row',
       kind TEXT NOT NULL DEFAULT 'custom',
       visible INTEGER NOT NULL DEFAULT 1,
+      character_id TEXT,
+      task_id TEXT,
+      task_scope TEXT,
+      task_reset_type TEXT,
       task_reset_rule_json TEXT,
+      task_color TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
       size_px INTEGER,
       cross_size_px INTEGER,
@@ -447,6 +472,7 @@ function createSqliteD1Env(
     beforeBatch?: (statements: SqliteD1Statement[], database: DatabaseSync) => void;
     reverseReturningRows?: boolean;
     malformedResultIndex?: number;
+    emptyResultIndex?: number;
     malformedPreflight?: boolean;
     extraBatchResult?: boolean;
     deleteReturningRows?: Array<Record<string, SQLInputValue>>;
@@ -508,6 +534,9 @@ function createSqliteD1Env(
                   ? options.deleteReturningRows
                   : prepared.all(...statement.values);
                 if (options.reverseReturningRows) rows.reverse();
+                if (options.emptyResultIndex === index) {
+                  return { success: true, meta: { changes: rows.length }, results: [] };
+                }
                 if (options.malformedResultIndex === index) {
                   return { success: true, meta: { changes: rows.length }, results: [{ malformed: true }] };
                 }
@@ -1927,8 +1956,8 @@ describe("board db defaults", () => {
       })
     ).resolves.toEqual({ ok: true, versions: { sheets: [{ id: "sheet-1", version: 4 }] } });
     expect(batches[0]).toHaveLength(3);
-    expect(batches[0]?.[0]?.values[0]).toBe(JSON.stringify(["row-b", "row-a", "row-hidden"]));
-    expect(batches[0]?.[1]?.values[0]).toBe(JSON.stringify(["row-b", "row-a", "row-hidden"]));
+    expect(batches[0]?.[0]?.values[0]).toBe(JSON.stringify(["row-b", "row-a"]));
+    expect(batches[0]?.[1]?.values[0]).toBe(JSON.stringify(["row-b", "row-a"]));
   });
 
   it("moves hidden axis items out of the way before reordering visible items", async () => {
@@ -1956,7 +1985,11 @@ describe("board db defaults", () => {
           };
         },
         async batch(statements: Array<{ sql: string; values: unknown[] }>) {
-          const orderedIds = JSON.parse(String(statements[0]?.values[0])) as string[];
+          const requestedIds = JSON.parse(String(statements[0]?.values[0])) as string[];
+          const orderedIds = [
+            ...requestedIds,
+            ...axisItems.filter((item) => !requestedIds.includes(item.id)).map((item) => item.id)
+          ];
           for (const [index, id] of orderedIds.entries()) {
             const item = axisItems.find((axisItem) => axisItem.id === id);
             if (!item) throw new Error("missing axis item");
@@ -1984,6 +2017,205 @@ describe("board db defaults", () => {
       { id: "row-hidden", sortOrder: 20 },
       { id: "row-b", sortOrder: 0 }
     ]);
+  });
+
+  it("reorders the 300-item axis maximum with guarded bounded statements", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["sheet-1"]);
+      const tableId = "table-sheet-1";
+      const insert = database.prepare(
+        `INSERT INTO board_axis_items (id, user_id, table_id, axis, kind, label, sort_order)
+         VALUES (?, 'user-1', ?, 'row', 'custom', ?, ?)`
+      );
+      for (let index = 1; index < 300; index += 1) {
+        insert.run(`row-${index}`, tableId, `Row ${index}`, index * 10);
+      }
+      database.prepare(
+        `INSERT INTO board_axis_items (id, user_id, table_id, axis, kind, label, sort_order, visible)
+         VALUES ('row-hidden', 'user-1', ?, 'row', 'custom', 'Hidden', 3000, 0)`
+      ).run(tableId);
+      database.exec("CREATE UNIQUE INDEX test_axis_sort ON board_axis_items(table_id, axis, sort_order)");
+      const axisItemIds = ["axis-row", ...Array.from({ length: 299 }, (_, index) => `row-${index + 1}`)].reverse();
+      const { env, batches, preparedSql } = createSqliteD1Env(database);
+
+      await expect(reorderBoardAxisItems(env, "user-1", { tableId, axis: "row", axisItemIds })).resolves.toEqual({
+        ok: true,
+        versions: { sheets: [{ id: "sheet-1", version: 1 }] }
+      });
+
+      expect(preparedSql).toHaveLength(3);
+      expect(batches).toHaveLength(1);
+      expect(batches[0]).toHaveLength(3);
+      expect(batches[0]?.every((statement) => statement.values.length < 100)).toBe(true);
+      expect(batches[0]?.every((statement) => statement.sql.includes("json_array_length"))).toBe(true);
+      expect(database.prepare(
+        "SELECT id FROM board_axis_items WHERE table_id = ? AND axis = 'row' AND visible = 1 ORDER BY sort_order"
+      ).all(tableId).map((row) => row.id)).toEqual(axisItemIds);
+      expect(database.prepare("SELECT sort_order FROM board_axis_items WHERE id = 'row-hidden'").get()).toEqual({
+        sort_order: 3000
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects a whole axis order without writes when one id is unavailable", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["sheet-1"]);
+      database.prepare(
+        `INSERT INTO board_axis_items (id, user_id, table_id, axis, kind, label, sort_order)
+         VALUES ('row-1', 'user-1', 'table-sheet-1', 'row', 'custom', 'Row 1', 10)`
+      ).run();
+      const { env } = createSqliteD1Env(database);
+
+      await expect(reorderBoardAxisItems(env, "user-1", {
+        tableId: "table-sheet-1",
+        axis: "row",
+        axisItemIds: ["axis-row", "missing-row"]
+      })).resolves.toBeNull();
+      expect(database.prepare(
+        "SELECT id, sort_order FROM board_axis_items WHERE table_id = 'table-sheet-1' AND axis = 'row' ORDER BY sort_order"
+      ).all()).toEqual([
+        { id: "axis-row", sort_order: 0 },
+        { id: "row-1", sort_order: 10 }
+      ]);
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = 'sheet-1'").get()).toEqual({
+        content_version: 0
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("does no D1 work for an empty axis order", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      const { env, batches, preparedSql } = createSqliteD1Env(database);
+      await expect(reorderBoardAxisItems(env, "user-1", {
+        tableId: "missing-table",
+        axis: "row",
+        axisItemIds: []
+      })).resolves.toEqual({ ok: true, versions: { sheets: [] } });
+      expect(preparedSql).toEqual([]);
+      expect(batches).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("imports 200 table characters with bounded set SQL", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["sheet-1"]);
+      database.prepare(
+        "UPDATE board_tables SET row_role = 'character', column_role = 'task', task_axis = 'columns' WHERE id = 'table-sheet-1'"
+      ).run();
+      const { env, batches, preparedSql } = createSqliteD1Env(database);
+      const characters = Array.from({ length: 200 }, (_, index) => ({
+        name: `캐릭터${index}`,
+        serverName: index % 2 === 0 ? "아만" : "카단",
+        className: "브레이커",
+        itemLevel: `${1700 - index}.00`,
+        combatPower: `${3000 - index}.00`
+      }));
+
+      await expect(importBoardCharactersForTable(env, "user-1", "table-sheet-1", characters)).resolves.toEqual({
+        ok: true,
+        versions: { sheets: [{ id: "sheet-1", version: 1 }] }
+      });
+
+      expect(preparedSql).toHaveLength(10);
+      expect(batches).toHaveLength(1);
+      expect(batches[0]).toHaveLength(6);
+      expect(batches[0]?.every((statement) => statement.values.length < 100)).toBe(true);
+      expect(batches[0]?.filter((statement) => statement.sql.includes("INSERT INTO characters"))).toHaveLength(1);
+      expect(batches[0]?.some((statement) => statement.sql.includes("json_each"))).toBe(true);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM characters").get()).toEqual({ count: 200 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM board_axis_items WHERE character_id IS NOT NULL").get())
+        .toEqual({ count: 200 });
+      expect(database.prepare("SELECT row_role, column_role, task_axis FROM board_tables WHERE id = 'table-sheet-1'").get())
+        .toEqual({ row_role: "task", column_role: "character", task_axis: "rows" });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("returns all distinct sheet versions when a table import changes a shared character", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["sheet-1", "sheet-2"]);
+      database.prepare(
+        `INSERT INTO characters (
+           id, user_id, name, server_name, class_name, item_level, combat_power, source
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run("character-shared", "user-1", "공유캐릭터", "아만", "브레이커", "1,640.00", "2,500.00", "lostark");
+      database.prepare(
+        `INSERT INTO board_axis_items (
+           id, user_id, table_id, axis, kind, label, character_id, sort_order
+         ) VALUES (?, 'user-1', ?, 'column', 'character', '공유캐릭터', 'character-shared', 10),
+                  (?, 'user-1', ?, 'column', 'character', '공유캐릭터', 'character-shared', 0)`
+      ).run("axis-shared-1", "table-sheet-1", "axis-shared-2", "table-sheet-2");
+      const { env } = createSqliteD1Env(database);
+
+      await expect(importBoardCharactersForTable(env, "user-1", "table-sheet-1", [{
+        name: "공유캐릭터",
+        serverName: "아만",
+        className: "환수사",
+        itemLevel: "1,700.00",
+        combatPower: "3,000.00"
+      }])).resolves.toEqual({
+        ok: true,
+        versions: {
+          sheets: [
+            { id: "sheet-1", version: 1 },
+            { id: "sheet-2", version: 1 }
+          ]
+        }
+      });
+      expect(database.prepare("SELECT content_version FROM sheets ORDER BY id").all()).toEqual([
+        { content_version: 1 },
+        { content_version: 1 }
+      ]);
+      expect(database.prepare("SELECT class_name, item_level, combat_power FROM characters WHERE id = 'character-shared'").get())
+        .toEqual({ class_name: "환수사", item_level: "1,700.00", combat_power: "3,000.00" });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects a table character import without its target sheet version", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["sheet-1"]);
+      const { env } = createSqliteD1Env(database, { emptyResultIndex: 0 });
+
+      await expect(importBoardCharactersForTable(env, "user-1", "table-sheet-1", [{
+        name: "캐릭터",
+        serverName: "아만",
+        className: "브레이커",
+        itemLevel: "1,700.00",
+        combatPower: null
+      }])).rejects.toThrow("Board mutation batch did not return every required row");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("does no D1 work for an empty table character import", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      const { env, batches, preparedSql } = createSqliteD1Env(database);
+      await expect(importBoardCharactersForTable(env, "user-1", "missing-table", [])).resolves.toEqual({
+        ok: true,
+        versions: { sheets: [] }
+      });
+      expect(preparedSql).toEqual([]);
+      expect(batches).toEqual([]);
+    } finally {
+      database.close();
+    }
   });
 
   it("inherits visible axis item dimensions when creating a new manual row", async () => {
@@ -2678,8 +2910,8 @@ describe("board db defaults", () => {
     });
 
     const completionQuery = prepared.find((statement) => statement.sql.includes("FROM board_cell_completions"));
-    expect(completionQuery?.sql).toContain("period_key IN (?)");
-    expect(completionQuery?.values).toEqual(["user-1", "daily:2026-06-04"]);
+    expect(completionQuery?.sql).toContain("period_key IN (SELECT value FROM json_each(?2))");
+    expect(completionQuery?.values).toEqual(["user-1", JSON.stringify(["daily:2026-06-04"])]);
   });
 
   it("detects board completion patches outside authorized table and axis targets", () => {

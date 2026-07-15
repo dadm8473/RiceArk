@@ -366,17 +366,17 @@ git commit -m "Use guarded set SQL for board cell writes"
 - Modify: `apps/api/src/db/completions.ts`
 - Modify: `apps/api/src/routes/dashboard.test.ts`
 
-- [ ] **Step 1: Add failing 200-row budget tests**
+- [x] **Step 1: Add failing 200-row budget tests**
 
 Test axis order, character import, character order, task order, default-board axis seeding, and legacy completion synchronization at their schema maximum. Each accepted route must prepare at most 20 statements and each SQL statement must bind fewer than 100 values.
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run: `pnpm test apps/api/src/db/board.test.ts apps/api/src/db/characters.test.ts apps/api/src/routes/tasks.test.ts apps/api/src/routes/dashboard.test.ts`
 
 Expected: FAIL on row-by-row batches and bind-heavy `IN (...)` queries.
 
-- [ ] **Step 3: Convert ordering writes**
+- [x] **Step 3: Convert ordering writes**
 
 Serialize ids once and use the `json_each.key` as stable order:
 
@@ -401,11 +401,11 @@ RETURNING id
 
 Use equivalent ownership joins for task orders and board axis orders. Compare all returned ids to the normalized list.
 
-- [ ] **Step 4: Convert import, seed, and legacy synchronization writes**
+- [x] **Step 4: Convert import, seed, and legacy synchronization writes**
 
 Assign UUIDs in TypeScript, bind one JSON array, and use `INSERT ... SELECT ... ON CONFLICT DO UPDATE`. Default seeding uses one insert for all missing axis rows. Legacy completion sync uses one upsert for all mapped patches. Every route validates the whole normalized input before writing, repeats ownership/eligibility predicates in SQL, and compares the complete `RETURNING` key set. Empty arrays skip D1 entirely.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run: `pnpm test apps/api/src/db/board.test.ts apps/api/src/db/characters.test.ts apps/api/src/routes/tasks.test.ts apps/api/src/routes/dashboard.test.ts`
 

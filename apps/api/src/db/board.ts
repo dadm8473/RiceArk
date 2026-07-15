@@ -22,6 +22,7 @@ import {
   bumpBoardSheetVersionForNoteStatement as bumpBoardSheetVersionForNote,
   bumpBoardSheetVersionForTableAtExpectedLockStatement as bumpBoardSheetVersionForTableAtExpectedLock,
   bumpBoardSheetVersionStatement as bumpBoardSheetVersion,
+  bumpBoardSheetVersionsForCharacterImportStatement,
   bumpBoardSheetVersionsForTablesStatement as bumpBoardSheetVersionsForTables,
   type BoardMutationResult,
   type BoardSheetVersion
@@ -85,6 +86,46 @@ function returnedSheetVersions(result: unknown): BoardSheetVersion[] | null {
     return typeof id === "string" && typeof version === "number" ? [{ id, version }] : [];
   });
   return versions.length === rows.length ? versions : null;
+}
+
+interface ReturnedImportedBoardCharacter {
+  id: string;
+  name: string;
+  serverName: string;
+}
+
+function boardCharacterIdentityKey(name: string, serverName: string): string {
+  return JSON.stringify([name, serverName]);
+}
+
+function returnedImportedBoardCharacterRows(result: unknown): ReturnedImportedBoardCharacter[] | null {
+  if (!result || typeof result !== "object" || !("results" in result)) return null;
+  const rows = (result as { results?: unknown[] }).results;
+  if (!Array.isArray(rows)) return null;
+  const characters = rows.flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const { id, name, server_name: serverName } = row as {
+      id?: unknown;
+      name?: unknown;
+      server_name?: unknown;
+    };
+    return typeof id === "string" && typeof name === "string" && typeof serverName === "string"
+      ? [{ id, name, serverName }]
+      : [];
+  });
+  return characters.length === rows.length ? characters : null;
+}
+
+function returnedBoardCharacterReferenceIds(result: unknown): string[] | null {
+  if (!result || typeof result !== "object" || !("results" in result)) return null;
+  const rows = (result as { results?: unknown[] }).results;
+  if (!Array.isArray(rows)) return null;
+  const ids = rows.flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const characterId = (row as { character_id?: unknown }).character_id;
+    return typeof characterId === "string" ? [characterId] : [];
+  });
+  return ids.length === rows.length ? ids : null;
 }
 
 function returnedSheetVersion(result: unknown, expectedId: string): BoardSheetVersion | null {
@@ -929,13 +970,6 @@ async function readBoardAxisItemByCreateRequestId(
     .first<{ id: string }>();
 }
 
-async function readChecklistOrientation(env: Env, userId: string): Promise<ChecklistOrientation> {
-  const settings = await env.DB.prepare("SELECT checklist_orientation FROM user_settings WHERE user_id = ?")
-    .bind(userId)
-    .first<{ checklist_orientation: ChecklistOrientation | null }>();
-  return settings?.checklist_orientation === "tasks_columns" ? "tasks_columns" : "tasks_rows";
-}
-
 async function loadDefaultBoardTasks(env: Env, userId: string): Promise<DefaultBoardTaskSource[]> {
   const tasks = await env.DB.prepare(
     `SELECT tasks.id,
@@ -984,25 +1018,46 @@ async function loadDefaultBoardCharacters(env: Env, userId: string): Promise<Def
   }));
 }
 
-async function hasAnyBoardTable(env: Env, userId: string): Promise<boolean> {
-  const table = await env.DB.prepare("SELECT id FROM board_tables WHERE user_id = ? LIMIT 1").bind(userId).first();
-  return Boolean(table);
+interface DefaultBoardInitializationContext {
+  hasBoardState: boolean;
+  orientation: ChecklistOrientation;
 }
 
-async function hasAnyBoardSheet(env: Env, userId: string): Promise<boolean> {
-  const sheet = await env.DB.prepare("SELECT id FROM sheets WHERE user_id = ? LIMIT 1").bind(userId).first();
-  return Boolean(sheet);
+async function readDefaultBoardInitializationContext(
+  env: Env,
+  userId: string
+): Promise<DefaultBoardInitializationContext> {
+  const state = await env.DB.prepare(
+    `SELECT EXISTS(SELECT id FROM board_tables WHERE user_id = ? LIMIT 1) AS has_table,
+            EXISTS(SELECT id FROM sheets WHERE user_id = ? LIMIT 1) AS has_sheet,
+            (
+              SELECT user_settings.checklist_orientation
+              FROM user_settings
+              WHERE user_settings.user_id = ?
+              LIMIT 1
+            ) AS checklist_orientation`
+  )
+    .bind(userId, userId, userId)
+    .first<{ has_table?: unknown; has_sheet?: unknown; checklist_orientation?: unknown }>();
+  if (!state) return { hasBoardState: false, orientation: "tasks_rows" };
+  if (typeof state.has_table !== "number" || typeof state.has_sheet !== "number") {
+    return { hasBoardState: true, orientation: "tasks_rows" };
+  }
+  return {
+    hasBoardState: state.has_table === 1 || state.has_sheet === 1,
+    orientation: state.checklist_orientation === "tasks_columns" ? "tasks_columns" : "tasks_rows"
+  };
 }
 
-export async function ensureDefaultBoard(env: Env, userId: string): Promise<void> {
-  if (await hasAnyBoardTable(env, userId)) return;
-  if (await hasAnyBoardSheet(env, userId)) return;
+export async function ensureDefaultBoard(env: Env, userId: string, now = new Date()): Promise<void> {
+  const initialization = await readDefaultBoardInitializationContext(env, userId);
+  if (initialization.hasBoardState) return;
 
-  const [orientation, tasks, characters] = await Promise.all([
-    readChecklistOrientation(env, userId),
+  const [tasks, characters] = await Promise.all([
     loadDefaultBoardTasks(env, userId),
     loadDefaultBoardCharacters(env, userId)
   ]);
+  const orientation = initialization.orientation;
   const sheetId = crypto.randomUUID();
   const tableId = crypto.randomUUID();
   const roles = defaultBoardRolesForOrientation(orientation);
@@ -1011,15 +1066,20 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
     tasks,
     characters
   }).map((seed) => ({ id: crypto.randomUUID(), ...seed }));
+  const currentPeriodKeys = getCurrentBoardCompletionPeriodKeys(
+    seeds.map((seed) => ({ kind: seed.kind, task_reset_rule_json: seed.taskResetRuleJson })),
+    now
+  );
 
-  await env.DB.batch([
+  const results = await env.DB.batch([
     env.DB.prepare(
       `INSERT OR IGNORE INTO sheets (
          id, user_id, name, sort_order, is_default, content_version
        )
        SELECT ?2, ?1, ?3, 0, 1, 1
        WHERE NOT EXISTS (SELECT 1 FROM sheets WHERE user_id = ?1)
-         AND NOT EXISTS (SELECT 1 FROM board_tables WHERE user_id = ?1)`
+         AND NOT EXISTS (SELECT 1 FROM board_tables WHERE user_id = ?1)
+       RETURNING id`
     ).bind(userId, sheetId, DEFAULT_SHEET_NAME),
     env.DB.prepare(
       `INSERT INTO board_tables (
@@ -1030,7 +1090,8 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
        WHERE EXISTS (
          SELECT 1 FROM sheets WHERE id = ?3 AND user_id = ?1
        )
-         AND NOT EXISTS (SELECT 1 FROM board_tables WHERE user_id = ?1)`
+         AND NOT EXISTS (SELECT 1 FROM board_tables WHERE user_id = ?1)
+       RETURNING id`
     ).bind(userId, tableId, sheetId, DEFAULT_TABLE_NAME, roles.rowRole, roles.columnRole, roles.taskAxis),
     env.DB.prepare(
       `INSERT INTO board_axis_items (
@@ -1068,7 +1129,8 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
          JOIN sheets ON sheets.id = board_tables.sheet_id AND sheets.user_id = ?1
          WHERE board_tables.id = ?2
            AND board_tables.user_id = ?1
-       )`
+       )
+       RETURNING id`
     ).bind(userId, tableId, JSON.stringify(seeds)),
     env.DB.prepare(
       `INSERT INTO board_cell_completions (
@@ -1096,10 +1158,12 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
         AND character_items.character_id = completions.character_id
        WHERE completions.user_id = ?1
          AND completions.character_id IS NOT NULL
+         AND completions.period_key IN (SELECT value FROM json_each(?3))
          AND task_items.axis <> character_items.axis
        ON CONFLICT(user_id, table_id, row_item_id, column_item_id, period_key)
-       DO UPDATE SET completed = excluded.completed, updated_at = CURRENT_TIMESTAMP`
-    ).bind(userId, tableId),
+       DO UPDATE SET completed = excluded.completed, updated_at = CURRENT_TIMESTAMP
+       RETURNING id`
+    ).bind(userId, tableId, JSON.stringify(currentPeriodKeys)),
     env.DB.prepare(
       `INSERT INTO board_manifest_versions (user_id, version, updated_at)
        SELECT ?1, 1, CURRENT_TIMESTAMP
@@ -1109,7 +1173,33 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
                      updated_at = CURRENT_TIMESTAMP`
     ).bind(userId, sheetId),
     env.DB.prepare(
-      `INSERT INTO board_axis_items (
+      `WITH seed_ids AS (
+         SELECT json_extract(value, '$.id') AS id
+         FROM json_each(?4)
+       ),
+       expected_completions AS (
+         SELECT 'legacy:' || ?2 || ':' || completions.id AS id,
+                CASE WHEN task_items.axis = 'row' THEN task_items.id ELSE character_items.id END AS row_item_id,
+                CASE WHEN task_items.axis = 'column' THEN task_items.id ELSE character_items.id END AS column_item_id,
+                completions.period_key,
+                completions.completed
+         FROM completions
+         JOIN board_axis_items AS task_items
+           ON task_items.user_id = ?1
+          AND task_items.table_id = ?2
+          AND task_items.kind = 'task'
+          AND task_items.task_id = completions.task_id
+         JOIN board_axis_items AS character_items
+           ON character_items.user_id = ?1
+          AND character_items.table_id = ?2
+          AND character_items.kind = 'character'
+          AND character_items.character_id = completions.character_id
+         WHERE completions.user_id = ?1
+           AND completions.character_id IS NOT NULL
+           AND completions.period_key IN (SELECT value FROM json_each(?5))
+           AND task_items.axis <> character_items.axis
+       )
+       INSERT INTO board_axis_items (
          id, user_id, table_id, axis, kind, label, sort_order
        )
        SELECT 'board-default-init-guard', NULL, ?2, 'row', 'custom', '', 0
@@ -1121,12 +1211,68 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
            )
            OR (SELECT COUNT(*) FROM board_axis_items WHERE user_id = ?1 AND table_id = ?2)
                 <> json_array_length(?4)
+           OR EXISTS (
+             SELECT 1 FROM seed_ids
+             WHERE NOT EXISTS (
+               SELECT 1 FROM board_axis_items
+               WHERE board_axis_items.id = seed_ids.id
+                 AND board_axis_items.user_id = ?1
+                 AND board_axis_items.table_id = ?2
+             )
+           )
+           OR EXISTS (
+             SELECT 1 FROM board_axis_items
+             WHERE board_axis_items.user_id = ?1
+               AND board_axis_items.table_id = ?2
+               AND board_axis_items.id NOT IN (SELECT id FROM seed_ids)
+           )
+           OR EXISTS (
+             SELECT 1 FROM expected_completions
+             WHERE NOT EXISTS (
+               SELECT 1 FROM board_cell_completions
+               WHERE board_cell_completions.id = expected_completions.id
+                 AND board_cell_completions.user_id = ?1
+                 AND board_cell_completions.table_id = ?2
+                 AND board_cell_completions.row_item_id = expected_completions.row_item_id
+                 AND board_cell_completions.column_item_id = expected_completions.column_item_id
+                 AND board_cell_completions.period_key = expected_completions.period_key
+                 AND board_cell_completions.completed = expected_completions.completed
+             )
+           )
+           OR EXISTS (
+             SELECT 1 FROM board_cell_completions
+             WHERE board_cell_completions.user_id = ?1
+               AND board_cell_completions.table_id = ?2
+               AND board_cell_completions.id LIKE 'legacy:' || ?2 || ':%'
+               AND board_cell_completions.id NOT IN (SELECT id FROM expected_completions)
+           )
            OR NOT EXISTS (
              SELECT 1 FROM board_manifest_versions WHERE user_id = ?1
            )
          )`
-    ).bind(userId, tableId, sheetId, JSON.stringify(seeds))
+    ).bind(userId, tableId, sheetId, JSON.stringify(seeds), JSON.stringify(currentPeriodKeys))
   ]);
+  if (results.length !== 6) return incompleteBoardMutation();
+  const createdSheetId = returnedMutationId(results[0], sheetId);
+  const createdTableId = returnedMutationId(results[1], tableId);
+  const seededIds = returnedIds(results[2]);
+  const completionIds = returnedIds(results[3]);
+  if (!seededIds || !completionIds) return incompleteBoardMutation();
+  if (Boolean(createdSheetId) !== Boolean(createdTableId)) return incompleteBoardMutation();
+
+  if (createdTableId) {
+    const expectedSeedIds = new Set<string>(seeds.map((seed) => seed.id));
+    if (
+      seededIds.length !== expectedSeedIds.size ||
+      new Set(seededIds).size !== seededIds.length ||
+      seededIds.some((id) => !expectedSeedIds.has(id)) ||
+      new Set(completionIds).size !== completionIds.length
+    ) {
+      return incompleteBoardMutation();
+    }
+  } else if (seededIds.length > 0 || completionIds.length > 0) {
+    return incompleteBoardMutation();
+  }
 }
 
 export async function loadBoard(env: Env, userId: string): Promise<BoardPayload> {
@@ -1176,9 +1322,10 @@ export async function loadBoard(env: Env, userId: string): Promise<BoardPayload>
       ? await env.DB.prepare(
           `SELECT table_id, row_item_id, column_item_id, period_key, completed
            FROM board_cell_completions
-           WHERE user_id = ? AND period_key IN (${placeholders(periodKeys)})`
+           WHERE user_id = ?1
+             AND period_key IN (SELECT value FROM json_each(?2))`
         )
-          .bind(userId, ...periodKeys)
+          .bind(userId, JSON.stringify(periodKeys))
           .all()
       : { results: [] };
 
@@ -1365,6 +1512,7 @@ export async function loadSharedBoard(env: Env, shareId: string, now = new Date(
   ]);
 
   const tableIds = tables.results.map((table) => String((table as { id: string }).id));
+  const tableIdsJson = JSON.stringify(tableIds);
   const axisItems =
     tableIds.length > 0
       ? await env.DB.prepare(
@@ -1382,10 +1530,10 @@ export async function loadSharedBoard(env: Env, shareId: string, now = new Date(
             AND characters.user_id = board_axis_items.user_id
             AND characters.deleted_at IS NULL
            WHERE board_axis_items.user_id = ?
-             AND board_axis_items.table_id IN (${placeholders(tableIds)})
+             AND board_axis_items.table_id IN (SELECT value FROM json_each(?))
            ORDER BY board_axis_items.table_id, board_axis_items.axis, board_axis_items.sort_order, board_axis_items.label`
         )
-          .bind(share.owner_user_id, ...tableIds)
+          .bind(share.owner_user_id, tableIdsJson)
           .all<BoardLoadAxisItemRow>()
       : { results: [] as BoardLoadAxisItemRow[] };
   const cellStates =
@@ -1394,10 +1542,10 @@ export async function loadSharedBoard(env: Env, shareId: string, now = new Date(
           `SELECT *
            FROM board_cell_states
            WHERE user_id = ?
-             AND table_id IN (${placeholders(tableIds)})
+             AND table_id IN (SELECT value FROM json_each(?))
            ORDER BY table_id, row_item_id, column_item_id`
         )
-          .bind(share.owner_user_id, ...tableIds)
+          .bind(share.owner_user_id, tableIdsJson)
           .all()
       : { results: [] };
   const periodKeys = getCurrentBoardCompletionPeriodKeys(axisItems.results, now);
@@ -1406,11 +1554,11 @@ export async function loadSharedBoard(env: Env, shareId: string, now = new Date(
       ? await env.DB.prepare(
           `SELECT table_id, row_item_id, column_item_id, period_key, completed
            FROM board_cell_completions
-           WHERE user_id = ?
-             AND table_id IN (${placeholders(tableIds)})
-             AND period_key IN (${placeholders(periodKeys)})`
+           WHERE user_id = ?1
+             AND table_id IN (SELECT value FROM json_each(?2))
+             AND period_key IN (SELECT value FROM json_each(?3))`
         )
-          .bind(share.owner_user_id, ...tableIds, ...periodKeys)
+          .bind(share.owner_user_id, tableIdsJson, JSON.stringify(periodKeys))
           .all()
       : { results: [] };
 
@@ -1997,6 +2145,11 @@ export async function importBoardCharactersForTable(
   tableId: string,
   characters: BoardCharacterSelectionInput[]
 ): Promise<BoardMutationResult | null> {
+  const normalizedCharacters = normalizeCharacterSelection(characters);
+  if (normalizedCharacters.length === 0) {
+    return { ok: true, versions: buildBoardMutationVersions([]) };
+  }
+
   const table = await env.DB.prepare("SELECT id, row_role, column_role, locked FROM board_tables WHERE id = ? AND user_id = ?")
     .bind(tableId, userId)
     .first<{ id: string; row_role: BoardAxisRole; column_role: BoardAxisRole; locked: number }>();
@@ -2011,132 +2164,308 @@ export async function importBoardCharactersForTable(
   });
   const axis = existingCharacterAxis ?? getAxisForRole(roleRepair.roles, "character");
   const sizeSeed = await readBoardAxisItemSizeSeed(env, userId, tableId, axis);
-  const maxSort = await env.DB.prepare(
-    "SELECT COALESCE(MAX(sort_order), -10) AS maxSortOrder FROM board_axis_items WHERE user_id = ? AND table_id = ? AND axis = ?"
-  )
-    .bind(userId, tableId, axis)
-    .first<{ maxSortOrder: number | null }>();
-  let sortOrder = (maxSort?.maxSortOrder ?? -10) + 10;
-  const normalizedCharacters = normalizeCharacterSelection(characters);
-  const statements: Array<ReturnType<Env["DB"]["prepare"]>> = roleRepair.statement ? [roleRepair.statement] : [];
-  const axisItemIds: string[] = [];
-
-  for (const [index, character] of normalizedCharacters.entries()) {
-    const characterId = crypto.randomUUID();
-    statements.push(
-      env.DB.prepare(
-        `INSERT INTO characters (id, user_id, name, server_name, class_name, item_level, combat_power, sort_order, enabled, deleted_at, source, updated_at)
-         SELECT ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'lostark', CURRENT_TIMESTAMP
-         WHERE EXISTS (
-           SELECT 1 FROM board_tables WHERE id = ? AND user_id = ? AND locked = 0
+  const rows = normalizedCharacters.map((character, index) => ({
+    id: crypto.randomUUID(),
+    axisItemId: crypto.randomUUID(),
+    position: index,
+    name: character.name,
+    serverName: character.serverName,
+    className: character.className,
+    itemLevel: character.itemLevel,
+    combatPower: character.combatPower ?? null,
+    sortOrder: index * 10
+  }));
+  const rowsJson = JSON.stringify(rows);
+  const statements: Array<ReturnType<Env["DB"]["prepare"]>> = [
+    bumpBoardSheetVersionsForCharacterImportStatement(env, userId, rows, {
+      targetTableId: tableId,
+      targetAxis: axis
+    })
+  ];
+  if (roleRepair.statement) statements.push(roleRepair.statement);
+  const characterResultIndex = statements.length;
+  statements.push(
+    env.DB.prepare(
+      `WITH input AS (
+         SELECT CAST(key AS INTEGER) AS position,
+                json_extract(value, '$.id') AS id,
+                json_extract(value, '$.name') AS name,
+                json_extract(value, '$.serverName') AS server_name,
+                json_extract(value, '$.className') AS class_name,
+                json_extract(value, '$.itemLevel') AS item_level,
+                json_extract(value, '$.combatPower') AS combat_power,
+                json_extract(value, '$.sortOrder') AS sort_order
+         FROM json_each(?3)
+       ),
+       valid_input AS (
+         SELECT *
+         FROM input
+         WHERE typeof(id) = 'text'
+           AND typeof(name) = 'text'
+           AND typeof(server_name) = 'text'
+           AND typeof(class_name) = 'text'
+           AND typeof(item_level) = 'text'
+           AND (combat_power IS NULL OR typeof(combat_power) = 'text')
+           AND typeof(sort_order) = 'integer'
+       )
+       INSERT INTO characters (
+         id, user_id, name, server_name, class_name, item_level, combat_power,
+         sort_order, enabled, deleted_at, source, updated_at
+       )
+       SELECT id, ?1, name, server_name, class_name, item_level, combat_power,
+              sort_order, 1, NULL, 'lostark', CURRENT_TIMESTAMP
+       FROM valid_input
+       WHERE (SELECT COUNT(*) FROM valid_input) = json_array_length(?3)
+         AND (
+           SELECT COUNT(*)
+           FROM (SELECT name, server_name FROM valid_input GROUP BY name, server_name)
+         ) = json_array_length(?3)
+         AND EXISTS (
+           SELECT 1 FROM board_tables
+           WHERE board_tables.id = ?2
+             AND board_tables.user_id = ?1
+             AND board_tables.locked = 0
          )
-         ON CONFLICT(user_id, name, server_name)
-         DO UPDATE SET class_name = excluded.class_name,
-                       item_level = excluded.item_level,
-                       combat_power = excluded.combat_power,
-                       sort_order = excluded.sort_order,
-                       source = 'lostark',
-                       enabled = 1,
-                       deleted_at = NULL,
-                       updated_at = CURRENT_TIMESTAMP`
-      ).bind(
-        characterId,
-        userId,
-        character.name,
-        character.serverName,
-        character.className,
-        character.itemLevel,
-        character.combatPower ?? null,
-        index * 10,
-        tableId,
-        userId
-      )
-    );
-    const existing = await env.DB.prepare(
-      `SELECT board_axis_items.id
-       FROM board_axis_items
-       JOIN characters
-         ON characters.id = board_axis_items.character_id
-        AND characters.user_id = board_axis_items.user_id
-       WHERE board_axis_items.user_id = ?
-         AND board_axis_items.table_id = ?
-         AND board_axis_items.axis = ?
-         AND board_axis_items.kind = 'character'
-         AND characters.name = ?
-         AND characters.server_name = ?`
-    )
-      .bind(userId, tableId, axis, character.name, character.serverName)
-      .first<{ id: string }>();
-
-    if (existing) {
-      axisItemIds.push(existing.id);
-      statements.push(
-        env.DB.prepare(
-          `UPDATE board_axis_items
-           SET visible = 1,
-               label = ?,
-               size_px = ?,
-               cross_size_px = ?,
-               updated_at = CURRENT_TIMESTAMP
-           WHERE id = ? AND user_id = ?
-             AND EXISTS (
-               SELECT 1 FROM board_tables
-               WHERE board_tables.id = board_axis_items.table_id
-                 AND board_tables.user_id = board_axis_items.user_id
-                 AND board_tables.locked = 0
-             )
-           RETURNING id`
-        ).bind(character.name, sizeSeed.size_px, sizeSeed.cross_size_px, existing.id, userId)
-      );
-      continue;
-    }
-
-    const axisItemId = crypto.randomUUID();
-    axisItemIds.push(axisItemId);
-    statements.push(
-      env.DB.prepare(
-        `INSERT INTO board_axis_items (
-           id, user_id, table_id, axis, kind, label, character_id, task_id, task_scope, task_reset_type,
-           task_reset_rule_json, task_color, sort_order, size_px, cross_size_px
-         )
-         SELECT ?, ?, board_tables.id, ?, 'character', characters.name, characters.id,
-                NULL, NULL, NULL, NULL, NULL, ?, ?, ?
-         FROM board_tables
+       ON CONFLICT(user_id, name, server_name)
+       DO UPDATE SET class_name = excluded.class_name,
+                     item_level = excluded.item_level,
+                     combat_power = excluded.combat_power,
+                     sort_order = excluded.sort_order,
+                     source = 'lostark',
+                     enabled = 1,
+                     deleted_at = NULL,
+                     updated_at = CURRENT_TIMESTAMP
+       RETURNING id, name, server_name`
+    ).bind(userId, tableId, rowsJson)
+  );
+  const updatedAxisResultIndex = statements.length;
+  statements.push(
+    env.DB.prepare(
+      `WITH input AS (
+         SELECT json_extract(value, '$.name') AS name,
+                json_extract(value, '$.serverName') AS server_name
+         FROM json_each(?1)
+       ),
+       selected AS (
+         SELECT characters.id AS character_id, input.name
+         FROM input
          JOIN characters
-           ON characters.user_id = board_tables.user_id
-          AND characters.name = ?
-          AND characters.server_name = ?
+           ON characters.user_id = ?2
+          AND characters.name = input.name
+          AND characters.server_name = input.server_name
           AND characters.enabled = 1
           AND characters.deleted_at IS NULL
-         WHERE board_tables.id = ? AND board_tables.user_id = ? AND board_tables.locked = 0
-         RETURNING id`
-      ).bind(
-        axisItemId,
-        userId,
-        axis,
-        sortOrder,
-        sizeSeed.size_px,
-        sizeSeed.cross_size_px,
-        character.name,
-        character.serverName,
-        tableId,
-        userId
-      )
-    );
-    sortOrder += 10;
-  }
+       ),
+       eligible AS (
+         SELECT 1
+         WHERE (SELECT COUNT(*) FROM selected) = json_array_length(?1)
+           AND EXISTS (
+             SELECT 1 FROM board_tables
+             WHERE board_tables.id = ?3
+               AND board_tables.user_id = ?2
+               AND board_tables.locked = 0
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM board_axis_items
+             WHERE board_axis_items.user_id = ?2
+               AND board_axis_items.table_id = ?3
+               AND board_axis_items.axis = ?4
+               AND board_axis_items.kind = 'character'
+               AND board_axis_items.character_id IN (SELECT character_id FROM selected)
+             GROUP BY board_axis_items.character_id
+             HAVING COUNT(*) > 1
+           )
+       )
+       UPDATE board_axis_items
+       SET visible = 1,
+           label = (
+             SELECT selected.name FROM selected
+             WHERE selected.character_id = board_axis_items.character_id
+           ),
+           size_px = ?5,
+           cross_size_px = ?6,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE board_axis_items.user_id = ?2
+         AND board_axis_items.table_id = ?3
+         AND board_axis_items.axis = ?4
+         AND board_axis_items.kind = 'character'
+         AND board_axis_items.character_id IN (SELECT character_id FROM selected)
+         AND EXISTS (SELECT 1 FROM eligible)
+       RETURNING id, character_id`
+    ).bind(rowsJson, userId, tableId, axis, sizeSeed.size_px, sizeSeed.cross_size_px)
+  );
+  const insertedAxisResultIndex = statements.length;
+  statements.push(
+    env.DB.prepare(
+      `WITH input AS (
+         SELECT CAST(key AS INTEGER) AS position,
+                json_extract(value, '$.axisItemId') AS axis_item_id,
+                json_extract(value, '$.name') AS name,
+                json_extract(value, '$.serverName') AS server_name
+         FROM json_each(?1)
+       ),
+       selected AS (
+         SELECT input.position, input.axis_item_id, input.name, characters.id AS character_id
+         FROM input
+         JOIN characters
+           ON characters.user_id = ?2
+          AND characters.name = input.name
+          AND characters.server_name = input.server_name
+          AND characters.enabled = 1
+          AND characters.deleted_at IS NULL
+       ),
+       eligible AS (
+         SELECT 1
+         WHERE (SELECT COUNT(*) FROM selected) = json_array_length(?1)
+           AND EXISTS (
+             SELECT 1 FROM board_tables
+             WHERE board_tables.id = ?3
+               AND board_tables.user_id = ?2
+               AND board_tables.locked = 0
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM board_axis_items
+             WHERE board_axis_items.user_id = ?2
+               AND board_axis_items.table_id = ?3
+               AND board_axis_items.axis = ?4
+               AND board_axis_items.kind = 'character'
+               AND board_axis_items.character_id IN (SELECT character_id FROM selected)
+             GROUP BY board_axis_items.character_id
+             HAVING COUNT(*) > 1
+           )
+       ),
+       missing AS (
+         SELECT selected.*
+         FROM selected
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM board_axis_items
+           WHERE board_axis_items.user_id = ?2
+             AND board_axis_items.table_id = ?3
+             AND board_axis_items.axis = ?4
+             AND board_axis_items.kind = 'character'
+             AND board_axis_items.character_id = selected.character_id
+         )
+       ),
+       axis_max AS (
+         SELECT COALESCE(MAX(sort_order), -10) AS max_sort_order
+         FROM board_axis_items
+         WHERE board_axis_items.user_id = ?2
+           AND board_axis_items.table_id = ?3
+           AND board_axis_items.axis = ?4
+       )
+       INSERT INTO board_axis_items (
+         id, user_id, table_id, axis, kind, label, character_id, task_id, task_scope,
+         task_reset_type, task_reset_rule_json, task_color, sort_order, size_px, cross_size_px
+       )
+       SELECT missing.axis_item_id, ?2, ?3, ?4, 'character', missing.name, missing.character_id,
+              NULL, NULL, NULL, NULL, NULL,
+              axis_max.max_sort_order + ROW_NUMBER() OVER (ORDER BY missing.position) * 10,
+              ?5, ?6
+       FROM missing CROSS JOIN axis_max
+       WHERE EXISTS (SELECT 1 FROM eligible)
+       RETURNING id, character_id`
+    ).bind(rowsJson, userId, tableId, axis, sizeSeed.size_px, sizeSeed.cross_size_px)
+  );
+  statements.push(
+    env.DB.prepare(
+      `WITH input AS (
+         SELECT json_extract(value, '$.name') AS name,
+                json_extract(value, '$.serverName') AS server_name,
+                json_extract(value, '$.className') AS class_name,
+                json_extract(value, '$.itemLevel') AS item_level,
+                json_extract(value, '$.combatPower') AS combat_power
+         FROM json_each(?1)
+       ),
+       matched AS (
+         SELECT characters.id
+         FROM input
+         JOIN characters
+           ON characters.user_id = ?2
+          AND characters.name = input.name
+          AND characters.server_name = input.server_name
+          AND characters.class_name IS input.class_name
+          AND characters.item_level IS input.item_level
+          AND characters.combat_power IS input.combat_power
+          AND characters.source = 'lostark'
+          AND characters.enabled = 1
+          AND characters.deleted_at IS NULL
+         JOIN board_axis_items
+           ON board_axis_items.user_id = ?2
+          AND board_axis_items.table_id = ?3
+          AND board_axis_items.axis = ?4
+          AND board_axis_items.kind = 'character'
+          AND board_axis_items.character_id = characters.id
+          AND board_axis_items.visible = 1
+          AND board_axis_items.label = input.name
+          AND board_axis_items.size_px IS ?5
+          AND board_axis_items.cross_size_px IS ?6
+         GROUP BY characters.id
+         HAVING COUNT(board_axis_items.id) = 1
+       )
+       INSERT INTO board_axis_items (id, user_id, table_id, axis, kind, label, sort_order)
+       SELECT 'board-character-import-guard', NULL, ?3, ?4, 'custom', '', 0
+       WHERE (SELECT COUNT(*) FROM matched) <> json_array_length(?1)
+          OR NOT EXISTS (
+            SELECT 1 FROM board_tables
+            WHERE board_tables.id = ?3
+              AND board_tables.user_id = ?2
+              AND board_tables.locked = 0
+              AND board_tables.row_role = ?7
+              AND board_tables.column_role = ?8
+          )`
+    ).bind(
+      rowsJson,
+      userId,
+      tableId,
+      axis,
+      sizeSeed.size_px,
+      sizeSeed.cross_size_px,
+      roleRepair.roles.row_role,
+      roleRepair.roles.column_role
+    )
+  );
 
-  const results = await env.DB.batch([...statements, bumpBoardSheetVersionsForTables(env, userId, [tableId])]);
-  const roleOffset = roleRepair.statement ? 1 : 0;
-  const axisResults = normalizedCharacters.map((_, index) => results[roleOffset + index * 2 + 1]);
-  const everyAxisItemReturned = axisResults.every((result, index) => returnedMutationId(result, axisItemIds[index]!) !== null);
-  const anyAxisItemReturned = axisResults.some((result, index) => returnedMutationId(result, axisItemIds[index]!) !== null);
-  const sheetVersion = returnedAnySheetVersion(results.at(-1));
-  const roleResultId = roleRepair.statement ? returnedMutationId(results[0], tableId) : null;
-  const roleReturned = !roleRepair.statement || roleResultId !== null;
-  if (!sheetVersion && !anyAxisItemReturned && !roleResultId) return null;
-  if (!everyAxisItemReturned || !sheetVersion || !roleReturned) return incompleteBoardMutation();
-  return { ok: true, versions: buildBoardMutationVersions([sheetVersion]) };
+  const results = await env.DB.batch(statements);
+  if (results.length !== statements.length) return incompleteBoardMutation();
+  const versions = returnedSheetVersions(results[0]);
+  const roleResultId = roleRepair.statement ? returnedMutationId(results[1], tableId) : null;
+  const characterRows = returnedImportedBoardCharacterRows(results[characterResultIndex]);
+  const updatedCharacterIds = returnedBoardCharacterReferenceIds(results[updatedAxisResultIndex]);
+  const insertedCharacterIds = returnedBoardCharacterReferenceIds(results[insertedAxisResultIndex]);
+  if (
+    !versions ||
+    versions.length === 0 ||
+    new Set(versions.map((version) => version.id)).size !== versions.length ||
+    !characterRows ||
+    !updatedCharacterIds ||
+    !insertedCharacterIds
+  ) {
+    return incompleteBoardMutation();
+  }
+  if (roleRepair.statement && !roleResultId) return incompleteBoardMutation();
+
+  const expectedIdentityKeys = new Set(rows.map((row) => boardCharacterIdentityKey(row.name, row.serverName)));
+  const returnedIdentityKeys = characterRows.map((row) => boardCharacterIdentityKey(row.name, row.serverName));
+  if (
+    returnedIdentityKeys.length !== expectedIdentityKeys.size ||
+    new Set(returnedIdentityKeys).size !== returnedIdentityKeys.length ||
+    returnedIdentityKeys.some((key) => !expectedIdentityKeys.has(key))
+  ) {
+    return incompleteBoardMutation();
+  }
+  const expectedCharacterIds = new Set(characterRows.map((row) => row.id));
+  const axisCharacterIds = [...updatedCharacterIds, ...insertedCharacterIds];
+  if (
+    axisCharacterIds.length !== expectedCharacterIds.size ||
+    new Set(axisCharacterIds).size !== axisCharacterIds.length ||
+    axisCharacterIds.some((id) => !expectedCharacterIds.has(id))
+  ) {
+    return incompleteBoardMutation();
+  }
+  return { ok: true, versions: buildBoardMutationVersions(versions) };
 }
 
 export async function createManualBoardCharacterForTable(
@@ -2468,74 +2797,157 @@ export async function createBoardAxisItem(
   return { id, versions: buildBoardMutationVersions([sheetVersion]) };
 }
 
+function prepareBoardAxisOrderUpdate(
+  env: Env,
+  userId: string,
+  input: BoardAxisOrderInput,
+  axisItemIdsJson: string,
+  temporary: boolean
+) {
+  const nextSortOrder = temporary ? "-(ordered.position + 1) * 10" : "ordered.position * 10";
+  return env.DB.prepare(
+    `WITH requested AS MATERIALIZED (
+       SELECT CAST(key AS INTEGER) AS position, value AS id
+       FROM json_each(?1)
+     ),
+     owned_requested AS MATERIALIZED (
+       SELECT requested.position, requested.id
+       FROM requested
+       JOIN board_axis_items ON board_axis_items.id = requested.id
+       WHERE board_axis_items.user_id = ?2
+         AND board_axis_items.table_id = ?3
+         AND board_axis_items.axis = ?4
+         AND board_axis_items.visible = 1
+     ),
+     hidden AS MATERIALIZED (
+       SELECT board_axis_items.id,
+              json_array_length(?1) + ROW_NUMBER() OVER (
+                ORDER BY board_axis_items.sort_order, board_axis_items.label, board_axis_items.id
+              ) - 1 AS position
+       FROM board_axis_items
+       WHERE board_axis_items.user_id = ?2
+         AND board_axis_items.table_id = ?3
+         AND board_axis_items.axis = ?4
+         AND board_axis_items.visible <> 1
+     ),
+     ordered AS MATERIALIZED (
+       SELECT id, position FROM owned_requested
+       UNION ALL
+       SELECT id, position FROM hidden
+     ),
+     eligible AS MATERIALIZED (
+       SELECT 1
+       WHERE EXISTS (
+         SELECT 1
+         FROM board_tables
+         WHERE board_tables.id = ?3
+           AND board_tables.user_id = ?2
+           AND board_tables.locked = 0
+       )
+         AND (SELECT COUNT(*) FROM requested) = json_array_length(?1)
+         AND (SELECT COUNT(DISTINCT id) FROM requested) = json_array_length(?1)
+         AND (SELECT COUNT(*) FROM owned_requested) = json_array_length(?1)
+         AND (
+           SELECT COUNT(*)
+           FROM board_axis_items
+           WHERE board_axis_items.user_id = ?2
+             AND board_axis_items.table_id = ?3
+             AND board_axis_items.axis = ?4
+             AND board_axis_items.visible = 1
+         ) = json_array_length(?1)
+     )
+     UPDATE board_axis_items
+     SET sort_order = (
+           SELECT ${nextSortOrder}
+           FROM ordered
+           WHERE ordered.id = board_axis_items.id
+         ),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE board_axis_items.user_id = ?2
+       AND board_axis_items.table_id = ?3
+       AND board_axis_items.axis = ?4
+       AND EXISTS (SELECT 1 FROM eligible)
+       AND board_axis_items.id IN (SELECT id FROM ordered)
+     RETURNING id`
+  ).bind(axisItemIdsJson, userId, input.tableId, input.axis);
+}
+
+function prepareBoardAxisOrderVersionUpdate(
+  env: Env,
+  userId: string,
+  input: BoardAxisOrderInput,
+  axisItemIdsJson: string
+) {
+  return env.DB.prepare(
+    `WITH requested AS (
+       SELECT value AS id
+       FROM json_each(?1)
+     ),
+     owned_requested AS (
+       SELECT requested.id
+       FROM requested
+       JOIN board_axis_items ON board_axis_items.id = requested.id
+       WHERE board_axis_items.user_id = ?2
+         AND board_axis_items.table_id = ?3
+         AND board_axis_items.axis = ?4
+         AND board_axis_items.visible = 1
+     )
+     UPDATE sheets
+     SET content_version = content_version + 1,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE sheets.user_id = ?2
+       AND (SELECT COUNT(*) FROM requested) = json_array_length(?1)
+       AND (SELECT COUNT(DISTINCT id) FROM requested) = json_array_length(?1)
+       AND (SELECT COUNT(*) FROM owned_requested) = json_array_length(?1)
+       AND (
+         SELECT COUNT(*)
+         FROM board_axis_items
+         WHERE board_axis_items.user_id = ?2
+           AND board_axis_items.table_id = ?3
+           AND board_axis_items.axis = ?4
+           AND board_axis_items.visible = 1
+       ) = json_array_length(?1)
+       AND sheets.id IN (
+         SELECT board_tables.sheet_id
+         FROM board_tables
+         WHERE board_tables.id = ?3
+           AND board_tables.user_id = ?2
+           AND board_tables.locked = 0
+       )
+     RETURNING id, content_version AS version`
+  ).bind(axisItemIdsJson, userId, input.tableId, input.axis);
+}
+
 export async function reorderBoardAxisItems(
   env: Env,
   userId: string,
   input: BoardAxisOrderInput
 ): Promise<BoardMutationResult | null> {
-  const table = await env.DB.prepare("SELECT id, locked FROM board_tables WHERE id = ? AND user_id = ?")
-    .bind(input.tableId, userId)
-    .first<{ id: string; locked: number }>();
-  if (!table) return null;
-  if (table.locked === 1) return null;
+  if (input.axisItemIds.length === 0) return { ok: true, versions: buildBoardMutationVersions([]) };
 
-  const existing = await env.DB.prepare(
-    `SELECT id, visible
-     FROM board_axis_items
-     WHERE user_id = ? AND table_id = ? AND axis = ?
-     ORDER BY sort_order, label`
-  )
-    .bind(userId, input.tableId, input.axis)
-    .all<{ id: string; visible: number }>();
-  const visibleIds = existing.results.filter((item) => item.visible === 1).map((item) => item.id);
-  if (visibleIds.length !== input.axisItemIds.length) return null;
-
-  const visibleSet = new Set(visibleIds);
-  if (input.axisItemIds.some((id) => !visibleSet.has(id))) return null;
-
-  const hiddenIds = existing.results.filter((item) => item.visible !== 1).map((item) => item.id);
-  const orderedIds = [...input.axisItemIds, ...hiddenIds];
-
-  const orderedIdsJson = JSON.stringify(orderedIds);
+  const orderedIdsJson = JSON.stringify(input.axisItemIds);
   const [temporaryResult, finalResult, sheetVersionResult] = await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE board_axis_items
-       SET sort_order = -(
-             CAST((SELECT key FROM json_each(?) WHERE value = board_axis_items.id) AS INTEGER) + 1
-           ) * 10,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = ? AND table_id = ? AND axis = ?
-         AND id IN (SELECT value FROM json_each(?))
-         AND EXISTS (
-           SELECT 1 FROM board_tables
-           WHERE board_tables.id = board_axis_items.table_id
-             AND board_tables.user_id = board_axis_items.user_id
-             AND board_tables.locked = 0
-         )
-       RETURNING id`
-    ).bind(orderedIdsJson, userId, input.tableId, input.axis, orderedIdsJson),
-    env.DB.prepare(
-      `UPDATE board_axis_items
-       SET sort_order = CAST((SELECT key FROM json_each(?) WHERE value = board_axis_items.id) AS INTEGER) * 10,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = ? AND table_id = ? AND axis = ?
-         AND id IN (SELECT value FROM json_each(?))
-         AND EXISTS (
-           SELECT 1 FROM board_tables
-           WHERE board_tables.id = board_axis_items.table_id
-             AND board_tables.user_id = board_axis_items.user_id
-             AND board_tables.locked = 0
-         )
-       RETURNING id`
-    ).bind(orderedIdsJson, userId, input.tableId, input.axis, orderedIdsJson),
-    bumpBoardSheetVersionsForTables(env, userId, [input.tableId])
+    prepareBoardAxisOrderUpdate(env, userId, input, orderedIdsJson, true),
+    prepareBoardAxisOrderUpdate(env, userId, input, orderedIdsJson, false),
+    prepareBoardAxisOrderVersionUpdate(env, userId, input, orderedIdsJson)
   ]);
   const temporaryIds = returnedIds(temporaryResult);
   const finalIds = returnedIds(finalResult);
   const sheetVersion = returnedAnySheetVersion(sheetVersionResult);
   if (temporaryIds?.length === 0 && finalIds?.length === 0 && !sheetVersion) return null;
   if (!temporaryIds || !finalIds || !sheetVersion) return incompleteBoardMutation();
-  if (temporaryIds.length !== orderedIds.length || finalIds.length !== orderedIds.length) return incompleteBoardMutation();
+  const temporarySet = new Set(temporaryIds);
+  const finalSet = new Set(finalIds);
+  if (
+    temporarySet.size !== temporaryIds.length ||
+    finalSet.size !== finalIds.length ||
+    temporaryIds.length !== finalIds.length ||
+    temporaryIds.length < input.axisItemIds.length ||
+    [...temporarySet].some((id) => !finalSet.has(id)) ||
+    input.axisItemIds.some((id) => !finalSet.has(id))
+  ) {
+    return incompleteBoardMutation();
+  }
   return { ok: true, versions: buildBoardMutationVersions([sheetVersion]) };
 }
 
@@ -3014,10 +3426,6 @@ function isBoardBulkGuardAssertionError(error: unknown): boolean {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
-}
-
-function placeholders(values: string[]): string {
-  return values.map(() => "?").join(", ");
 }
 
 export async function updateBoardAxisItemSize(

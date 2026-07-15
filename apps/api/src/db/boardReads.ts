@@ -384,13 +384,13 @@ async function loadBoardSheetAttempt(
             AND sheets.user_id = ?1
            WHERE board_cell_completions.user_id = ?1
              AND sheets.id = ?2
-             AND board_cell_completions.period_key IN (${periodKeys.map((_, index) => `?${index + 3}`).join(", ")})
+             AND board_cell_completions.period_key IN (SELECT value FROM json_each(?3))
            ORDER BY board_cell_completions.table_id,
                     board_cell_completions.row_item_id,
                     board_cell_completions.column_item_id,
                     board_cell_completions.period_key`
         )
-          .bind(userId, sheetId, ...periodKeys)
+          .bind(userId, sheetId, JSON.stringify(periodKeys))
           .all();
 
   return {
@@ -434,7 +434,7 @@ export async function loadBoardBootstrap(
   for (let attempt = 0; attempt < MAX_BOARD_SNAPSHOT_ATTEMPTS; attempt += 1) {
     let manifest = await loadBoardManifest(env, userId);
     if (manifest.sheets.length === 0) {
-      await ensureDefaultBoard(env, userId);
+      await ensureDefaultBoard(env, userId, now);
       manifest = await loadBoardManifest(env, userId);
     }
 

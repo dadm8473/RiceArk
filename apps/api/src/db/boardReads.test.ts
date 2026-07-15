@@ -12,7 +12,7 @@ import type {
   BoardSheetPayloadItem,
   BoardVersionSummary
 } from "./boardReads";
-import { loadBoardVersionSummary, type BoardVersionSummary as BoardModuleVersionSummary } from "./board";
+import { loadBoard, loadBoardVersionSummary, type BoardVersionSummary as BoardModuleVersionSummary } from "./board";
 import { loadBoardBootstrap, loadBoardManifest, loadBoardSheet } from "./boardReads";
 
 interface CapturedStatement {
@@ -760,9 +760,10 @@ describe("sheet-aware board reads", () => {
 
       const completionStatements = statements.filter((statement) => statement.sql.includes("FROM board_cell_completions"));
       expect(completionStatements).toHaveLength(1);
-      expect(completionStatements[0]?.values.slice(-2)).toEqual([
-        "daily:2026-06-05",
-        "weekly:2026-06-03"
+      expect(completionStatements[0]?.values).toEqual([
+        "user-1",
+        "sheet-active",
+        JSON.stringify(["daily:2026-06-05", "weekly:2026-06-03"])
       ]);
 
       statements.length = 0;
@@ -986,6 +987,21 @@ describe("sheet-aware board reads", () => {
         "daily:2026-06-05",
         1
       );
+    database
+      .prepare(
+        `INSERT INTO completions (
+           id, user_id, task_id, character_id, target_key, period_key, completed
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        "legacy-completion-historical",
+        "user-1",
+        "task-daily-1",
+        "character-0",
+        "character-0",
+        "daily:2026-05-01",
+        1
+      );
 
     const visibleStates: Array<{
       sheets: number;
@@ -1100,14 +1116,56 @@ describe("sheet-aware board reads", () => {
         show_item_level: 1,
         show_combat_power: 0
       });
-      expect(statements).toHaveLength(21);
-      expect(statements.length).toBeLessThanOrEqual(29);
+      expect(statements).toHaveLength(19);
+      expect(statements.length).toBeLessThanOrEqual(19);
+      expect(statements.every((statement) => statement.values.length < 100)).toBe(true);
+      expect(statements.filter((statement) => statement.sql.includes("INSERT INTO board_axis_items"))).toHaveLength(2);
+      expect(statements.some((statement) => statement.sql.includes("FROM json_each"))).toBe(true);
       expect(statements[0]?.sql).toContain("WITH manifest AS");
       expect(statements.filter((statement) => statement.sql.includes("WITH manifest AS"))).toHaveLength(3);
       expect(bootstrap.manifest.sheets[0]?.version).toBe(bootstrap.activeSheet.sheet.content_version);
     } finally {
       database.close();
     }
+  });
+
+  it("binds 300 unique completion periods as one JSON value in new and legacy reads", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
+    await withEstablishedBoard(async ({ database, env, statements }) => {
+      const insert = database.prepare(
+        `INSERT INTO board_axis_items (
+           id, user_id, table_id, axis, kind, label, task_reset_rule_json, sort_order
+         ) VALUES (?, 'user-1', 'table-active', 'row', 'task', ?, ?, ?)`
+      );
+      for (let index = 0; index < 300; index += 1) {
+        const anchor = new Date(Date.UTC(2025, 7, 1 + index)).toISOString().slice(0, 10);
+        insert.run(
+          `axis-custom-${index}`,
+          `Custom ${index}`,
+          JSON.stringify({ type: "custom", intervalDays: 365, hour: 6, timezone: "Asia/Seoul", anchorDate: anchor }),
+          1000 + index * 10
+        );
+      }
+
+      statements.length = 0;
+      await loadBoardSheet(env, "user-1", "sheet-active", new Date("2026-06-05T03:00:00.000Z"));
+      const sheetCompletionRead = statements.find((statement) =>
+        statement.sql.includes("FROM board_cell_completions") && statement.sql.includes("sheets.id = ?2")
+      );
+      expect(sheetCompletionRead?.values.length).toBeLessThan(100);
+      expect(sheetCompletionRead?.values).toHaveLength(3);
+      expect(sheetCompletionRead?.sql).toContain("json_each(?3)");
+
+      statements.length = 0;
+      await loadBoard(env, "user-1");
+      const legacyCompletionRead = statements.find((statement) =>
+        statement.sql.includes("FROM board_cell_completions") && !statement.sql.includes("JOIN board_tables")
+      );
+      expect(legacyCompletionRead?.values.length).toBeLessThan(100);
+      expect(legacyCompletionRead?.values).toHaveLength(2);
+      expect(legacyCompletionRead?.sql).toContain("json_each(?2)");
+    });
   });
 
   it("loads the canonical version summary from the same manifest mapping in one statement", async () => {

@@ -1,6 +1,18 @@
 import type { ResetRule, TaskScope } from "@riceark/core";
 import type { Env } from "../env";
 
+function returnedTaskIds(result: unknown): string[] | null {
+  if (!result || typeof result !== "object" || !("results" in result)) return null;
+  const rows = (result as { results?: unknown[] }).results;
+  if (!Array.isArray(rows)) return null;
+  const ids = rows.flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const id = (row as { task_id?: unknown }).task_id;
+    return typeof id === "string" ? [id] : [];
+  });
+  return ids.length === rows.length ? ids : null;
+}
+
 export async function createUserTask(
   env: Env,
   userId: string,
@@ -134,30 +146,45 @@ export async function deleteTaskOverride(env: Env, userId: string, taskId: strin
 export async function reorderTasks(env: Env, userId: string, taskIds: string[]): Promise<boolean> {
   if (taskIds.length === 0) return true;
 
-  const placeholders = taskIds.map(() => "?").join(", ");
-  const existing = await env.DB.prepare(
-    `SELECT tasks.id
-     FROM tasks
-     LEFT JOIN task_overrides ON task_overrides.task_id = tasks.id AND task_overrides.user_id = ?
-     WHERE tasks.enabled = 1
-       AND (tasks.is_template = 1 OR tasks.user_id = ?)
-       AND COALESCE(task_overrides.enabled, 1) = 1
-       AND tasks.id IN (${placeholders})`
-  )
-    .bind(userId, userId, ...taskIds)
-    .all<{ id: string }>();
-  if (existing.results.length !== taskIds.length) return false;
-
-  await env.DB.batch(
-    taskIds.map((id, index) =>
-      env.DB.prepare(
-        `INSERT INTO task_orders (user_id, task_id, sort_order, updated_at)
-         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-         ON CONFLICT(user_id, task_id)
-         DO UPDATE SET sort_order = excluded.sort_order,
-                       updated_at = CURRENT_TIMESTAMP`
-      ).bind(userId, id, index * 10)
-    )
-  );
+  const idsJson = JSON.stringify(taskIds);
+  const [result] = await env.DB.batch([
+    env.DB.prepare(
+      `WITH input AS (
+         SELECT CAST(key AS INTEGER) AS position, value AS id
+         FROM json_each(?2)
+       ),
+       valid AS (
+         SELECT input.position, input.id
+         FROM input
+         JOIN tasks ON tasks.id = input.id
+         LEFT JOIN task_overrides
+           ON task_overrides.task_id = tasks.id
+          AND task_overrides.user_id = ?1
+         WHERE tasks.enabled = 1
+           AND (tasks.is_template = 1 OR tasks.user_id = ?1)
+           AND COALESCE(task_overrides.enabled, 1) = 1
+       )
+       INSERT INTO task_orders (user_id, task_id, sort_order, updated_at)
+       SELECT ?1, valid.id, valid.position * 10, CURRENT_TIMESTAMP
+       FROM valid
+       WHERE (SELECT COUNT(*) FROM valid) = json_array_length(?2)
+         AND (SELECT COUNT(DISTINCT id) FROM input) = json_array_length(?2)
+       ON CONFLICT(user_id, task_id)
+       DO UPDATE SET sort_order = excluded.sort_order,
+                     updated_at = CURRENT_TIMESTAMP
+       RETURNING task_id`
+    ).bind(userId, idsJson)
+  ]);
+  const returned = returnedTaskIds(result);
+  if (returned === null) throw new Error("Task order returned malformed rows");
+  if (returned.length === 0) return false;
+  const expected = new Set(taskIds);
+  if (
+    returned.length !== expected.size ||
+    new Set(returned).size !== returned.length ||
+    returned.some((id) => !expected.has(id))
+  ) {
+    throw new Error("Task order did not return every task");
+  }
   return true;
 }

@@ -9,6 +9,7 @@ import {
   bumpBoardSheetVersionForAxisItemStatement,
   bumpBoardSheetVersionForTableAtExpectedLockStatement,
   bumpBoardSheetVersionStatement,
+  bumpBoardSheetVersionsForCharacterImportStatement,
   bumpBoardSheetVersionsForCharacterStatement,
   bumpBoardSheetVersionsForTablesStatement
 } from "./boardVersions";
@@ -66,6 +67,12 @@ function createVersionDatabase(): DatabaseSync {
     CREATE TABLE characters (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      server_name TEXT NOT NULL DEFAULT '',
+      class_name TEXT NOT NULL DEFAULT '',
+      item_level TEXT NOT NULL DEFAULT '',
+      combat_power TEXT,
+      source TEXT NOT NULL DEFAULT 'lostark',
       enabled INTEGER NOT NULL DEFAULT 1,
       deleted_at TEXT
     );
@@ -74,6 +81,8 @@ function createVersionDatabase(): DatabaseSync {
       user_id TEXT NOT NULL,
       table_id TEXT NOT NULL,
       character_id TEXT,
+      axis TEXT NOT NULL DEFAULT 'column',
+      kind TEXT NOT NULL DEFAULT 'character',
       visible INTEGER NOT NULL DEFAULT 1
     );
   `);
@@ -229,6 +238,46 @@ describe("board mutation versions", () => {
     expect(statements[0]?.sql).toContain("SELECT DISTINCT board_tables.sheet_id");
     expect(statements[0]?.sql.match(/user_id = \?/g)).toHaveLength(3);
     expect(statements[0]?.sql).toContain("RETURNING id, content_version AS version");
+  });
+
+  it("bumps each sheet once for changed imported profiles plus the target table sheet", () => {
+    const database = createVersionDatabase();
+    try {
+      database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?), (?, ?)")
+        .run("sheet-1", "user-1", "sheet-2", "user-1");
+      database.prepare("INSERT INTO board_tables (id, user_id, sheet_id) VALUES (?, ?, ?), (?, ?, ?)")
+        .run("table-target", "user-1", "sheet-1", "table-shared", "user-1", "sheet-2");
+      database.prepare(
+        `INSERT INTO characters (
+           id, user_id, name, server_name, class_name, item_level, combat_power, source
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run("character-1", "user-1", "공유캐릭터", "아만", "브레이커", "1,640.00", "2,500.00", "lostark");
+      database.prepare(
+        "INSERT INTO board_axis_items (id, user_id, table_id, character_id) VALUES (?, ?, ?, ?), (?, ?, ?, ?)"
+      ).run(
+        "axis-target", "user-1", "table-target", "character-1",
+        "axis-shared", "user-1", "table-shared", "character-1"
+      );
+      const { env, statements } = createEnv();
+
+      bumpBoardSheetVersionsForCharacterImportStatement(env, "user-1", [{
+        name: "공유캐릭터",
+        serverName: "아만",
+        className: "환수사",
+        itemLevel: "1,700.00",
+        combatPower: "3,000.00"
+      }], { targetTableId: "table-target", targetAxis: "column" });
+
+      expect(statements).toHaveLength(1);
+      expect(statements[0]?.values.length).toBeLessThan(100);
+      expect(statements[0]?.sql).toContain("json_each");
+      expect(executeStatement(database, statements[0]!)).toEqual([
+        { id: "sheet-1", version: 1 },
+        { id: "sheet-2", version: 1 }
+      ]);
+    } finally {
+      database.close();
+    }
   });
 
   it("does not bump a sheet for an axis item that references a foreign character", () => {

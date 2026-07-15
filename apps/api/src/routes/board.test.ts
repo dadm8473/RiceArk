@@ -725,6 +725,45 @@ describe("board mutation routes", () => {
 
     const execute = (statement: { sql: string; values: unknown[] }) => {
       const sql = statement.sql.replace(/\s+/g, " ").trim();
+      if (sql.includes("WITH requested AS MATERIALIZED") && sql.includes("UPDATE board_axis_items")) {
+        const ids = JSON.parse(String(statement.values[0])) as string[];
+        return { success: true, meta: { changes: ids.length }, results: ids.map((id) => ({ id })) };
+      }
+      if (sql.includes("WITH requested AS") && sql.includes("UPDATE sheets") && sql.includes("FROM json_each(?1)")) {
+        const ids = JSON.parse(String(statement.values[0])) as string[];
+        return {
+          success: true,
+          meta: { changes: ids.length > 0 ? 1 : 0 },
+          results: ids.length > 0 ? [{ id: "sheet-1", version: 4 }] : []
+        };
+      }
+      if (sql.includes("changed_characters") && sql.includes("UPDATE sheets")) {
+        const payload = JSON.parse(String(statement.values[1])) as Array<Record<string, unknown>>;
+        return {
+          success: true,
+          meta: { changes: payload.length > 0 ? 1 : 0 },
+          results: payload.length > 0 ? [{ id: "sheet-1", version: 4 }] : []
+        };
+      }
+      if (sql.includes("INSERT INTO characters") && sql.includes("RETURNING id, name, server_name")) {
+        const payload = JSON.parse(String(statement.values[2])) as Array<Record<string, unknown>>;
+        return {
+          success: true,
+          meta: { changes: payload.length },
+          results: payload.map((row) => ({ id: row.id, name: row.name, server_name: row.serverName }))
+        };
+      }
+      if (sql.includes("UPDATE board_axis_items") && sql.includes("RETURNING id, character_id")) {
+        return { success: true, meta: { changes: 0 }, results: [] };
+      }
+      if (sql.includes("INSERT INTO board_axis_items") && sql.includes("RETURNING id, character_id")) {
+        const payload = JSON.parse(String(statement.values[0])) as Array<Record<string, unknown>>;
+        return {
+          success: true,
+          meta: { changes: payload.length },
+          results: payload.map((row) => ({ id: row.axisItemId, character_id: row.id }))
+        };
+      }
       if (sql.includes("UPDATE sheets") && sql.includes("content_version = content_version + 1")) {
         if (!sql.startsWith("WITH")) {
           const tableIds = statement.values

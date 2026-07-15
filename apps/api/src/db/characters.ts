@@ -4,6 +4,7 @@ import type { Env } from "../env";
 import { searchRosterCharacters } from "../lostark/client";
 import {
   buildBoardMutationVersions,
+  bumpBoardSheetVersionsForCharacterImportStatement,
   bumpBoardSheetVersionsForCharacterStatement,
   type BoardMutationResult,
   type BoardMutationVersions,
@@ -54,6 +55,34 @@ function returnedSheetVersions(result: unknown): BoardSheetVersion[] | null {
   return versions.length === rows.length ? versions : null;
 }
 
+function returnedIds(result: unknown): string[] | null {
+  if (!result || typeof result !== "object" || !("results" in result)) return null;
+  const rows = (result as { results?: unknown[] }).results;
+  if (!Array.isArray(rows)) return null;
+  const ids = rows.flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const id = (row as { id?: unknown }).id;
+    return typeof id === "string" ? [id] : [];
+  });
+  return ids.length === rows.length ? ids : null;
+}
+
+function characterIdentityKey(name: string, serverName: string): string {
+  return JSON.stringify([name, serverName]);
+}
+
+function returnedCharacterIdentityKeys(result: unknown): string[] | null {
+  if (!result || typeof result !== "object" || !("results" in result)) return null;
+  const rows = (result as { results?: unknown[] }).results;
+  if (!Array.isArray(rows)) return null;
+  const keys = rows.flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const { name, server_name: serverName } = row as { name?: unknown; server_name?: unknown };
+    return typeof name === "string" && typeof serverName === "string" ? [characterIdentityKey(name, serverName)] : [];
+  });
+  return keys.length === rows.length ? keys : null;
+}
+
 function buildCharacterMutationResult(
   mutationResult: unknown,
   versionResult: unknown,
@@ -77,10 +106,55 @@ function parseStoredTimestamp(value: string | null | undefined): number | null {
 
 export async function saveSelectedCharacters(env: Env, userId: string, selected: CharacterSelection[]): Promise<void> {
   const characters = normalizeCharacterSelection(selected);
-  const statements = characters.map((character, index) =>
+  if (characters.length === 0) return;
+
+  const rows = characters.map((character, index) => ({
+    id: crypto.randomUUID(),
+    name: character.name,
+    serverName: character.serverName,
+    className: character.className,
+    itemLevel: character.itemLevel,
+    combatPower: character.combatPower ?? null,
+    sortOrder: index * 10
+  }));
+  const rowsJson = JSON.stringify(rows);
+  const [versionResult, upsertResult] = await env.DB.batch([
+    bumpBoardSheetVersionsForCharacterImportStatement(env, userId, rows),
     env.DB.prepare(
-      `INSERT INTO characters (id, user_id, name, server_name, class_name, item_level, combat_power, sort_order, enabled, deleted_at, source, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'lostark', CURRENT_TIMESTAMP)
+      `WITH input AS (
+         SELECT CAST(key AS INTEGER) AS position,
+                json_extract(value, '$.id') AS id,
+                json_extract(value, '$.name') AS name,
+                json_extract(value, '$.serverName') AS server_name,
+                json_extract(value, '$.className') AS class_name,
+                json_extract(value, '$.itemLevel') AS item_level,
+                json_extract(value, '$.combatPower') AS combat_power,
+                json_extract(value, '$.sortOrder') AS sort_order
+         FROM json_each(?2)
+       ),
+       valid_input AS (
+         SELECT *
+         FROM input
+         WHERE typeof(id) = 'text'
+           AND typeof(name) = 'text'
+           AND typeof(server_name) = 'text'
+           AND typeof(class_name) = 'text'
+           AND typeof(item_level) = 'text'
+           AND (combat_power IS NULL OR typeof(combat_power) = 'text')
+           AND typeof(sort_order) = 'integer'
+       )
+       INSERT INTO characters (
+         id, user_id, name, server_name, class_name, item_level, combat_power,
+         sort_order, enabled, deleted_at, source, updated_at
+       )
+       SELECT id, ?1, name, server_name, class_name, item_level, combat_power,
+              sort_order, 1, NULL, 'lostark', CURRENT_TIMESTAMP
+       FROM valid_input
+       WHERE (SELECT COUNT(*) FROM valid_input) = json_array_length(?2)
+         AND (
+           SELECT COUNT(*)
+           FROM (SELECT name, server_name FROM valid_input GROUP BY name, server_name)
+         ) = json_array_length(?2)
        ON CONFLICT(user_id, name, server_name)
        DO UPDATE SET class_name = excluded.class_name,
                      item_level = excluded.item_level,
@@ -89,19 +163,25 @@ export async function saveSelectedCharacters(env: Env, userId: string, selected:
                      source = 'lostark',
                      enabled = 1,
                      deleted_at = NULL,
-                     updated_at = CURRENT_TIMESTAMP`
-    ).bind(
-      crypto.randomUUID(),
-      userId,
-      character.name,
-      character.serverName,
-      character.className,
-      character.itemLevel,
-      character.combatPower ?? null,
-      index * 10
-    )
-  );
-  if (statements.length > 0) await env.DB.batch(statements);
+                     updated_at = CURRENT_TIMESTAMP
+       RETURNING id, name, server_name`
+    ).bind(userId, rowsJson)
+  ]);
+
+  const versions = returnedSheetVersions(versionResult);
+  if (!versions || new Set(versions.map((version) => version.id)).size !== versions.length) {
+    throw new Error("Character import batch returned malformed version rows");
+  }
+  const returnedKeys = returnedCharacterIdentityKeys(upsertResult);
+  const expectedKeys = new Set(rows.map((row) => characterIdentityKey(row.name, row.serverName)));
+  if (
+    !returnedKeys ||
+    returnedKeys.length !== expectedKeys.size ||
+    new Set(returnedKeys).size !== returnedKeys.length ||
+    returnedKeys.some((key) => !expectedKeys.has(key))
+  ) {
+    throw new Error("Character import batch did not return every character");
+  }
 }
 
 export async function createManualCharacter(
@@ -306,23 +386,47 @@ export async function deleteCharacter(
 export async function reorderCharacters(env: Env, userId: string, characterIds: string[]): Promise<boolean> {
   if (characterIds.length === 0) return true;
 
-  const placeholders = characterIds.map(() => "?").join(", ");
-  const existing = await env.DB.prepare(
-    `SELECT id FROM characters
-     WHERE user_id = ? AND enabled = 1 AND deleted_at IS NULL AND id IN (${placeholders})`
-  )
-    .bind(userId, ...characterIds)
-    .all<{ id: string }>();
-  if (existing.results.length !== characterIds.length) return false;
-
-  await env.DB.batch(
-    characterIds.map((id, index) =>
-      env.DB.prepare(
-        `UPDATE characters
-         SET sort_order = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL`
-      ).bind(index * 10, id, userId)
-    )
-  );
+  const idsJson = JSON.stringify(characterIds);
+  const [result] = await env.DB.batch([
+    env.DB.prepare(
+      `WITH input AS (
+         SELECT CAST(key AS INTEGER) AS position, value AS id
+         FROM json_each(?2)
+       ),
+       valid AS (
+         SELECT input.position, input.id
+         FROM input
+         JOIN characters ON characters.id = input.id
+         WHERE characters.user_id = ?1
+           AND characters.enabled = 1
+           AND characters.deleted_at IS NULL
+       )
+       UPDATE characters
+       SET sort_order = (
+             SELECT valid.position * 10
+             FROM valid
+             WHERE valid.id = characters.id
+           ),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE characters.user_id = ?1
+         AND characters.enabled = 1
+         AND characters.deleted_at IS NULL
+         AND characters.id IN (SELECT id FROM valid)
+         AND (SELECT COUNT(*) FROM valid) = json_array_length(?2)
+         AND (SELECT COUNT(DISTINCT id) FROM input) = json_array_length(?2)
+       RETURNING id`
+    ).bind(userId, idsJson)
+  ]);
+  const returned = returnedIds(result);
+  if (returned === null) throw new Error("Character order returned malformed rows");
+  if (returned.length === 0) return false;
+  const expected = new Set(characterIds);
+  if (
+    returned.length !== expected.size ||
+    new Set(returned).size !== returned.length ||
+    returned.some((id) => !expected.has(id))
+  ) {
+    throw new Error("Character order did not return every character");
+  }
   return true;
 }

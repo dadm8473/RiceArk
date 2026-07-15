@@ -2,6 +2,8 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deleteCharacter,
+  reorderCharacters,
+  saveSelectedCharacters,
   updateCharacterDetails,
   updateCharacterDisplayName,
   updateCharacterFromLostArk
@@ -85,11 +87,13 @@ function createCharacterDatabase(): DatabaseSync {
       item_level TEXT NOT NULL,
       combat_power TEXT,
       memo TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
       source TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       deleted_at TEXT,
       last_refresh_attempt_at TEXT,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (user_id, name, server_name)
     );
     CREATE TABLE sheets (
       id TEXT PRIMARY KEY,
@@ -100,21 +104,29 @@ function createCharacterDatabase(): DatabaseSync {
     CREATE TABLE board_tables (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
-      sheet_id TEXT NOT NULL
+      sheet_id TEXT NOT NULL,
+      locked INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE board_axis_items (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       table_id TEXT NOT NULL,
       character_id TEXT,
+      axis TEXT NOT NULL DEFAULT 'column',
+      kind TEXT NOT NULL DEFAULT 'character',
       visible INTEGER NOT NULL DEFAULT 1
     );
   `);
   return database;
 }
 
-function createSqliteEnv(database: DatabaseSync): { env: Env; batches: SqliteD1Statement[][] } {
+function createSqliteEnv(database: DatabaseSync): {
+  env: Env;
+  batches: SqliteD1Statement[][];
+  statements: SqliteD1Statement[];
+} {
   const batches: SqliteD1Statement[][] = [];
+  const statements: SqliteD1Statement[] = [];
 
   const execute = (statement: SqliteD1Statement) => {
     const values = statement.values as SQLInputValue[];
@@ -130,7 +142,7 @@ function createSqliteEnv(database: DatabaseSync): { env: Env; batches: SqliteD1S
   const env = {
     DB: {
       prepare(sql: string) {
-        return {
+        const statement = {
           sql,
           values: [] as unknown[],
           bind(...values: unknown[]) {
@@ -140,10 +152,15 @@ function createSqliteEnv(database: DatabaseSync): { env: Env; batches: SqliteD1S
           async first() {
             return database.prepare(sql).get(...(this.values as SQLInputValue[])) ?? null;
           },
+          async all() {
+            return { results: database.prepare(sql).all(...(this.values as SQLInputValue[])) };
+          },
           async run() {
             return execute(this);
           }
         };
+        statements.push(statement);
+        return statement;
       },
       async batch(statements: SqliteD1Statement[]) {
         batches.push(statements);
@@ -160,7 +177,7 @@ function createSqliteEnv(database: DatabaseSync): { env: Env; batches: SqliteD1S
     }
   } as unknown as Env;
 
-  return { env, batches };
+  return { env, batches, statements };
 }
 
 function insertCharacter(
@@ -203,6 +220,138 @@ function insertProjection(database: DatabaseSync, characterId: string): void {
     "axis-2", "user-1", "table-2", characterId
   );
 }
+
+describe("set-based character arrays", () => {
+  it("imports the schema maximum with bounded statements and bindings", async () => {
+    const database = createCharacterDatabase();
+    try {
+      const { env, statements } = createSqliteEnv(database);
+      const selected = Array.from({ length: 200 }, (_, index) => ({
+        name: `캐릭터${index}`,
+        serverName: index % 2 === 0 ? "아만" : "카단",
+        className: "브레이커",
+        itemLevel: `${1700 - index}.00`,
+        combatPower: `${3000 - index}.00`
+      }));
+
+      await saveSelectedCharacters(env, "user-1", selected);
+
+      expect(statements).toHaveLength(2);
+      expect(statements.every((statement) => statement.values.length < 100)).toBe(true);
+      expect(statements.filter((statement) => statement.sql.includes("INSERT INTO characters"))).toHaveLength(1);
+      expect(statements.some((statement) => statement.sql.includes("json_each"))).toBe(true);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM characters").get()).toEqual({ count: 200 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("bumps every distinct sheet that renders a changed imported character exactly once", async () => {
+    const database = createCharacterDatabase();
+    try {
+      insertCharacter(database, "character-1");
+      insertProjection(database, "character-1");
+      const { env } = createSqliteEnv(database);
+      const changed = [{
+        name: "name-character-1",
+        serverName: "아만",
+        className: "환수사",
+        itemLevel: "1,700.00",
+        combatPower: "3,000.00"
+      }];
+
+      await saveSelectedCharacters(env, "user-1", changed);
+
+      expect(database.prepare("SELECT content_version FROM sheets ORDER BY id").all()).toEqual([
+        { content_version: 1 },
+        { content_version: 1 }
+      ]);
+      expect(database.prepare("SELECT class_name, item_level, combat_power FROM characters WHERE id = ?")
+        .get("character-1")).toEqual({
+        class_name: "환수사",
+        item_level: "1,700.00",
+        combat_power: "3,000.00"
+      });
+
+      await saveSelectedCharacters(env, "user-1", changed);
+      expect(database.prepare("SELECT content_version FROM sheets ORDER BY id").all()).toEqual([
+        { content_version: 1 },
+        { content_version: 1 }
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("reorders 100 characters in one guarded JSON statement", async () => {
+    const database = createCharacterDatabase();
+    try {
+      for (let index = 0; index < 100; index += 1) insertCharacter(database, `character-${index}`);
+      const { env, statements } = createSqliteEnv(database);
+      const characterIds = Array.from({ length: 100 }, (_, index) => `character-${99 - index}`);
+
+      await expect(reorderCharacters(env, "user-1", characterIds)).resolves.toBe(true);
+
+      expect(statements).toHaveLength(1);
+      expect(statements.every((statement) => statement.values.length < 100)).toBe(true);
+      expect(statements.filter((statement) => statement.sql.includes("UPDATE characters"))).toHaveLength(1);
+      expect(statements.some((statement) => statement.sql.includes("json_each"))).toBe(true);
+      expect(database.prepare("SELECT id FROM characters ORDER BY sort_order").all().map((row) => row.id)).toEqual(characterIds);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("does no character D1 work for empty arrays", async () => {
+    const database = createCharacterDatabase();
+    try {
+      const { env, statements } = createSqliteEnv(database);
+
+      await saveSelectedCharacters(env, "user-1", []);
+      await expect(reorderCharacters(env, "user-1", [])).resolves.toBe(true);
+
+      expect(statements).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects an incomplete character import RETURNING set", async () => {
+    const env = createBatchResultEnv([{ results: [] }, { results: [] }]);
+
+    await expect(saveSelectedCharacters(env, "user-1", [{
+      name: "캐릭터1",
+      serverName: "아만",
+      className: "브레이커",
+      itemLevel: "1,700.00",
+      combatPower: "3,000.00"
+    }])).rejects.toThrow("Character import batch did not return every character");
+  });
+
+  it("rejects duplicate character import RETURNING identities", async () => {
+    const env = createBatchResultEnv([
+      { results: [] },
+      {
+        results: [
+          { id: "character-1", name: "캐릭터1", server_name: "아만" },
+          { id: "character-1", name: "캐릭터1", server_name: "아만" }
+        ]
+      }
+    ]);
+
+    await expect(saveSelectedCharacters(env, "user-1", [
+      { name: "캐릭터1", serverName: "아만", className: "브레이커", itemLevel: "1,700.00", combatPower: null },
+      { name: "캐릭터2", serverName: "카단", className: "바드", itemLevel: "1,680.00", combatPower: null }
+    ])).rejects.toThrow("Character import batch did not return every character");
+  });
+
+  it("rejects duplicate character order RETURNING ids", async () => {
+    const env = createBatchResultEnv([{ results: [{ id: "character-1" }, { id: "character-1" }] }]);
+
+    await expect(reorderCharacters(env, "user-1", ["character-1", "character-2"]))
+      .rejects.toThrow("Character order did not return every character");
+  });
+});
 
 describe("updateCharacterFromLostArk", () => {
   beforeEach(() => {
