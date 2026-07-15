@@ -7,6 +7,7 @@
     "build": "pnpm -r build",
     "check": "pnpm -r check",
     "test": "vitest run",
+    "test:d1-sql": "pnpm --filter @riceark/api test:d1-sql",
     "test:watch": "vitest",
     "dev:api": "pnpm --filter @riceark/api dev",
     "dev:web": "pnpm --filter @riceark/web dev",
