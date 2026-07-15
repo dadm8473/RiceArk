@@ -267,7 +267,9 @@ Increment `sheets.content_version` exactly once for each affected sheet in a suc
 - completion batch
 - cell-state batch
 
-Batching 30 rows is one logical request and one sheet-version increment, not 30 increments. The data mutation and all required version increments execute in the same D1 batch. Failed or rejected requests do not increment a version.
+Batching 30 rows is one logical request and one sheet-version increment, not 30 increments. The data mutation and all required version increments execute in the same transactional D1 batch. Sheet statements use `UPDATE ... RETURNING id, content_version`; manifest statements use `INSERT ... ON CONFLICT DO UPDATE ... RETURNING user_id, version`. The route builds its response from those `D1Result` rows without a follow-up version query. Failed or rejected requests do not increment a version; D1 rolls back the entire batch when any statement fails.
+
+- https://developers.cloudflare.com/d1/worker-api/d1-database/#batch
 
 All version-affecting database helpers return affected sheet ids and resulting versions. Board-content mutation responses preserve their existing top-level domain fields, such as a newly created `id` or refreshed profile, and add version metadata:
 
@@ -319,6 +321,8 @@ Inline note title/body saves remain immediate on blur. Note layout is written on
 
 Zod validates every array body before it reaches SQL. The server then binds the normalized array once as JSON and uses D1's supported `json_each(?)` table function for ownership validation, set-based insert/upsert/delete, ordering, and affected-sheet version updates. It never maps an accepted array into one D1 statement per row.
 
+Preflight validation does not replace write-time authorization. Every set-based mutation repeats user ownership, axis membership, current-period, and unlocked-table predicates in the SQL that changes rows. `RETURNING` keys are compared with the normalized request keys; a resource deleted or locked between validation and the transaction is reported as a structured rejection instead of a false success. Version statements select affected sheets through the same validated target joins.
+
 This pattern applies to completion batches, cell-state batches, axis ordering, character/task ordering, character import/upsert, default-board seeding, and legacy completion synchronization. Each route has a test-enforced budget of at most 20 D1 statements including authorization and version reads, leaving headroom below the free-plan limit of 50. Bound parameters stay below 100 because the array is one JSON value.
 
 Table settings become one server request. The route accepts table fields plus `applyRowSize`, `applyColumnSize`, and optional character display/separator changes, validates ownership and lock state once, and uses set-based `UPDATE` statements selected by table id and axis. Axis-item detail and size fields are saved through one route; cross-size propagation is one server-selected `UPDATE`, not a client list of item requests. Both flows target at most 10 D1 statements including their version response.
@@ -332,6 +336,8 @@ Roster search keeps the siblings request and enriches candidates through profile
 Existing-character refresh reads `GET /armories/characters/:name/profiles` directly because that response contains the basic profile and combat-power fields needed by RiceArk. It no longer calls siblings and enriches every roster member for each saved character.
 
 `POST /api/characters/refresh-batch` accepts at most 40 owned character ids. It loads and validates them with one set query, preserves the per-character cooldown, fetches eligible profiles with concurrency four while honoring Lost Ark rate-limit headers, and performs one JSON-backed set update plus affected-sheet version updates. It returns a result for every id so the UI retains partial-failure reporting. Explicit refreshes do not write KV; their purpose is authoritative fresh data.
+
+Every Lost Ark and Cloudflare analytics fetch has an explicit eight-second deadline. A timeout becomes the endpoint's existing structured external-service error or partial admin warning, and the same RiceArk request does not automatically retry it. `429` responses preserve `Retry-After` for the caller. In-flight dedupe entries always clear in `finally`, including timeout and abort paths. A failed origin request may reuse only a still-valid cache entry from the table below; it does not extend stale data past the accepted freshness window.
 
 - https://developer-lostark.game.onstove.com/usage-guide
 - https://developer-lostark.game.onstove.com/changelog
@@ -348,6 +354,8 @@ Existing-character refresh reads `GET /armories/characters/:name/profiles` direc
 | Admin summary | `private, no-store` | best-effort module-memory metrics for 5 minutes after authorization | 5 minutes |
 
 Public Cache API keys are synthetic same-origin `GET` requests built from canonical URLs without cookies or authorization headers. Only successful `200` JSON responses are stored. For event rewards, sort and deduplicate the reward list so equivalent requests share one entry. Concurrent server cache misses for the same external Lost Ark key share one in-isolate promise to reduce origin stampedes, and failed promises are never cached.
+
+Client character-search results use a 20-entry LRU. Module in-flight maps contain promises only, are capped at 50 distinct keys per isolate, and delete every settled promise in `finally`; they are deduplication controls, not unbounded result caches.
 
 The Cache API is available to Pages Functions but is best-effort and data-center-local. Its hits still count as Workers invocations; browser freshness and avoided/lazy requests reduce invocation count, while server caches primarily reduce D1 and external API work.
 
@@ -429,7 +437,9 @@ Each phase is independently deployable. A failed phase is rolled back without ch
 - UI tests prove browser back/forward tab changes load at most the required sheet and direct shared links do not load the owner board.
 - Admin tests prove session-check routing, Pages production script resolution, one-scan completion aggregation, and separation of cached metrics from admin identity.
 - Cache tests prove TTLs, canonical credential-free keys, successful-response-only storage, in-flight dedupe, and no private response receives a public policy.
+- External-fetch tests prove the eight-second abort signal, no same-request retry, `Retry-After` propagation, and in-flight cleanup after timeout.
 - Bulk-route tests prove query and binding budgets, whole-array validation, set-based writes, version deltas, and partial character-refresh results.
+- A Wrangler local-D1 integration test executes representative `json_each` upsert/delete/order and `UPDATE ... RETURNING` statements; mocked DB tests alone do not prove D1 SQL compatibility.
 
 Run the existing full gates after every phase:
 
