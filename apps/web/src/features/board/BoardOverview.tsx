@@ -61,6 +61,10 @@ import {
   type BoardTableLayoutPatch,
   type BoardTableLayoutPointerStart
 } from "./tableLayout";
+import {
+  type BoardMutationRunner,
+  runBoardMutationDirect
+} from "./mutationBarrier";
 import type { BoardAxis, BoardAxisItem, BoardCellState, BoardNote, BoardOrientation, BoardPayload, BoardSheet, BoardTable } from "./types";
 
 interface Props {
@@ -69,6 +73,7 @@ interface Props {
   enqueueCompletion?: ((patch: BoardCompletionPatch) => void) | undefined;
   onBoardChanged?: () => Promise<BoardPayload | null> | void;
   readOnly?: boolean | undefined;
+  runMutation?: BoardMutationRunner | undefined;
   writeLocked?: boolean | undefined;
 }
 
@@ -82,6 +87,29 @@ export function isBoardInteractionLocked({
   writeLocked: boolean;
 }): boolean {
   return readOnly || boardReadOnly || writeLocked;
+}
+
+export function getBoardWriteLockRollback(
+  authoritative: Pick<BoardPayload, "axisItems" | "notes" | "tables">,
+  _local: Pick<BoardPayload, "axisItems" | "notes" | "tables">
+): Pick<BoardPayload, "axisItems" | "notes" | "tables"> {
+  return {
+    axisItems: authoritative.axisItems,
+    notes: authoritative.notes,
+    tables: authoritative.tables
+  };
+}
+
+export function runOptimisticBoardWrite<Patch>(
+  runMutation: BoardMutationRunner,
+  patch: Patch,
+  apply: (patch: Patch) => void,
+  enqueue?: ((patch: Patch) => void) | undefined
+): Promise<void> {
+  return runMutation(async () => {
+    apply(patch);
+    enqueue?.(patch);
+  });
 }
 
 type BoardDisplaySettings = BoardPayload["settings"];
@@ -1093,6 +1121,7 @@ export function BoardOverview({
   enqueueCompletion,
   onBoardChanged,
   readOnly = false,
+  runMutation = runBoardMutationDirect,
   writeLocked = false
 }: Props) {
   const isReadOnly = isBoardInteractionLocked({
@@ -1151,9 +1180,13 @@ export function BoardOverview({
   const noteResizeSessionRef = useRef<NoteResizeSession | null>(null);
   useEffect(() => {
     if (!writeLocked) return;
+    const rollback = getBoardWriteLockRollback(board, { axisItems, notes, tables });
     tableMoveSessionRef.current = null;
     noteMoveSessionRef.current = null;
     noteResizeSessionRef.current = null;
+    setAxisItems(rollback.axisItems);
+    setTables(rollback.tables);
+    setNotes(rollback.notes ?? []);
     setMovingTableId(null);
     setMovingNoteId(null);
     setResizingNoteId(null);
@@ -1166,11 +1199,14 @@ export function BoardOverview({
     setIsCreateNoteOpen(false);
     setEditingAxisItem(null);
     setEditingNote(null);
+    setEditingNoteTitleId(null);
+    setEditingNoteBodyId(null);
     setEditingTable(null);
     setActiveTableTool(null);
     setOpenNoteMenuId(null);
     setOpenTableMenuId(null);
-  }, [writeLocked]);
+    setOpenEventNotificationTableId(null);
+  }, [writeLocked, board.axisItems, board.notes, board.tables]);
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -1375,8 +1411,12 @@ export function BoardOverview({
 
   function handleCompletionToggle(patch: BoardCompletionPatch) {
     if (isReadOnly) return;
-    setCompletions((current) => applyBoardCompletionPatch(current, patch));
-    enqueueCompletion?.(patch);
+    void runOptimisticBoardWrite(
+      runMutation,
+      patch,
+      (nextPatch) => setCompletions((current) => applyBoardCompletionPatch(current, nextPatch)),
+      enqueueCompletion
+    );
   }
 
   function handleCellMarkPaint(
@@ -1418,8 +1458,12 @@ export function BoardOverview({
       ...(nextMarkType === "reserved" && periodKey ? { periodKey } : {})
     };
 
-    setCellStates((current) => applyBoardCellStatePatch(current, patch));
-    enqueueCellState?.(patch);
+    void runOptimisticBoardWrite(
+      runMutation,
+      patch,
+      (nextPatch) => setCellStates((current) => applyBoardCellStatePatch(current, nextPatch)),
+      enqueueCellState
+    );
   }
 
   async function handleAxisItemSave(
@@ -1434,78 +1478,82 @@ export function BoardOverview({
     displaySettings?: BoardDisplaySettings | null,
     shouldUpdateDetails = true
   ) {
-    if (shouldUpdateDetails) {
-      await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId), {
-        label,
-        taskColor,
-        taskResetType,
-        separator,
-        displaySettings
-      });
-    }
-    const sizePatch = {
-      ...(sizePx !== undefined && sizePx !== null ? { sizePx } : {}),
-      ...(crossSizePx !== undefined && crossSizePx !== null ? { crossSizePx } : {})
-    };
-    const editedItem = axisItems.find((item) => item.id === axisItemId);
-    const sizePatches = new Map<string, typeof sizePatch>();
-    if (Object.keys(sizePatch).length > 0) {
-      sizePatches.set(axisItemId, sizePatch);
-    }
-    if (crossSizePx !== undefined && crossSizePx !== null && editedItem) {
-      for (const item of axisItems) {
-        if (item.table_id !== editedItem.table_id || item.axis !== editedItem.axis || item.visible !== 1) continue;
-        sizePatches.set(item.id, { ...(sizePatches.get(item.id) ?? {}), crossSizePx });
+    return runMutation(async () => {
+      if (shouldUpdateDetails) {
+        await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId), {
+          label,
+          taskColor,
+          taskResetType,
+          separator,
+          displaySettings
+        });
       }
-    }
-    if (sizePatches.size > 0) {
-      await Promise.all(
-        [...sizePatches.entries()].map(([targetAxisItemId, patch]) =>
-          apiPatch("/api/board/axis-items/" + encodeURIComponent(targetAxisItemId) + "/size", patch)
-        )
+      const sizePatch = {
+        ...(sizePx !== undefined && sizePx !== null ? { sizePx } : {}),
+        ...(crossSizePx !== undefined && crossSizePx !== null ? { crossSizePx } : {})
+      };
+      const editedItem = axisItems.find((item) => item.id === axisItemId);
+      const sizePatches = new Map<string, typeof sizePatch>();
+      if (Object.keys(sizePatch).length > 0) {
+        sizePatches.set(axisItemId, sizePatch);
+      }
+      if (crossSizePx !== undefined && crossSizePx !== null && editedItem) {
+        for (const item of axisItems) {
+          if (item.table_id !== editedItem.table_id || item.axis !== editedItem.axis || item.visible !== 1) continue;
+          sizePatches.set(item.id, { ...(sizePatches.get(item.id) ?? {}), crossSizePx });
+        }
+      }
+      if (sizePatches.size > 0) {
+        await Promise.all(
+          [...sizePatches.entries()].map(([targetAxisItemId, patch]) =>
+            apiPatch("/api/board/axis-items/" + encodeURIComponent(targetAxisItemId) + "/size", patch)
+          )
+        );
+      }
+      setAxisItems((current) =>
+        applyBoardAxisItemSaveToAxisItems(current, {
+          axisItemId,
+          label,
+          taskColor,
+          taskResetType,
+          taskResetRuleJson,
+          separator,
+          sizePx,
+          crossSizePx,
+          displaySettings,
+          shouldUpdateDetails
+        })
       );
-    }
-    setAxisItems((current) =>
-      applyBoardAxisItemSaveToAxisItems(current, {
-        axisItemId,
-        label,
-        taskColor,
-        taskResetType,
-        taskResetRuleJson,
-        separator,
-        sizePx,
-        crossSizePx,
-        displaySettings,
-        shouldUpdateDetails
-      })
-    );
-    setEditingAxisItem(null);
+      setEditingAxisItem(null);
+    });
   }
 
   async function handleBoardCharacterSave(
     characterId: string,
     input: BoardCharacterSaveInput
   ) {
-    await apiPatch("/api/characters/" + encodeURIComponent(characterId), input);
-    setAxisItems((current) =>
-      current.map((item) =>
-        item.character_id === characterId
-          ? {
-              ...item,
-              label: input.name ?? item.label,
-              character_name: input.name ?? item.character_name,
-              character_server_name: input.serverName === undefined ? item.character_server_name : input.serverName,
-              character_class_name: input.className === undefined ? item.character_class_name : input.className,
-              character_display_name: input.displayName,
-              character_item_level: input.itemLevel,
-              character_combat_power: input.combatPower
-            }
-          : item
-      )
-    );
+    return runMutation(async () => {
+      await apiPatch("/api/characters/" + encodeURIComponent(characterId), input);
+      setAxisItems((current) =>
+        current.map((item) =>
+          item.character_id === characterId
+            ? {
+                ...item,
+                label: input.name ?? item.label,
+                character_name: input.name ?? item.character_name,
+                character_server_name: input.serverName === undefined ? item.character_server_name : input.serverName,
+                character_class_name: input.className === undefined ? item.character_class_name : input.className,
+                character_display_name: input.displayName,
+                character_item_level: input.itemLevel,
+                character_combat_power: input.combatPower
+              }
+            : item
+        )
+      );
+    });
   }
 
-  async function handleBoardCharacterRefresh(characterId: string): Promise<BoardCharacterRefreshResult> {
+  async function refreshBoardCharacter(characterId: string): Promise<BoardCharacterRefreshResult> {
     const updated = await apiPost<BoardCharacterRefreshResult>("/api/characters/" + encodeURIComponent(characterId) + "/refresh", {});
     setAxisItems((current) =>
       current.map((item) =>
@@ -1526,6 +1574,10 @@ export function BoardOverview({
     return updated;
   }
 
+  async function handleBoardCharacterRefresh(characterId: string): Promise<BoardCharacterRefreshResult> {
+    return runMutation(() => refreshBoardCharacter(characterId));
+  }
+
   async function handleRefreshTableCharacters(table: BoardTable): Promise<TableCharacterRefreshSummary> {
     if (isReadOnly || isBoardTableLocked(table) || refreshingCharacterTableId !== null) {
       return { failedCount: 0, refreshedCount: 0, totalCount: 0 };
@@ -1536,38 +1588,42 @@ export function BoardOverview({
       return { failedCount: 0, refreshedCount: 0, totalCount: 0 };
     }
 
-    setRefreshingCharacterTableId(table.id);
-    setFormError(null);
-    let failedCount = 0;
+    return runMutation(async () => {
+      setRefreshingCharacterTableId(table.id);
+      setFormError(null);
+      let failedCount = 0;
 
-    try {
-      for (const characterId of characterIds) {
-        try {
-          await handleBoardCharacterRefresh(characterId);
-        } catch {
-          failedCount += 1;
+      try {
+        for (const characterId of characterIds) {
+          try {
+            await refreshBoardCharacter(characterId);
+          } catch {
+            failedCount += 1;
+          }
         }
-      }
 
-      if (failedCount > 0) {
-        setFormError(
-          `캐릭터 ${characterIds.length - failedCount}명 갱신, ${failedCount}명 실패했습니다. 1분 제한 또는 로스트아크 API 상태를 확인해주세요.`
-        );
+        if (failedCount > 0) {
+          setFormError(
+            `캐릭터 ${characterIds.length - failedCount}명 갱신, ${failedCount}명 실패했습니다. 1분 제한 또는 로스트아크 API 상태를 확인해주세요.`
+          );
+        }
+        return {
+          failedCount,
+          refreshedCount: characterIds.length - failedCount,
+          totalCount: characterIds.length
+        };
+      } finally {
+        setRefreshingCharacterTableId(null);
       }
-      return {
-        failedCount,
-        refreshedCount: characterIds.length - failedCount,
-        totalCount: characterIds.length
-      };
-    } finally {
-      setRefreshingCharacterTableId(null);
-    }
+    });
   }
 
   async function handleAxisItemDelete(axisItemId: string) {
-    await apiDelete("/api/board/axis-items/" + encodeURIComponent(axisItemId));
-    setAxisItems((current) => current.map((item) => (item.id === axisItemId ? { ...item, visible: 0 } : item)));
-    setEditingAxisItem(null);
+    return runMutation(async () => {
+      await apiDelete("/api/board/axis-items/" + encodeURIComponent(axisItemId));
+      setAxisItems((current) => current.map((item) => (item.id === axisItemId ? { ...item, visible: 0 } : item)));
+      setEditingAxisItem(null);
+    });
   }
 
   async function refreshBoard() {
@@ -1582,53 +1638,59 @@ export function BoardOverview({
     const name = nameInput.trim();
     if (!name) return;
 
-    setPendingAction("sheet");
-    setFormError(null);
-    try {
-      const sheet = await apiPost<{ id: string }>("/api/board/sheets", { name });
-      setActiveSheetId(sheet.id);
-      await refreshBoard();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "탭을 추가하지 못했습니다.";
-      setFormError(message);
-      throw new Error(message);
-    } finally {
-      setPendingAction(null);
-    }
+    return runMutation(async () => {
+      setPendingAction("sheet");
+      setFormError(null);
+      try {
+        const sheet = await apiPost<{ id: string }>("/api/board/sheets", { name });
+        setActiveSheetId(sheet.id);
+        await refreshBoard();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "탭을 추가하지 못했습니다.";
+        setFormError(message);
+        throw new Error(message);
+      } finally {
+        setPendingAction(null);
+      }
+    });
   }
 
   async function handleUpdateSheet(sheetId: string, nameInput: string) {
     const name = nameInput.trim();
     if (!name) return;
 
-    setPendingAction("sheet-update");
-    setFormError(null);
-    try {
-      await apiPatch("/api/board/sheets/" + encodeURIComponent(sheetId), { name });
-      await refreshBoard();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "탭을 저장하지 못했습니다.";
-      setFormError(message);
-      throw new Error(message);
-    } finally {
-      setPendingAction(null);
-    }
+    return runMutation(async () => {
+      setPendingAction("sheet-update");
+      setFormError(null);
+      try {
+        await apiPatch("/api/board/sheets/" + encodeURIComponent(sheetId), { name });
+        await refreshBoard();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "탭을 저장하지 못했습니다.";
+        setFormError(message);
+        throw new Error(message);
+      } finally {
+        setPendingAction(null);
+      }
+    });
   }
 
   async function handleDeleteSheet(sheetId: string) {
-    setPendingAction("sheet-delete");
-    setFormError(null);
-    try {
-      await apiDelete("/api/board/sheets/" + encodeURIComponent(sheetId));
-      if (activeSheet?.id === sheetId) setActiveSheetId(null);
-      await refreshBoard();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "탭을 삭제하지 못했습니다.";
-      setFormError(message);
-      throw new Error(message);
-    } finally {
-      setPendingAction(null);
-    }
+    return runMutation(async () => {
+      setPendingAction("sheet-delete");
+      setFormError(null);
+      try {
+        await apiDelete("/api/board/sheets/" + encodeURIComponent(sheetId));
+        if (activeSheet?.id === sheetId) setActiveSheetId(null);
+        await refreshBoard();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "탭을 삭제하지 못했습니다.";
+        setFormError(message);
+        throw new Error(message);
+      } finally {
+        setPendingAction(null);
+      }
+    });
   }
 
   async function createLostArkEventTableAxisItems(tableId: string, completionColumnName: string) {
@@ -1665,43 +1727,45 @@ export function BoardOverview({
     if (!name) return;
     const isLostArkEventTable = tableTemplate === "lostark_event";
 
-    setPendingAction("table");
-    setFormError(null);
-    try {
-      const tablePayload = {
-        sheetId: activeSheet.id,
-        name,
-        orientation: isLostArkEventTable ? "custom" : tableOrientation,
-        defaultRowHeight: normalizeBoundedIntegerDraft(tableDefaultRowHeight, { min: 16, max: 1024, fallback: 40 }),
-        defaultColumnWidth: normalizeBoundedIntegerDraft(tableDefaultColumnWidth, { min: 16, max: 1024, fallback: 132 }),
-        displaySettings: tableDisplaySettings,
-        ...(isLostArkEventTable
-          ? {
-              templateType: "lostark_event",
-              eventOptions: { rewardFilters: tableEventRewardFilters }
-            }
-          : {})
-      };
-      const table = await apiPost<{ id: string }>("/api/board/tables", tablePayload);
-      bringCreatedBoardItemToFront(table.id);
-      if (isLostArkEventTable) {
-        await createLostArkEventTableAxisItems(table.id, tableEventCompletionColumnName);
+    return runMutation(async () => {
+      setPendingAction("table");
+      setFormError(null);
+      try {
+        const tablePayload = {
+          sheetId: activeSheet.id,
+          name,
+          orientation: isLostArkEventTable ? "custom" : tableOrientation,
+          defaultRowHeight: normalizeBoundedIntegerDraft(tableDefaultRowHeight, { min: 16, max: 1024, fallback: 40 }),
+          defaultColumnWidth: normalizeBoundedIntegerDraft(tableDefaultColumnWidth, { min: 16, max: 1024, fallback: 132 }),
+          displaySettings: tableDisplaySettings,
+          ...(isLostArkEventTable
+            ? {
+                templateType: "lostark_event",
+                eventOptions: { rewardFilters: tableEventRewardFilters }
+              }
+            : {})
+        };
+        const table = await apiPost<{ id: string }>("/api/board/tables", tablePayload);
+        bringCreatedBoardItemToFront(table.id);
+        if (isLostArkEventTable) {
+          await createLostArkEventTableAxisItems(table.id, tableEventCompletionColumnName);
+        }
+        setTableName("");
+        setTableTemplate("custom");
+        setTableOrientation("custom");
+        setTableDefaultRowHeight("40");
+        setTableDefaultColumnWidth("132");
+        setTableDisplaySettings(board.settings);
+        setTableEventRewardFilters(LOST_ARK_EVENT_TABLE_DEFAULT_REWARD_FILTERS);
+        setTableEventCompletionColumnName(LOST_ARK_EVENT_TABLE_DEFAULT_COMPLETION_COLUMN);
+        setIsCreateTableOpen(false);
+        await refreshBoard();
+      } catch (err) {
+        setFormError(err instanceof Error ? err.message : "표를 추가하지 못했습니다.");
+      } finally {
+        setPendingAction(null);
       }
-      setTableName("");
-      setTableTemplate("custom");
-      setTableOrientation("custom");
-      setTableDefaultRowHeight("40");
-      setTableDefaultColumnWidth("132");
-      setTableDisplaySettings(board.settings);
-      setTableEventRewardFilters(LOST_ARK_EVENT_TABLE_DEFAULT_REWARD_FILTERS);
-      setTableEventCompletionColumnName(LOST_ARK_EVENT_TABLE_DEFAULT_COMPLETION_COLUMN);
-      setIsCreateTableOpen(false);
-      await refreshBoard();
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "표를 추가하지 못했습니다.");
-    } finally {
-      setPendingAction(null);
-    }
+    });
   }
 
   async function handleCreateNote(input: { title: string; body: string; color: string }) {
@@ -1709,56 +1773,62 @@ export function BoardOverview({
     const title = input.title.trim();
     if (!title) return;
 
-    setPendingAction("note");
-    setFormError(null);
-    try {
-      const note = await apiPost<{ id: string }>("/api/board/notes", {
-        sheetId: activeSheet.id,
-        title,
-        body: input.body,
-        color: input.color
-      });
-      bringCreatedBoardItemToFront(note.id);
-      setIsCreateNoteOpen(false);
-      await refreshBoard();
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "메모를 추가하지 못했습니다.");
-    } finally {
-      setPendingAction(null);
-    }
+    return runMutation(async () => {
+      setPendingAction("note");
+      setFormError(null);
+      try {
+        const note = await apiPost<{ id: string }>("/api/board/notes", {
+          sheetId: activeSheet.id,
+          title,
+          body: input.body,
+          color: input.color
+        });
+        bringCreatedBoardItemToFront(note.id);
+        setIsCreateNoteOpen(false);
+        await refreshBoard();
+      } catch (err) {
+        setFormError(err instanceof Error ? err.message : "메모를 추가하지 못했습니다.");
+      } finally {
+        setPendingAction(null);
+      }
+    });
   }
 
   async function handleNoteSave(noteId: string, input: Partial<BoardNoteSaveInput>) {
-    const currentNote = notes.find((note) => note.id === noteId);
-    if (!currentNote) return;
+    return runMutation(async () => {
+      const currentNote = notes.find((note) => note.id === noteId);
+      if (!currentNote) return;
 
-    const nextNote: BoardNote = {
-      ...currentNote,
-      title: input.title === undefined ? currentNote.title : input.title.trim() || "메모",
-      body: input.body === undefined ? currentNote.body : input.body,
-      color: input.color ?? currentNote.color,
-      width: input.width ?? currentNote.width,
-      height: input.height ?? currentNote.height,
-      locked: input.locked ?? (currentNote.locked === 1 ? 1 : 0)
-    };
-    setNotes((current) => current.map((note) => (note.id === noteId ? nextNote : note)));
-    if (nextNote.locked === 1) {
-      setEditingNoteTitleId((current) => (current === noteId ? null : current));
-      setEditingNoteBodyId((current) => (current === noteId ? null : current));
-    }
-    try {
-      await apiPatch("/api/board/notes/" + encodeURIComponent(noteId), buildBoardNoteSavePatch(currentNote, input));
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "메모를 저장하지 못했습니다.");
-      await refreshBoard();
-    }
+      const nextNote: BoardNote = {
+        ...currentNote,
+        title: input.title === undefined ? currentNote.title : input.title.trim() || "메모",
+        body: input.body === undefined ? currentNote.body : input.body,
+        color: input.color ?? currentNote.color,
+        width: input.width ?? currentNote.width,
+        height: input.height ?? currentNote.height,
+        locked: input.locked ?? (currentNote.locked === 1 ? 1 : 0)
+      };
+      setNotes((current) => current.map((note) => (note.id === noteId ? nextNote : note)));
+      if (nextNote.locked === 1) {
+        setEditingNoteTitleId((current) => (current === noteId ? null : current));
+        setEditingNoteBodyId((current) => (current === noteId ? null : current));
+      }
+      try {
+        await apiPatch("/api/board/notes/" + encodeURIComponent(noteId), buildBoardNoteSavePatch(currentNote, input));
+      } catch (err) {
+        setFormError(err instanceof Error ? err.message : "메모를 저장하지 못했습니다.");
+        await refreshBoard();
+      }
+    });
   }
 
   async function handleNoteDelete(noteId: string) {
-    await apiDelete("/api/board/notes/" + encodeURIComponent(noteId));
-    setNotes((current) => current.filter((note) => note.id !== noteId));
-    setEditingNote(null);
-    setOpenNoteMenuId((current) => (current === noteId ? null : current));
+    return runMutation(async () => {
+      await apiDelete("/api/board/notes/" + encodeURIComponent(noteId));
+      setNotes((current) => current.filter((note) => note.id !== noteId));
+      setEditingNote(null);
+      setOpenNoteMenuId((current) => (current === noteId ? null : current));
+    });
   }
 
   async function handleTableSettingsSave(
@@ -1775,111 +1845,119 @@ export function BoardOverview({
       characterSeparator?: BoardAxisSeparator | null | undefined;
     }
   ) {
-    const currentTable = tables.find((table) => table.id === tableId);
-    const wasLocked = currentTable ? isBoardTableLocked(currentTable) : false;
-    const rows = axisItems.filter((item) => item.table_id === tableId && item.axis === "row" && item.visible === 1);
-    const columns = axisItems.filter((item) => item.table_id === tableId && item.axis === "column" && item.visible === 1);
-    const characterItems = axisItems.filter((item) => item.table_id === tableId && item.kind === "character" && item.visible === 1);
+    return runMutation(async () => {
+      const currentTable = tables.find((table) => table.id === tableId);
+      const wasLocked = currentTable ? isBoardTableLocked(currentTable) : false;
+      const rows = axisItems.filter((item) => item.table_id === tableId && item.axis === "row" && item.visible === 1);
+      const columns = axisItems.filter((item) => item.table_id === tableId && item.axis === "column" && item.visible === 1);
+      const characterItems = axisItems.filter((item) => item.table_id === tableId && item.kind === "character" && item.visible === 1);
 
-    if (!wasLocked && input.applyRowSize) {
-      await Promise.all(rows.map((item) => apiPatch("/api/board/axis-items/" + encodeURIComponent(item.id) + "/size", { sizePx: input.defaultRowHeight })));
-    }
-    if (!wasLocked && input.applyColumnSize) {
-      await Promise.all(
-        columns.map((item) => apiPatch("/api/board/axis-items/" + encodeURIComponent(item.id) + "/size", { sizePx: input.defaultColumnWidth }))
-      );
-    }
-    if (!wasLocked && (input.characterSeparator !== undefined || input.displaySettings !== undefined)) {
-      await Promise.all(
-        characterItems.map((item) =>
-          apiPatch("/api/board/axis-items/" + encodeURIComponent(item.id), {
-            label: item.label,
-            ...(input.characterSeparator !== undefined ? { separator: input.characterSeparator } : {}),
-            ...(input.displaySettings !== undefined ? { displaySettings: input.displaySettings } : {})
-          })
+      if (!wasLocked && input.applyRowSize) {
+        await Promise.all(rows.map((item) => apiPatch("/api/board/axis-items/" + encodeURIComponent(item.id) + "/size", { sizePx: input.defaultRowHeight })));
+      }
+      if (!wasLocked && input.applyColumnSize) {
+        await Promise.all(
+          columns.map((item) => apiPatch("/api/board/axis-items/" + encodeURIComponent(item.id) + "/size", { sizePx: input.defaultColumnWidth }))
+        );
+      }
+      if (!wasLocked && (input.characterSeparator !== undefined || input.displaySettings !== undefined)) {
+        await Promise.all(
+          characterItems.map((item) =>
+            apiPatch("/api/board/axis-items/" + encodeURIComponent(item.id), {
+              label: item.label,
+              ...(input.characterSeparator !== undefined ? { separator: input.characterSeparator } : {}),
+              ...(input.displaySettings !== undefined ? { displaySettings: input.displaySettings } : {})
+            })
+          )
+        );
+      }
+
+      await apiPatch("/api/board/tables/" + encodeURIComponent(tableId), {
+        name: input.name,
+        defaultRowHeight: input.defaultRowHeight,
+        defaultColumnWidth: input.defaultColumnWidth,
+        locked: input.locked,
+        displaySettings: input.displaySettings,
+        eventOptions: input.eventOptions
+      });
+
+      setTables((current) =>
+        current.map((table) =>
+          table.id === tableId
+            ? {
+                ...table,
+                name: input.name,
+                default_row_height: input.defaultRowHeight,
+                default_column_width: input.defaultColumnWidth,
+                locked: input.locked,
+                display_options_json: input.displaySettings ? JSON.stringify(input.displaySettings) : null,
+                event_options_json:
+                  input.eventOptions === undefined
+                    ? table.event_options_json
+                    : input.eventOptions
+                      ? JSON.stringify(input.eventOptions)
+                      : null
+              }
+            : table
         )
       );
-    }
-
-    await apiPatch("/api/board/tables/" + encodeURIComponent(tableId), {
-      name: input.name,
-      defaultRowHeight: input.defaultRowHeight,
-      defaultColumnWidth: input.defaultColumnWidth,
-      locked: input.locked,
-      displaySettings: input.displaySettings,
-      eventOptions: input.eventOptions
+      if (!wasLocked) {
+        setAxisItems((current) => applyBoardTableSettingsToAxisItems(current, tableId, input));
+      }
+      setEditingTable(null);
     });
-
-    setTables((current) =>
-      current.map((table) =>
-        table.id === tableId
-          ? {
-              ...table,
-              name: input.name,
-              default_row_height: input.defaultRowHeight,
-              default_column_width: input.defaultColumnWidth,
-              locked: input.locked,
-              display_options_json: input.displaySettings ? JSON.stringify(input.displaySettings) : null,
-              event_options_json:
-                input.eventOptions === undefined
-                  ? table.event_options_json
-                  : input.eventOptions
-                    ? JSON.stringify(input.eventOptions)
-                    : null
-            }
-          : table
-      )
-    );
-    if (!wasLocked) {
-      setAxisItems((current) => applyBoardTableSettingsToAxisItems(current, tableId, input));
-    }
-    setEditingTable(null);
   }
 
   async function handleTableDelete(tableId: string) {
-    await apiDelete("/api/board/tables/" + encodeURIComponent(tableId));
-    setTables((current) => current.filter((table) => table.id !== tableId));
-    setAxisItems((current) => current.filter((item) => item.table_id !== tableId));
-    if (reorderTableId === tableId) {
-      setReorderTableId(null);
-      setActiveSortableId(null);
-    }
-    if (markEditTableId === tableId) {
-      setMarkEditTableId(null);
-      setMarkBrushNotice(null);
-    }
-    setEditingTable(null);
-  }
-
-  async function handleTableTranspose(tableId: string) {
-    await apiPost<{ ok: true }>("/api/board/tables/" + encodeURIComponent(tableId) + "/transpose", {});
-    setEditingTable(null);
-    await refreshBoard();
-  }
-
-  async function handleTableLockToggle(table: BoardTable) {
-    const nextLocked = isBoardTableLocked(table) ? 0 : 1;
-    setFormError(null);
-    try {
-      await apiPatch("/api/board/tables/" + encodeURIComponent(table.id), {
-        name: table.name,
-        defaultRowHeight: table.default_row_height,
-        defaultColumnWidth: table.default_column_width,
-        locked: nextLocked
-      });
-      setTables((current) => current.map((item) => (item.id === table.id ? { ...item, locked: nextLocked } : item)));
-      if (nextLocked === 1 && reorderTableId === table.id) {
+    return runMutation(async () => {
+      await apiDelete("/api/board/tables/" + encodeURIComponent(tableId));
+      setTables((current) => current.filter((table) => table.id !== tableId));
+      setAxisItems((current) => current.filter((item) => item.table_id !== tableId));
+      if (reorderTableId === tableId) {
         setReorderTableId(null);
         setActiveSortableId(null);
       }
-      if (nextLocked === 1 && markEditTableId === table.id) {
+      if (markEditTableId === tableId) {
         setMarkEditTableId(null);
         setMarkBrushNotice(null);
       }
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "표 잠금 상태를 저장하지 못했습니다.");
+      setEditingTable(null);
+    });
+  }
+
+  async function handleTableTranspose(tableId: string) {
+    return runMutation(async () => {
+      await apiPost<{ ok: true }>("/api/board/tables/" + encodeURIComponent(tableId) + "/transpose", {});
+      setEditingTable(null);
       await refreshBoard();
-    }
+    });
+  }
+
+  async function handleTableLockToggle(table: BoardTable) {
+    return runMutation(async () => {
+      const nextLocked = isBoardTableLocked(table) ? 0 : 1;
+      setFormError(null);
+      try {
+        await apiPatch("/api/board/tables/" + encodeURIComponent(table.id), {
+          name: table.name,
+          defaultRowHeight: table.default_row_height,
+          defaultColumnWidth: table.default_column_width,
+          locked: nextLocked
+        });
+        setTables((current) => current.map((item) => (item.id === table.id ? { ...item, locked: nextLocked } : item)));
+        if (nextLocked === 1 && reorderTableId === table.id) {
+          setReorderTableId(null);
+          setActiveSortableId(null);
+        }
+        if (nextLocked === 1 && markEditTableId === table.id) {
+          setMarkEditTableId(null);
+          setMarkBrushNotice(null);
+        }
+      } catch (err) {
+        setFormError(err instanceof Error ? err.message : "표 잠금 상태를 저장하지 못했습니다.");
+        await refreshBoard();
+      }
+    });
   }
 
   function toggleTableReorderMode(table: BoardTable) {
@@ -1924,17 +2002,19 @@ export function BoardOverview({
     const nextIds = moveBoardAxisItemIds(orderedIds, active.axisItemId, over.axisItemId);
     if (nextIds === orderedIds) return;
 
-    setAxisItems((current) => applyBoardAxisOrder(current, active.tableId, active.axis, nextIds));
     void persistBoardAxisOrder(active.tableId, active.axis, nextIds);
   }
 
   async function persistBoardAxisOrder(tableId: string, axis: BoardAxis, axisItemIds: string[]) {
-    try {
-      await apiPatch("/api/board/axis-items/order", { tableId, axis, axisItemIds });
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "순서를 저장하지 못했습니다.");
-      await refreshBoard();
-    }
+    return runMutation(async () => {
+      setAxisItems((current) => applyBoardAxisOrder(current, tableId, axis, axisItemIds));
+      try {
+        await apiPatch("/api/board/axis-items/order", { tableId, axis, axisItemIds });
+      } catch (err) {
+        setFormError(err instanceof Error ? err.message : "순서를 저장하지 못했습니다.");
+        await refreshBoard();
+      }
+    });
   }
 
   function handleTableMoveStart(table: BoardTable, event: PointerEvent<HTMLButtonElement>) {
@@ -2005,12 +2085,14 @@ export function BoardOverview({
   }
 
   async function persistTableLayout(tableId: string, patch: BoardTableLayoutPatch) {
-    try {
-      await apiPatch("/api/board/tables/" + encodeURIComponent(tableId) + "/layout", patch);
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "표 위치를 저장하지 못했습니다.");
-      await refreshBoard();
-    }
+    return runMutation(async () => {
+      try {
+        await apiPatch("/api/board/tables/" + encodeURIComponent(tableId) + "/layout", patch);
+      } catch (err) {
+        setFormError(err instanceof Error ? err.message : "표 위치를 저장하지 못했습니다.");
+        await refreshBoard();
+      }
+    });
   }
 
   function handleNoteMoveStart(note: BoardNote, event: PointerEvent<HTMLElement>) {
@@ -2063,12 +2145,14 @@ export function BoardOverview({
   }
 
   async function persistNoteLayout(noteId: string, patch: BoardNoteLayoutPatch) {
-    try {
-      await apiPatch("/api/board/notes/" + encodeURIComponent(noteId) + "/layout", patch);
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "메모 위치를 저장하지 못했습니다.");
-      await refreshBoard();
-    }
+    return runMutation(async () => {
+      try {
+        await apiPatch("/api/board/notes/" + encodeURIComponent(noteId) + "/layout", patch);
+      } catch (err) {
+        setFormError(err instanceof Error ? err.message : "메모 위치를 저장하지 못했습니다.");
+        await refreshBoard();
+      }
+    });
   }
 
   function handleNoteResizeStart(note: BoardNote, event: PointerEvent<HTMLButtonElement>) {
@@ -2461,7 +2545,7 @@ export function BoardOverview({
                 onPointerMove={isReadOnly ? undefined : (event) => handleNoteMove(note.id, event)}
                 onPointerUp={isReadOnly ? undefined : (event) => finishNoteMove(note.id, event)}
               >
-                {editingNoteTitleId === note.id && note.locked !== 1 ? (
+                {editingNoteTitleId === note.id && !isReadOnly && note.locked !== 1 ? (
                   <input
                     aria-label={`${note.title} 메모 제목`}
                     autoFocus
@@ -2471,9 +2555,11 @@ export function BoardOverview({
                     value={note.title}
                     onBlur={(event) => {
                       setEditingNoteTitleId(null);
+                      if (isReadOnly) return;
                       void handleNoteSave(note.id, { title: event.currentTarget.value });
                     }}
                     onChange={(event) => {
+                      if (isReadOnly) return;
                       const nextTitle = event.currentTarget.value;
                       setNotes((current) => current.map((item) => (item.id === note.id ? { ...item, title: nextTitle } : item)));
                     }}
@@ -2574,9 +2660,11 @@ export function BoardOverview({
                   value={note.body}
                   onBlur={(event) => {
                     setEditingNoteBodyId(null);
+                    if (isReadOnly) return;
                     void handleNoteSave(note.id, { body: event.currentTarget.value });
                   }}
                   onChange={(event) => {
+                    if (isReadOnly) return;
                     const nextBody = event.currentTarget.value;
                     setNotes((current) => current.map((item) => (item.id === note.id ? { ...item, body: nextBody } : item)));
                   }}
@@ -2740,6 +2828,7 @@ export function BoardOverview({
             await refreshBoard();
           }}
           refreshableCharacterCount={getRefreshableBoardCharacterIds(activeTableTool.table.id, axisItems).length}
+          runMutation={runMutation}
         />
       ) : null}
       {!isReadOnly && editingAxisItem ? (
@@ -2993,6 +3082,7 @@ export function BoardTableToolModal({
   onRefreshCharacters,
   onSaved,
   refreshableCharacterCount,
+  runMutation = runBoardMutationDirect,
   table,
   tool
 }: {
@@ -3001,6 +3091,7 @@ export function BoardTableToolModal({
   onRefreshCharacters?: (() => Promise<TableCharacterRefreshSummary>) | undefined;
   onSaved: () => void | Promise<void>;
   refreshableCharacterCount?: number | undefined;
+  runMutation?: BoardMutationRunner | undefined;
   table: BoardTable;
   tool: ActiveTableTool["tool"];
 }) {
@@ -3058,12 +3149,12 @@ export function BoardTableToolModal({
                 </button>
                 {refreshMessage ? <p className={refreshMessageTone === "error" ? "error-text" : "notice-text"}>{refreshMessage}</p> : null}
               </section>
-              <CharacterImport tableId={table.id} onSaved={onSaved} />
+              <CharacterImport tableId={table.id} onSaved={onSaved} runMutation={runMutation} />
             </div>
           ) : tool === "tasks" ? (
-            <TaskForm tableId={table.id} onSaved={onSaved} />
+            <TaskForm tableId={table.id} onSaved={onSaved} runMutation={runMutation} />
           ) : (
-            <BoardEventCompletionColumnForm tableId={table.id} onClose={onClose} onSaved={onSaved} />
+            <BoardEventCompletionColumnForm tableId={table.id} onClose={onClose} onSaved={onSaved} runMutation={runMutation} />
           )}
         </div>
       </section>
@@ -3074,10 +3165,12 @@ export function BoardTableToolModal({
 function BoardEventCompletionColumnForm({
   onClose,
   onSaved,
+  runMutation,
   tableId
 }: {
   onClose: () => void;
   onSaved: () => void | Promise<void>;
+  runMutation: BoardMutationRunner;
   tableId: string;
 }) {
   const [name, setName] = useState("");
@@ -3092,12 +3185,14 @@ function BoardEventCompletionColumnForm({
     setIsPending(true);
     setError(null);
     try {
-      await apiPost("/api/board/axis-items", {
-        tableId,
-        axis: "column",
-        label
+      await runMutation(async () => {
+        await apiPost("/api/board/axis-items", {
+          tableId,
+          axis: "column",
+          label
+        });
+        await onSaved();
       });
-      await onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "완료 열을 추가하지 못했습니다.");
     } finally {

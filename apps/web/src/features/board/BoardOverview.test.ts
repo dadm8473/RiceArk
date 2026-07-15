@@ -31,13 +31,16 @@ import {
   getStoredBoardEventNotificationSettings,
   getRefreshableBoardCharacterIds,
   getBoardCellMarkTooltipContent,
+  getBoardWriteLockRollback,
   isBoardInteractionLocked,
   normalizeBoardEventNotificationMinutes,
   parseBoardEventOptions,
   normalizeBoardZoom,
+  runOptimisticBoardWrite,
   shouldSaveBoardCharacterDetails
 } from "./BoardOverview";
 import { getBoardCellPeriodKey } from "./completions";
+import { BoardMutationBarrierLockedError, createBoardMutationBarrier } from "./mutationBarrier";
 import type { BoardAxisItem, BoardPayload } from "./types";
 
 const board: BoardPayload = {
@@ -413,6 +416,56 @@ describe("BoardOverview", () => {
     expect(html).not.toContain("메모 추가");
     expect(html).not.toContain("탭 설정");
     expect(html).toMatch(/aria-label="쿠르잔 전선 \/ 냠수나이스1" class="board-check" disabled=""/);
+  });
+
+  it("restores authoritative layout and note drafts when the write lock activates", () => {
+    const authoritative = {
+      ...board,
+      notes: [{
+        id: "note-1",
+        sheet_id: "sheet-1",
+        title: "Saved title",
+        body: "Saved body",
+        color: "#ffffff",
+        sort_order: 0,
+        x: 20,
+        y: 30,
+        width: 240,
+        height: 160,
+        locked: 0
+      }]
+    };
+    const localDraft = {
+      axisItems: [],
+      tables: authoritative.tables.map((table) => ({ ...table, x: 500, y: 600 })),
+      notes: authoritative.notes.map((note) => ({
+        ...note,
+        title: "Unsaved title",
+        body: "Unsaved body",
+        x: 700,
+        width: 900
+      }))
+    };
+
+    expect(getBoardWriteLockRollback(authoritative, localDraft)).toEqual({
+      axisItems: authoritative.axisItems,
+      tables: authoritative.tables,
+      notes: authoritative.notes
+    });
+  });
+
+  it("suppresses optimistic queued edits after the logout barrier locks", async () => {
+    const barrier = createBoardMutationBarrier();
+    const apply = vi.fn();
+    const enqueue = vi.fn();
+    await barrier.lockAndDrain();
+
+    await expect(
+      runOptimisticBoardWrite(barrier.run, { completed: true }, apply, enqueue)
+    ).rejects.toBeInstanceOf(BoardMutationBarrierLockedError);
+
+    expect(apply).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
   });
 
   it("disables grid checkboxes in read-only board grids", () => {

@@ -1,12 +1,17 @@
 import { Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { apiPost } from "../../api/client";
+import {
+  type BoardMutationRunner,
+  runBoardMutationDirect
+} from "../board/mutationBarrier";
 
 type TaskResetType = "daily" | "weekly" | "biweekly" | "none";
 
 interface TaskFormProps {
   tableId?: string | undefined;
   onSaved?: () => void | Promise<void>;
+  runMutation?: BoardMutationRunner | undefined;
 }
 
 interface LostArkTaskPreset {
@@ -37,7 +42,7 @@ function getTaskResetTypeLabel(resetType: TaskResetType): string {
   return "초기화 안함";
 }
 
-export function TaskForm({ tableId, onSaved }: TaskFormProps = {}) {
+export function TaskForm({ tableId, onSaved, runMutation = runBoardMutationDirect }: TaskFormProps = {}) {
   const [name, setName] = useState("");
   const [resetType, setResetType] = useState<TaskResetType>("daily");
   const [color, setColor] = useState(DEFAULT_TASK_COLOR);
@@ -60,20 +65,22 @@ export function TaskForm({ tableId, onSaved }: TaskFormProps = {}) {
     setErrorMessage("");
 
     try {
-      await apiPost(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/tasks` : "/api/tasks", {
-        name: trimmedName,
-        resetType,
-        color,
-        requestId
+      await runMutation(async () => {
+        await apiPost(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/tasks` : "/api/tasks", {
+          name: trimmedName,
+          resetType,
+          color,
+          requestId
+        });
+        requestIdRef.current = null;
+        setName("");
+        setColor(DEFAULT_TASK_COLOR);
+        if (onSaved) {
+          await onSaved();
+        } else {
+          window.location.reload();
+        }
       });
-      requestIdRef.current = null;
-      setName("");
-      setColor(DEFAULT_TASK_COLOR);
-      if (onSaved) {
-        await onSaved();
-      } else {
-        window.location.reload();
-      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "숙제를 추가하지 못했습니다.");
     } finally {

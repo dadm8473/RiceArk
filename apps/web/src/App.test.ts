@@ -12,8 +12,10 @@ import {
   getDirectSharedRiceBinHistoryUrls,
   getOwnerBoardInteractionProps,
   getUrlWithoutSharedRiceBinId,
+  recoverBoardAfterLogoutFailure,
   runDurableLogout
 } from "./App";
+import { createBoardMutationBarrier } from "./features/board/mutationBarrier";
 import { ReliablePatchQueueFlushError } from "./features/board/reliablePatchQueue";
 
 const hooks = vi.hoisted(() => ({
@@ -114,6 +116,14 @@ function runLatestEffect() {
   return effect;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe("getAuthErrorMessage", () => {
   it("wraps login start errors in a Korean app message", () => {
     expect(getAuthErrorMessage("?authError=oauth_unavailable&provider=discord")).toBe(
@@ -204,6 +214,49 @@ describe("runDurableLogout", () => {
     });
 
     expect(order).toEqual(["flush", "logout"]);
+  });
+
+  it("waits for admitted mutations before queues and auth logout", async () => {
+    const mutationStep = deferred<void>();
+    const order: string[] = [];
+    const barrier = createBoardMutationBarrier();
+    const activeMutation = barrier.run(async () => {
+      order.push("mutation:start");
+      await mutationStep.promise;
+      order.push("mutation:end");
+    });
+    const mutationDrain = barrier.lockAndDrain();
+
+    const logoutAttempt = runDurableLogout({
+      mode: "normal",
+      waitForMutations: () => mutationDrain,
+      flushPendingWrites: async () => {
+        order.push("flush");
+      },
+      retryPendingWrites: vi.fn(),
+      discardPendingWrites: vi.fn(),
+      logout: async () => {
+        order.push("logout");
+      }
+    });
+
+    await Promise.resolve();
+    expect(order).toEqual(["mutation:start"]);
+    mutationStep.resolve();
+    await activeMutation;
+    await logoutAttempt;
+    expect(order).toEqual(["mutation:start", "mutation:end", "flush", "logout"]);
+  });
+
+  it("unlocks mutations and reconciles the board after logout failure", async () => {
+    const barrier = createBoardMutationBarrier();
+    await barrier.lockAndDrain();
+    const reload = vi.fn(async () => null);
+
+    await recoverBoardAfterLogoutFailure(barrier, reload);
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    await expect(barrier.run(async () => "unlocked")).resolves.toBe("unlocked");
   });
 
   it("does not call logout when flushing fails", async () => {
@@ -363,11 +416,13 @@ describe("App", () => {
     const enqueueCompletion = vi.fn();
     const enqueueCellState = vi.fn();
     const reload = vi.fn();
+    const runMutation = vi.fn();
 
-    expect(getOwnerBoardInteractionProps(true, { enqueueCompletion, enqueueCellState, reload })).toEqual({
+    expect(getOwnerBoardInteractionProps(true, { enqueueCompletion, enqueueCellState, reload }, runMutation)).toEqual({
       enqueueCompletion,
       enqueueCellState,
       onBoardChanged: reload,
+      runMutation,
       writeLocked: true
     });
   });

@@ -6,6 +6,10 @@ import {
 import { Check, LoaderCircle, Search, UserPlus, X } from "lucide-react";
 import { useState } from "react";
 import { apiGet, apiPost } from "../../api/client";
+import {
+  type BoardMutationRunner,
+  runBoardMutationDirect
+} from "../board/mutationBarrier";
 
 export interface CharacterCandidate {
   name: string;
@@ -242,9 +246,10 @@ export function ManualCharacterCreatePanel({
 interface CharacterImportProps {
   tableId?: string | undefined;
   onSaved?: () => void | Promise<void>;
+  runMutation?: BoardMutationRunner | undefined;
 }
 
-export function CharacterImport({ tableId, onSaved }: CharacterImportProps = {}) {
+export function CharacterImport({ tableId, onSaved, runMutation = runBoardMutationDirect }: CharacterImportProps = {}) {
   const [name, setName] = useState("");
   const [candidates, setCandidates] = useState<CharacterCandidate[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -300,14 +305,16 @@ export function CharacterImport({ tableId, onSaved }: CharacterImportProps = {})
     }
     setSaving(true);
     try {
-      await apiPost(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/characters/import` : "/api/characters/import", {
-        characters
+      await runMutation(async () => {
+        await apiPost(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/characters/import` : "/api/characters/import", {
+          characters
+        });
+        if (onSaved) {
+          await onSaved();
+        } else {
+          window.location.reload();
+        }
       });
-      if (onSaved) {
-        await onSaved();
-      } else {
-        window.location.reload();
-      }
     } catch {
       setMessage({
         text: "선택한 캐릭터를 등록하지 못했습니다. 잠시 후 다시 시도해주세요.",
@@ -326,19 +333,21 @@ export function CharacterImport({ tableId, onSaved }: CharacterImportProps = {})
     setManualSaving(true);
     setMessage(null);
     try {
-      await apiPost(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/characters/manual` : "/api/characters/manual", {
-        name: trimmedName,
-        serverName: manualCharacter.serverName.trim(),
-        className: manualCharacter.className.trim(),
-        itemLevel: manualCharacter.itemLevel.trim(),
-        combatPower: manualCharacter.combatPower.trim() || null
+      await runMutation(async () => {
+        await apiPost(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/characters/manual` : "/api/characters/manual", {
+          name: trimmedName,
+          serverName: manualCharacter.serverName.trim(),
+          className: manualCharacter.className.trim(),
+          itemLevel: manualCharacter.itemLevel.trim(),
+          combatPower: manualCharacter.combatPower.trim() || null
+        });
+        setManualCharacter({ name: "", serverName: "", className: "", itemLevel: "", combatPower: "" });
+        if (onSaved) {
+          await onSaved();
+        } else {
+          window.location.reload();
+        }
       });
-      setManualCharacter({ name: "", serverName: "", className: "", itemLevel: "", combatPower: "" });
-      if (onSaved) {
-        await onSaved();
-      } else {
-        window.location.reload();
-      }
     } catch {
       setMessage({ text: "캐릭터를 직접 추가하지 못했습니다. 입력값을 확인하거나 잠시 후 다시 시도해주세요.", tone: "error" });
       setManualSaving(false);

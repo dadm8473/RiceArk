@@ -6,6 +6,11 @@ import { AuctionCalculatorModal } from "./features/auction-calculator/AuctionCal
 import { AuthMenu, type AppTheme } from "./features/auth/AuthMenu";
 import { useSession, type AuthUser } from "./features/auth/useSession";
 import { BoardOverview } from "./features/board/BoardOverview";
+import {
+  createBoardMutationBarrier,
+  type BoardMutationBarrier,
+  type BoardMutationRunner
+} from "./features/board/mutationBarrier";
 import { useBoard } from "./features/board/useBoard";
 import { PatchNotesModal } from "./features/patch-notes/PatchNotesModal";
 import { SharedRiceBinPanel } from "./features/shared-rice-bin/SharedRiceBinPanel";
@@ -40,17 +45,20 @@ export function getDurableLogoutFailureState(error: unknown): {
 
 export async function runDurableLogout({
   mode,
+  waitForMutations,
   flushPendingWrites,
   retryPendingWrites,
   discardPendingWrites,
   logout
 }: {
   mode: DurableLogoutMode;
+  waitForMutations?: (() => Promise<void>) | undefined;
   flushPendingWrites: () => Promise<void>;
   retryPendingWrites: () => void;
   discardPendingWrites: () => void;
   logout: () => Promise<void>;
 }): Promise<void> {
+  await waitForMutations?.();
   if (mode === "retry") retryPendingWrites();
   if (mode === "discard") {
     discardPendingWrites();
@@ -69,17 +77,31 @@ export async function runDurableLogout({
   }
 }
 
+export async function recoverBoardAfterLogoutFailure(
+  barrier: Pick<BoardMutationBarrier, "unlock">,
+  reload: () => Promise<unknown>
+): Promise<void> {
+  barrier.unlock();
+  try {
+    await reload();
+  } catch {
+    // The existing board error surface reports reconciliation failures.
+  }
+}
+
 export function getOwnerBoardInteractionProps(
   logoutPending: boolean,
   board: Pick<
     ReturnType<typeof useBoard>,
     "enqueueCellState" | "enqueueCompletion" | "reload"
-  >
+  >,
+  runMutation: BoardMutationRunner
 ) {
   return {
     enqueueCellState: board.enqueueCellState,
     enqueueCompletion: board.enqueueCompletion,
     onBoardChanged: board.reload,
+    runMutation,
     writeLocked: logoutPending
   };
 }
@@ -199,6 +221,11 @@ export function App() {
     pollingEnabled: isBoardPollingEnabled,
     userId: isAuthenticated ? session.user.id : null
   });
+  const boardMutationBarrierRef = useRef<BoardMutationBarrier | null>(null);
+  if (!boardMutationBarrierRef.current) {
+    boardMutationBarrierRef.current = createBoardMutationBarrier();
+  }
+  const boardMutationBarrier = boardMutationBarrierRef.current;
   const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [patchNotesOpen, setPatchNotesOpen] = useState(false);
@@ -261,6 +288,7 @@ export function App() {
   }, [activeView, isAdmin, session.status]);
 
   const attemptLogout = async (mode: DurableLogoutMode) => {
+    const mutationDrain = boardMutationBarrier.lockAndDrain();
     setLogoutPending(true);
     setAuthMenuOpen(false);
     setLogoutBlocked(false);
@@ -268,6 +296,7 @@ export function App() {
     try {
       await runDurableLogout({
         mode,
+        waitForMutations: () => mutationDrain,
         flushPendingWrites: board.flushPendingWrites,
         retryPendingWrites: board.retryPendingWrites,
         discardPendingWrites: board.discardPendingWrites,
@@ -280,6 +309,7 @@ export function App() {
       setAuthMenuOpen(true);
       setLogoutBlocked(failure.logoutBlocked);
       setLogoutError(failure.logoutError);
+      await recoverBoardAfterLogoutFailure(boardMutationBarrier, board.reload);
       console.error(err);
     }
   };
@@ -409,7 +439,7 @@ export function App() {
               {board.data ? (
                 <BoardOverview
                   board={board.data}
-                  {...getOwnerBoardInteractionProps(logoutPending, board)}
+                  {...getOwnerBoardInteractionProps(logoutPending, board, boardMutationBarrier.run)}
                 />
               ) : null}
             </>
