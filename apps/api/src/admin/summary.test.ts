@@ -27,30 +27,47 @@ const dataMetrics = {
   tasks: 119
 };
 
-function createMetricsDb(options: { waitForFirstRead?: Promise<void>; failFirstRead?: boolean } = {}) {
+function createMetricsDb(
+  options: {
+    waitForFirstRead?: Promise<void>;
+    failFirstRead?: boolean;
+    userRowsRead?: number | null;
+    dataRowsRead?: number | null;
+  } = {}
+) {
   let userReads = 0;
   let dataReads = 0;
   let shouldFail = options.failFirstRead ?? false;
 
   const database = {
     prepare(sql: string) {
+      const execute = async () => {
+        if (sql.includes("total_users")) {
+          userReads += 1;
+          await options.waitForFirstRead;
+          if (shouldFail) {
+            shouldFail = false;
+            throw new Error("metrics unavailable");
+          }
+          return {
+            results: [userMetrics],
+            meta: options.userRowsRead === null ? {} : { rows_read: options.userRowsRead ?? 600 }
+          };
+        }
+        if (sql.includes("board_tables")) {
+          dataReads += 1;
+          return {
+            results: [dataMetrics],
+            meta: options.dataRowsRead === null ? {} : { rows_read: options.dataRowsRead ?? 900 }
+          };
+        }
+        return { results: [], meta: {} };
+      };
       return {
         async first() {
-          if (sql.includes("total_users")) {
-            userReads += 1;
-            await options.waitForFirstRead;
-            if (shouldFail) {
-              shouldFail = false;
-              throw new Error("metrics unavailable");
-            }
-            return userMetrics;
-          }
-          if (sql.includes("board_tables")) {
-            dataReads += 1;
-            return dataMetrics;
-          }
-          return null;
-        }
+          return (await execute()).results[0] ?? null;
+        },
+        all: execute
       };
     }
   } as unknown as D1Database;
@@ -93,7 +110,7 @@ describe("admin summary metrics", () => {
     expect(USER_METRICS_SQL.match(/FROM board_cell_completions/g)).toHaveLength(1);
   });
 
-  it("deduplicates concurrent cold metric reads and caches the result for five minutes", async () => {
+  it("deduplicates cold reads and starts the five-minute TTL when the snapshot resolves", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
     let releaseFirstRead: () => void = () => {};
@@ -106,18 +123,21 @@ describe("admin summary metrics", () => {
     const first = getAdminSummaryMetrics(env);
     const second = getAdminSummaryMetrics(env);
     await vi.waitFor(() => expect(metricsDb.userReads).toBe(1));
+    vi.setSystemTime(new Date("2026-07-15T00:02:00.000Z"));
     releaseFirstRead();
 
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(firstResult).toEqual(secondResult);
+    expect(firstResult.generatedAt).toBe("2026-07-15T00:02:00.000Z");
     expect(metricsDb.userReads).toBe(1);
     expect(metricsDb.dataReads).toBe(1);
 
-    vi.setSystemTime(new Date("2026-07-15T00:04:59.999Z"));
-    await getAdminSummaryMetrics(env);
+    vi.setSystemTime(new Date("2026-07-15T00:06:59.999Z"));
+    const hotResult = await getAdminSummaryMetrics(env);
     expect(metricsDb.userReads).toBe(1);
+    expect(hotResult.generatedAt).toBe(firstResult.generatedAt);
 
-    vi.setSystemTime(new Date("2026-07-15T00:05:00.000Z"));
+    vi.setSystemTime(new Date("2026-07-15T00:07:00.000Z"));
     await getAdminSummaryMetrics(env);
     expect(metricsDb.userReads).toBe(2);
   });
@@ -139,6 +159,18 @@ describe("admin summary metrics", () => {
     expect(metricsDb.dataReads).toBe(4);
   });
 
+  it("invalidates cached metrics when a present Cloudflare API token rotates", async () => {
+    const metricsDb = createMetricsDb();
+    const base = createEnv(metricsDb.database);
+
+    const first = await getAdminSummaryMetrics({ ...base, CLOUDFLARE_API_TOKEN: "token-a" });
+    await getAdminSummaryMetrics({ ...base, CLOUDFLARE_API_TOKEN: "token-a" });
+    await getAdminSummaryMetrics({ ...base, CLOUDFLARE_API_TOKEN: "token-b" });
+
+    expect(metricsDb.userReads).toBe(2);
+    expect(JSON.stringify(first)).not.toContain("token-a");
+  });
+
   it("retries after a failed metrics read instead of caching the rejection", async () => {
     const metricsDb = createMetricsDb({ failFirstRead: true });
     const env = createEnv(metricsDb.database);
@@ -155,8 +187,9 @@ describe("admin summary metrics", () => {
 
     expect(summary.cloudflare.capacity).toMatchObject({
       sampleLimited: true,
-      fixedAdminReads: 1_559,
-      fixedAdminReadsScope: "one-uncached-metrics-refresh-estimate",
+      fixedAdminReads: 1_500,
+      fixedAdminReadsScope: "one-uncached-metrics-refresh",
+      fixedAdminReadsSource: "d1-query-metadata",
       observedTotalD1Reads: null,
       observedTotalD1Writes: null,
       observedEndUserReads: null,
@@ -176,6 +209,20 @@ describe("admin summary metrics", () => {
         expect.stringContaining("Cloudflare D1 rows written"),
         expect.stringContaining("Workers requests")
       ])
+    );
+  });
+
+  it("leaves fixed admin reads unavailable when either query omits rows_read metadata", async () => {
+    const metricsDb = createMetricsDb({ dataRowsRead: null });
+    const summary = await getAdminSummaryMetrics(createEnv(metricsDb.database));
+
+    expect(summary.cloudflare.capacity).toMatchObject({
+      fixedAdminReads: null,
+      fixedAdminReadsScope: "one-uncached-metrics-refresh",
+      fixedAdminReadsSource: "d1-query-metadata"
+    });
+    expect(summary.cloudflare.capacity.uncertaintyReasons).toContain(
+      "D1 rows_read metadata is unavailable for one or both admin aggregate queries; fixed admin reads cannot be measured."
     );
   });
 
@@ -234,8 +281,9 @@ describe("admin summary metrics", () => {
     expect(summary.cloudflare.workers).toMatchObject({ requests24h: 200 });
     expect(summary.cloudflare.capacity).toMatchObject({
       sampleLimited: true,
-      fixedAdminReads: 1_559,
-      fixedAdminReadsScope: "one-uncached-metrics-refresh-estimate",
+      fixedAdminReads: 1_500,
+      fixedAdminReadsScope: "one-uncached-metrics-refresh",
+      fixedAdminReadsSource: "d1-query-metadata",
       observedTotalD1Reads: 75_962,
       observedTotalD1Writes: 261,
       observedEndUserReads: null,

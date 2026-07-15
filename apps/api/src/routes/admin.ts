@@ -30,7 +30,6 @@ adminRoutes.get("/admin/summary", async (c) => {
   c.header("Cache-Control", "private, no-store");
   c.header("Vary", "Cookie");
   return c.json({
-    generatedAt: new Date().toISOString(),
     admin: {
       id: admin.id,
       displayName: admin.displayName

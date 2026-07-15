@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetAdminSummaryMetricsCacheForTests } from "../admin/summary";
+import { hashSessionToken } from "../auth/sessions";
 import app from "../index";
 import type { Env } from "../env";
 
@@ -56,6 +57,43 @@ function createAdminDb({ providerUserId }: FakeDbOptions): D1Database {
           return null;
         },
         all: async () => {
+          if (sql.includes("total_users")) {
+            return {
+              results: [
+                {
+                  total_users: 8,
+                  active_logged_in_users: 7,
+                  active_sessions: 25,
+                  users_created_24h: 0,
+                  users_created_7d: 5,
+                  completion_users_24h: 2,
+                  completion_users_7d: 4,
+                  completion_updates_24h: 42,
+                  completion_updates_7d: 360
+                }
+              ],
+              meta: { rows_read: 600 }
+            };
+          }
+          if (sql.includes("board_tables")) {
+            return {
+              results: [
+                {
+                  sheets: 10,
+                  board_tables: 20,
+                  board_axis_items: 279,
+                  board_cell_states: 44,
+                  board_cell_completions: 425,
+                  board_notes: 3,
+                  board_shares: 2,
+                  board_share_favorites: 2,
+                  characters: 197,
+                  tasks: 119
+                }
+              ],
+              meta: { rows_read: 900 }
+            };
+          }
           if (sql.includes("FROM oauth_accounts")) {
             return { results: [{ provider: "discord", provider_user_id: providerUserId }] };
           }
@@ -103,6 +141,7 @@ describe("admin routes", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     resetAdminSummaryMetricsCacheForTests();
   });
@@ -241,8 +280,9 @@ describe("admin routes", () => {
           activeUsers24h: 2,
           activeUserSampleSize: 2,
           sampleLimited: true,
-          fixedAdminReads: 1559,
-          fixedAdminReadsScope: "one-uncached-metrics-refresh-estimate",
+          fixedAdminReads: 1500,
+          fixedAdminReadsScope: "one-uncached-metrics-refresh",
+          fixedAdminReadsSource: "d1-query-metadata",
           observedTotalD1Reads: 75962,
           observedTotalD1Writes: 261,
           observedEndUserReads: null,
@@ -258,11 +298,19 @@ describe("admin routes", () => {
     });
   });
 
-  it("authorizes every cached summary request while keeping each admin identity isolated", async () => {
+  it("authorizes token-bound users on every warm-cache request and denies metrics to a non-admin", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
     const admins = [
       { id: "admin-a", display_name: "Admin A", avatar_url: null, provider_user_id: "provider-a" },
-      { id: "admin-b", display_name: "Admin B", avatar_url: null, provider_user_id: "provider-b" }
+      { id: "admin-b", display_name: "Admin B", avatar_url: null, provider_user_id: "provider-b" },
+      { id: "denied", display_name: "Denied", avatar_url: null, provider_user_id: "provider-denied" }
     ];
+    const sessionUsers = new Map(
+      await Promise.all(
+        admins.map(async (admin) => [await hashSessionToken(`${admin.id}-session`, "test-secret"), admin] as const)
+      )
+    );
     let sessionReads = 0;
     let authorizationReads = 0;
     let metricsDbReads = 0;
@@ -276,42 +324,51 @@ describe("admin routes", () => {
             return statement;
           },
           async first() {
-            if (sql.includes("total_users")) {
-              metricsDbReads += 1;
-              return {
-                total_users: 8,
-                active_logged_in_users: 7,
-                active_sessions: 25,
-                users_created_24h: 0,
-                users_created_7d: 5,
-                completion_users_24h: 2,
-                completion_users_7d: 4,
-                completion_updates_24h: 42,
-                completion_updates_7d: 360
-              };
-            }
-            if (sql.includes("board_tables")) {
-              return {
-                sheets: 10,
-                board_tables: 20,
-                board_axis_items: 279,
-                board_cell_states: 44,
-                board_cell_completions: 425,
-                board_notes: 3,
-                board_shares: 2,
-                board_share_favorites: 2,
-                characters: 197,
-                tasks: 119
-              };
-            }
             if (sql.includes("FROM sessions")) {
-              const admin = admins[sessionReads];
               sessionReads += 1;
-              return admin;
+              return sessionUsers.get(String(boundValues[0])) ?? null;
             }
             return null;
           },
           async all() {
+            if (sql.includes("total_users")) {
+              metricsDbReads += 1;
+              return {
+                results: [
+                  {
+                    total_users: 8,
+                    active_logged_in_users: 7,
+                    active_sessions: 25,
+                    users_created_24h: 0,
+                    users_created_7d: 5,
+                    completion_users_24h: 2,
+                    completion_users_7d: 4,
+                    completion_updates_24h: 42,
+                    completion_updates_7d: 360
+                  }
+                ],
+                meta: { rows_read: 600 }
+              };
+            }
+            if (sql.includes("board_tables")) {
+              return {
+                results: [
+                  {
+                    sheets: 10,
+                    board_tables: 20,
+                    board_axis_items: 279,
+                    board_cell_states: 44,
+                    board_cell_completions: 425,
+                    board_notes: 3,
+                    board_shares: 2,
+                    board_share_favorites: 2,
+                    characters: 197,
+                    tasks: 119
+                  }
+                ],
+                meta: { rows_read: 900 }
+              };
+            }
             if (sql.includes("FROM oauth_accounts")) {
               authorizationReads += 1;
               const admin = admins.find((candidate) => candidate.id === boundValues[0]);
@@ -337,19 +394,30 @@ describe("admin routes", () => {
       { headers: { cookie: "riceark_session=admin-a-session" } },
       env
     );
+    vi.setSystemTime(new Date("2026-07-15T00:01:00.000Z"));
     const secondResponse = await app.request(
       "/api/admin/summary",
       { headers: { cookie: "riceark_session=admin-b-session" } },
       env
     );
-    const first = (await firstResponse.json()) as { admin: { id: string; displayName: string } };
-    const second = (await secondResponse.json()) as { admin: { id: string; displayName: string } };
+    const deniedResponse = await app.request(
+      "/api/admin/summary",
+      { headers: { cookie: "riceark_session=denied-session" } },
+      env
+    );
+    const first = (await firstResponse.json()) as { generatedAt: string; admin: { id: string; displayName: string } };
+    const second = (await secondResponse.json()) as { generatedAt: string; admin: { id: string; displayName: string } };
 
     expect(first.admin).toEqual({ id: "admin-a", displayName: "Admin A" });
     expect(second.admin).toEqual({ id: "admin-b", displayName: "Admin B" });
+    expect(second.generatedAt).toBe(first.generatedAt);
+    expect(deniedResponse.status).toBe(403);
+    await expect(deniedResponse.json()).resolves.toEqual({
+      error: { code: "forbidden", message: "Admin access required" }
+    });
     expect(metricsDbReads).toBe(1);
-    expect(sessionReads).toBe(2);
-    expect(authorizationReads).toBe(2);
+    expect(sessionReads).toBe(3);
+    expect(authorizationReads).toBe(3);
   });
 
   it("rejects the admin summary when the Discord provider id is not allowlisted", async () => {

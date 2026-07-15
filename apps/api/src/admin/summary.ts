@@ -59,8 +59,9 @@ type DataMetricsRow = {
 
 type SummaryCapacity = CloudflareUsageSummary["capacity"] & {
   sampleLimited: true;
-  fixedAdminReads: number;
-  fixedAdminReadsScope: "one-uncached-metrics-refresh-estimate";
+  fixedAdminReads: number | null;
+  fixedAdminReadsScope: "one-uncached-metrics-refresh";
+  fixedAdminReadsSource: "d1-query-metadata";
   observedTotalD1Reads: number | null;
   observedTotalD1Writes: number | null;
   observedEndUserReads: number | null;
@@ -73,6 +74,7 @@ type SummaryCapacity = CloudflareUsageSummary["capacity"] & {
 };
 
 export type AdminSummaryMetrics = {
+  generatedAt: string;
   users: {
     total: number;
     activeLoggedIn: number;
@@ -136,29 +138,44 @@ function cacheKey(env: Env): string {
     env.CLOUDFLARE_ACCOUNT_ID ?? "",
     database,
     env.CLOUDFLARE_WORKER_SCRIPT_NAME ?? "",
-    Boolean(env.CLOUDFLARE_API_TOKEN)
+    tokenFingerprint(env.CLOUDFLARE_API_TOKEN)
   ]);
 }
 
-function estimateFixedAdminReads(metrics: Pick<AdminSummaryMetrics, "users" | "data">): number {
-  const dataRows = Object.values(metrics.data).reduce((total, count) => total + count, 0);
-  return metrics.users.total + metrics.users.activeSessions + metrics.data.boardCompletions + dataRows;
+function tokenFingerprint(token: string | undefined): string {
+  if (!token) return "";
+  let hash = 2_166_136_261;
+  for (let index = 0; index < token.length; index += 1) {
+    hash ^= token.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function rowsReadFromMeta(result: D1Result<unknown>): number | null {
+  const rowsRead = result.meta?.rows_read;
+  return typeof rowsRead === "number" && Number.isFinite(rowsRead) && rowsRead >= 0 ? rowsRead : null;
 }
 
 function buildCapacity(
   cloudflare: CloudflareUsageSummary,
-  metrics: Pick<AdminSummaryMetrics, "users" | "activity" | "data">
+  metrics: Pick<AdminSummaryMetrics, "activity">,
+  fixedAdminReads: number | null
 ): SummaryCapacity {
   const activeUserSampleSize = metrics.activity.completionUsers24h;
-  const fixedAdminReads = estimateFixedAdminReads(metrics);
   const rowsRead24h = cloudflare.d1?.rowsRead24h ?? null;
   const rowsWritten24h = cloudflare.d1?.rowsWritten24h ?? null;
   const uncertaintyReasons = [
     "Capacity is sample-limited; completion-active users may not represent all end-user traffic.",
-    "Fixed admin reads are an estimate for one uncached admin metrics refresh.",
     "The 24-hour admin refresh count and attribution are unavailable. No admin-read subtraction was applied to observed total D1 reads.",
     "Admin write attribution is unavailable; observed total D1 writes are not labeled as end-user writes."
   ];
+
+  if (fixedAdminReads === null) {
+    uncertaintyReasons.push(
+      "D1 rows_read metadata is unavailable for one or both admin aggregate queries; fixed admin reads cannot be measured."
+    );
+  }
 
   if (rowsRead24h === null) {
     uncertaintyReasons.push("Cloudflare D1 rows read counter is unavailable; observed end-user reads cannot be derived.");
@@ -181,7 +198,8 @@ function buildCapacity(
     activeUserSampleSize,
     sampleLimited: true,
     fixedAdminReads,
-    fixedAdminReadsScope: "one-uncached-metrics-refresh-estimate",
+    fixedAdminReadsScope: "one-uncached-metrics-refresh",
+    fixedAdminReadsSource: "d1-query-metadata",
     observedTotalD1Reads: rowsRead24h,
     observedTotalD1Writes: rowsWritten24h,
     observedEndUserReads: null,
@@ -198,12 +216,18 @@ function buildCapacity(
 }
 
 async function readAdminSummaryMetrics(env: Env): Promise<AdminSummaryMetrics> {
-  const userMetrics = await env.DB.prepare(USER_METRICS_SQL).first<UserMetricsRow>();
-  const dataMetrics = await env.DB.prepare(DATA_METRICS_SQL).first<DataMetricsRow>();
+  const userResult = await env.DB.prepare(USER_METRICS_SQL).all<UserMetricsRow>();
+  const dataResult = await env.DB.prepare(DATA_METRICS_SQL).all<DataMetricsRow>();
+  const userMetrics = userResult.results[0];
+  const dataMetrics = dataResult.results[0];
   const completionUsers24h = value(userMetrics, "completion_users_24h");
   const cloudflareUsage = await getCloudflareUsage(env, completionUsers24h);
+  const userRowsRead = rowsReadFromMeta(userResult);
+  const dataRowsRead = rowsReadFromMeta(dataResult);
+  const fixedAdminReads = userRowsRead === null || dataRowsRead === null ? null : userRowsRead + dataRowsRead;
 
   const metrics: Omit<AdminSummaryMetrics, "cloudflare"> = {
+    generatedAt: new Date().toISOString(),
     users: {
       total: value(userMetrics, "total_users"),
       activeLoggedIn: value(userMetrics, "active_logged_in_users"),
@@ -240,23 +264,22 @@ async function readAdminSummaryMetrics(env: Env): Promise<AdminSummaryMetrics> {
     ...metrics,
     cloudflare: {
       ...cloudflareUsage,
-      capacity: buildCapacity(cloudflareUsage, metrics)
+      capacity: buildCapacity(cloudflareUsage, metrics, fixedAdminReads)
     }
   };
 }
 
 export function getAdminSummaryMetrics(env: Env): Promise<AdminSummaryMetrics> {
   const key = cacheKey(env);
-  const now = Date.now();
   const cached = metricsCache.get(key);
-  if (cached && cached.expiresAt > now) return Promise.resolve(cached.value);
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value);
 
   const existing = inFlightMetrics.get(key);
   if (existing) return existing;
 
   const pending = readAdminSummaryMetrics(env)
     .then((metrics) => {
-      metricsCache.set(key, { expiresAt: now + CACHE_TTL_MS, value: metrics });
+      metricsCache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, value: metrics });
       return metrics;
     })
     .finally(() => {
