@@ -12,6 +12,7 @@ export const BOARD_VERSION_CHECK_INTERVAL_MS = 120_000;
 export const BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS = BOARD_VERSION_CHECK_INTERVAL_MS;
 export const BOARD_VERSION_IDLE_CHECK_INTERVAL_MS = 5 * 60_000;
 export const BOARD_WRITE_INVALIDATION_COALESCE_MS = 150;
+export const BOARD_RECOVERY_READ_TIMEOUT_MS = 10_000;
 const BOARD_VERSION_IDLE_AFTER_MS = 5 * 60_000;
 const BOARD_VERSION_LEADER_STORAGE_KEY = "riceark-board-polling-leader";
 const BOARD_VERSION_LEADER_TTL_MS = 45_000;
@@ -120,6 +121,109 @@ export function createBoardReadGate<Context = void>(options: {
     dispose: () => {
       disposed = true;
       generation += 1;
+    }
+  };
+}
+
+export class BoardRecoveryReadTimeoutError extends Error {
+  constructor() {
+    super("로그아웃 복구를 위한 보드 새로고침이 10초 안에 완료되지 않았습니다.");
+    this.name = "BoardRecoveryReadTimeoutError";
+  }
+}
+
+export type BoardOwnedReadResult = BoardReadGateResult | { type: "blocked" };
+
+export interface BoardRecoveryReadOwner<Context = void> {
+  load: (context: Context) => Promise<BoardOwnedReadResult>;
+  invalidate: () => void;
+  reconcile: (context: Context) => Promise<BoardPayload>;
+  isRecovering: () => boolean;
+  dispose: () => void;
+}
+
+export function createBoardRecoveryReadOwner<Context = void>(options: {
+  gate: BoardReadGate<Context>;
+  timeoutMs?: number | undefined;
+  onTimeout?: ((error: BoardRecoveryReadTimeoutError) => void) | undefined;
+}): BoardRecoveryReadOwner<Context> {
+  let disposed = false;
+  let recovering = false;
+  let activeRecovery: Promise<BoardPayload> | null = null;
+  let cancelRecovery: ((error: Error) => void) | null = null;
+
+  const createDisposedError = () => new Error("Board recovery read owner was disposed");
+
+  const reconcile = (context: Context): Promise<BoardPayload> => {
+    if (disposed) return Promise.reject(createDisposedError());
+    if (activeRecovery) return activeRecovery;
+
+    recovering = true;
+    options.gate.invalidate();
+
+    const runRecovery = async () => {
+      const timeoutError = new BoardRecoveryReadTimeoutError();
+      let timedOut = false;
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          options.gate.invalidate();
+          try {
+            options.onTimeout?.(timeoutError);
+          } catch {
+            // Recovery state observers cannot extend or break the deadline.
+          }
+          reject(timeoutError);
+        }, options.timeoutMs ?? BOARD_RECOVERY_READ_TIMEOUT_MS);
+      });
+      const cancellation = new Promise<never>((_resolve, reject) => {
+        cancelRecovery = reject;
+      });
+      const loadUntilApplied = async (): Promise<BoardPayload> => {
+        while (!timedOut && !disposed) {
+          const result = await options.gate.load(context);
+          if (timedOut) throw timeoutError;
+          if (disposed) throw createDisposedError();
+          if (result.type === "applied") return result.payload;
+          if (result.type === "failed") throw result.error;
+        }
+        throw timedOut ? timeoutError : createDisposedError();
+      };
+      const loading = loadUntilApplied();
+      void loading.catch(() => undefined);
+
+      try {
+        return await Promise.race([loading, deadline, cancellation]);
+      } finally {
+        if (timeout !== null) clearTimeout(timeout);
+        cancelRecovery = null;
+      }
+    };
+
+    activeRecovery = runRecovery().finally(() => {
+      recovering = false;
+      activeRecovery = null;
+    });
+    return activeRecovery;
+  };
+
+  return {
+    load: (context) => {
+      if (disposed) return Promise.resolve({ type: "stale" });
+      if (recovering) return Promise.resolve({ type: "blocked" });
+      return options.gate.load(context);
+    },
+    invalidate: () => {
+      if (!disposed && !recovering) options.gate.invalidate();
+    },
+    reconcile,
+    isRecovering: () => recovering,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      options.gate.dispose();
+      cancelRecovery?.(createDisposedError());
     }
   };
 }
@@ -761,7 +865,7 @@ interface BoardReadContext {
 interface BoardReadScope {
   userId: string;
   coordinator: BoardWriteCoordinator;
-  gate: BoardReadGate<BoardReadContext>;
+  owner: BoardRecoveryReadOwner<BoardReadContext>;
 }
 
 export function useBoard({
@@ -798,7 +902,7 @@ export function useBoard({
   }, []);
 
   useEffect(() => {
-    boardReadScopeRef.current?.gate.dispose();
+    boardReadScopeRef.current?.owner.dispose();
     boardReadScopeRef.current = null;
     const previous = coordinatorRef.current;
     if (previous) {
@@ -858,11 +962,17 @@ export function useBoard({
         setError(formatBoardError(readError));
       }
     });
-    const readScope = { userId, coordinator, gate: readGate };
+    const readOwner = createBoardRecoveryReadOwner({
+      gate: readGate,
+      onTimeout: (recoveryError) => {
+        reportBoardReloadErrorIfCurrent(coordinatorRef.current, coordinator, recoveryError, setError);
+      }
+    });
+    const readScope = { userId, coordinator, owner: readOwner };
     boardReadScopeRef.current = readScope;
     return () => {
       if (boardReadScopeRef.current === readScope) boardReadScopeRef.current = null;
-      readGate.dispose();
+      readOwner.dispose();
       if (coordinatorRef.current === coordinator) coordinatorRef.current = null;
       if (invalidationPublisherRef.current === invalidationPublisher) {
         invalidationPublisherRef.current = null;
@@ -887,11 +997,35 @@ export function useBoard({
       readScope.coordinator !== coordinator
     ) return dataRef.current;
     setError(null);
-    const result = await readScope.gate.load({ refreshVersion: options.refreshVersion ?? pollingEnabled });
+    const result = await readScope.owner.load({ refreshVersion: options.refreshVersion ?? pollingEnabled });
     if (result.type === "failed") throw result.error;
     if (result.type === "applied") options.onApplied?.(result.payload);
     return coordinator.getVisibleData();
   }, [enabled, pollingEnabled, userId]);
+
+  const reconcileAfterLogoutFailure = useCallback(async () => {
+    const coordinator = coordinatorRef.current;
+    const readScope = boardReadScopeRef.current;
+    if (
+      !userId ||
+      !coordinator ||
+      coordinator.userId !== userId ||
+      !readScope ||
+      readScope.userId !== userId ||
+      readScope.coordinator !== coordinator
+    ) {
+      throw new Error("로그아웃 복구를 위한 보드 상태를 찾지 못했습니다.");
+    }
+
+    setError(null);
+    try {
+      await readScope.owner.reconcile({ refreshVersion: true });
+      return coordinator.getVisibleData();
+    } catch (recoveryError) {
+      reportBoardReloadErrorIfCurrent(coordinatorRef.current, coordinator, recoveryError, setError);
+      throw recoveryError;
+    }
+  }, [userId]);
 
   const reloadBoardForInvalidation = useCallback(async () => {
     let appliedPayload: BoardPayload | null = null;
@@ -918,12 +1052,12 @@ export function useBoard({
       readScope.userId !== userId ||
       readScope.coordinator !== coordinator
     ) {
-      readScope?.gate.invalidate();
+      readScope?.owner.invalidate();
       setBoardData(null);
       return;
     }
     setBoardData(coordinator.getVisibleData());
-    void readScope.gate.load({ refreshVersion: pollingEnabled });
+    void readScope.owner.load({ refreshVersion: pollingEnabled });
   }, [enabled, pollingEnabled, userId]);
 
   useEffect(() => {
@@ -1124,6 +1258,7 @@ export function useBoard({
     data: matchesCurrentUser ? data : null,
     error,
     reload,
+    reconcileAfterLogoutFailure,
     enqueueCompletion,
     enqueueCellState,
     flushPendingWrites,

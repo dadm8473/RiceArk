@@ -83,11 +83,11 @@ export async function runDurableLogout({
 
 export async function recoverBoardAfterLogoutFailure(
   barrier: Pick<BoardMutationBarrier, "unlock">,
-  reload: () => Promise<unknown>,
+  board: Pick<ReturnType<typeof useBoard>, "reconcileAfterLogoutFailure">,
   onRecovered?: (() => void) | undefined
 ): Promise<void> {
   try {
-    await reload();
+    await board.reconcileAfterLogoutFailure();
   } catch {
     // The existing board error surface reports reconciliation failures.
   } finally {
@@ -322,7 +322,7 @@ export function App() {
       window.location.assign("/");
     } catch (err) {
       const failure = getDurableLogoutFailureState(err);
-      await recoverBoardAfterLogoutFailure(boardMutationBarrier, board.reload, () => {
+      await recoverBoardAfterLogoutFailure(boardMutationBarrier, board, () => {
         setLogoutPending(false);
         setAuthMenuOpen(true);
         setLogoutBlocked(failure.logoutBlocked);

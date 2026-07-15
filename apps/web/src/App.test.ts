@@ -290,14 +290,18 @@ describe("runDurableLogout", () => {
   it("keeps mutations locked until logout recovery reload and UI recovery settle", async () => {
     const barrier = createBoardMutationBarrier();
     await barrier.lockAndDrain();
-    const reload = deferred<null>();
+    const reconcile = deferred<null>();
     const onRecovered = vi.fn();
 
-    const recovery = recoverBoardAfterLogoutFailure(barrier, () => reload.promise, onRecovered);
+    const recovery = recoverBoardAfterLogoutFailure(
+      barrier,
+      { reconcileAfterLogoutFailure: () => reconcile.promise },
+      onRecovered
+    );
 
     await expect(barrier.run(async () => "too soon")).rejects.toThrow(/locked/i);
     expect(onRecovered).not.toHaveBeenCalled();
-    reload.resolve(null);
+    reconcile.resolve(null);
     await recovery;
 
     expect(onRecovered).toHaveBeenCalledTimes(1);
@@ -307,13 +311,28 @@ describe("runDurableLogout", () => {
   it("unlocks in finally only after a failed recovery reload settles", async () => {
     const barrier = createBoardMutationBarrier();
     await barrier.lockAndDrain();
-    const reload = deferred<null>();
-    const recovery = recoverBoardAfterLogoutFailure(barrier, () => reload.promise);
+    const reconcile = deferred<null>();
+    const recovery = recoverBoardAfterLogoutFailure(barrier, {
+      reconcileAfterLogoutFailure: () => reconcile.promise
+    });
 
     await expect(barrier.run(async () => "too soon")).rejects.toThrow(/locked/i);
-    reload.reject(new Error("reload failed"));
+    reconcile.reject(new Error("reconciliation failed"));
     await recovery;
     await expect(barrier.run(async () => "unlocked")).resolves.toBe("unlocked");
+  });
+
+  it("uses the dedicated recovery reconciliation API instead of normal reload", async () => {
+    const barrier = createBoardMutationBarrier();
+    await barrier.lockAndDrain();
+    const reload = vi.fn(async () => null);
+    const reconcileAfterLogoutFailure = vi.fn(async () => null);
+    const recoveryBoard = { reload, reconcileAfterLogoutFailure };
+
+    await recoverBoardAfterLogoutFailure(barrier, recoveryBoard);
+
+    expect(reconcileAfterLogoutFailure).toHaveBeenCalledTimes(1);
+    expect(reload).not.toHaveBeenCalled();
   });
 
   it.each(["retry", "discard"] as const)("allows a clean later %s logout attempt", async (mode) => {
@@ -428,6 +447,7 @@ describe("App", () => {
       data: board,
       error: null,
       reload: vi.fn(),
+      reconcileAfterLogoutFailure: vi.fn(async () => null),
       enqueueCompletion: vi.fn(),
       enqueueCellState: vi.fn(),
       flushPendingWrites: vi.fn(async () => undefined),

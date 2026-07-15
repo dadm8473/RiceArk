@@ -5,11 +5,13 @@ import {
   BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS,
   BOARD_VERSION_IDLE_CHECK_INTERVAL_MS,
   BOARD_WRITE_INVALIDATION_COALESCE_MS,
+  BOARD_RECOVERY_READ_TIMEOUT_MS,
   buildLocalBoardPeriodFingerprint,
   buildBoardVersionKey,
   canClaimBoardPollingLeadership,
   createBoardInvalidationPublisher,
   createBoardReadGate,
+  createBoardRecoveryReadOwner,
   createBoardReloadGate,
   createBoardVersionTracker,
   createBoardWriteCoordinator,
@@ -321,6 +323,117 @@ describe("board read generation isolation", () => {
     });
     gate.dispose();
     coordinator.discardAndDispose();
+  });
+});
+
+describe("exclusive board recovery reads", () => {
+  it("invalidates an older normal read and exclusively applies the recovery read", async () => {
+    const olderRead = deferred<BoardPayload>();
+    const recoveryRead = deferred<BoardPayload>();
+    const recoveredBoard = { ...emptyBoard, userId: "recovered-user" };
+    const applied: BoardPayload[] = [];
+    const read = vi.fn()
+      .mockImplementationOnce(() => olderRead.promise)
+      .mockImplementationOnce(() => recoveryRead.promise);
+    const gate = createBoardReadGate({
+      read,
+      onApplied: (payload) => applied.push(payload),
+      onFailure: vi.fn()
+    });
+    const owner = createBoardRecoveryReadOwner({ gate });
+
+    const older = owner.load(undefined);
+    const recovery = owner.reconcile(undefined);
+    recoveryRead.resolve(recoveredBoard);
+
+    await expect(recovery).resolves.toBe(recoveredBoard);
+    olderRead.resolve(emptyBoard);
+    await expect(older).resolves.toEqual({ type: "stale" });
+    expect(applied).toEqual([recoveredBoard]);
+    expect(read).toHaveBeenCalledTimes(2);
+    owner.dispose();
+  });
+
+  it("refuses normal and invalidation reads until recovery settles without superseding it", async () => {
+    const recoveryRead = deferred<BoardPayload>();
+    const laterRead = deferred<BoardPayload>();
+    const read = vi.fn()
+      .mockImplementationOnce(() => recoveryRead.promise)
+      .mockImplementationOnce(() => laterRead.promise);
+    const gate = createBoardReadGate({ read, onApplied: vi.fn(), onFailure: vi.fn() });
+    const owner = createBoardRecoveryReadOwner({ gate });
+
+    const recovery = owner.reconcile(undefined);
+    await expect(owner.load(undefined)).resolves.toEqual({ type: "blocked" });
+    owner.invalidate();
+    await expect(owner.load(undefined)).resolves.toEqual({ type: "blocked" });
+    expect(read).toHaveBeenCalledTimes(1);
+
+    recoveryRead.resolve(emptyBoard);
+    await expect(recovery).resolves.toBe(emptyBoard);
+
+    const retryableInvalidation = owner.load(undefined);
+    expect(read).toHaveBeenCalledTimes(2);
+    laterRead.resolve(emptyBoard);
+    await expect(retryableInvalidation).resolves.toMatchObject({ type: "applied" });
+    owner.dispose();
+  });
+
+  it("retries a stale recovery generation within the same deadline", async () => {
+    const staleRead = deferred<BoardPayload>();
+    const retryRead = deferred<BoardPayload>();
+    const recoveredBoard = { ...emptyBoard, userId: "retried-recovery" };
+    const read = vi.fn()
+      .mockImplementationOnce(() => staleRead.promise)
+      .mockImplementationOnce(() => retryRead.promise);
+    const gate = createBoardReadGate({ read, onApplied: vi.fn(), onFailure: vi.fn() });
+    const owner = createBoardRecoveryReadOwner({ gate });
+
+    const recovery = owner.reconcile(undefined);
+    gate.invalidate();
+    staleRead.resolve(emptyBoard);
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    retryRead.resolve(recoveredBoard);
+
+    await expect(recovery).resolves.toBe(recoveredBoard);
+    owner.dispose();
+  });
+
+  it("times out a hung recovery, invalidates its late response, and restores normal reads", async () => {
+    vi.useFakeTimers();
+    try {
+      const lateRecoveryRead = deferred<BoardPayload>();
+      const normalRead = deferred<BoardPayload>();
+      const currentBoard = { ...emptyBoard, userId: "current-after-timeout" };
+      const applied: BoardPayload[] = [];
+      const onTimeout = vi.fn();
+      const read = vi.fn()
+        .mockImplementationOnce(() => lateRecoveryRead.promise)
+        .mockImplementationOnce(() => normalRead.promise);
+      const gate = createBoardReadGate({
+        read,
+        onApplied: (payload) => applied.push(payload),
+        onFailure: vi.fn()
+      });
+      const owner = createBoardRecoveryReadOwner({ gate, onTimeout });
+
+      const recovery = owner.reconcile(undefined);
+      const recoveryFailure = expect(recovery).rejects.toThrow(/10초/);
+      await vi.advanceTimersByTimeAsync(BOARD_RECOVERY_READ_TIMEOUT_MS);
+      await recoveryFailure;
+      expect(onTimeout).toHaveBeenCalledTimes(1);
+
+      const afterTimeout = owner.load(undefined);
+      normalRead.resolve(currentBoard);
+      await expect(afterTimeout).resolves.toMatchObject({ type: "applied", payload: currentBoard });
+
+      lateRecoveryRead.resolve({ ...emptyBoard, userId: "late-recovery" });
+      await vi.runAllTimersAsync();
+      expect(applied).toEqual([currentBoard]);
+      owner.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
