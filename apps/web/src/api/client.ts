@@ -1,7 +1,3 @@
-type ApiErrorPayload = {
-  error?: Record<string, unknown>;
-};
-
 export interface ApiRequestOptions {
   keepalive?: boolean;
   signal?: AbortSignal;
@@ -20,11 +16,19 @@ export class ApiClientError extends Error {
   }
 }
 
-function parseRetryAfterMs(value: string | null): number | null {
-  if (value === null || value.trim() === "") return null;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-  const seconds = Number(value);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1_000);
+function parseRetryAfterMs(value: string | null): number | null {
+  if (value === null || value === "") return null;
+
+  if (/^\d+$/.test(value)) {
+    const retryAfterMs = Number(value) * 1_000;
+    return Number.isSafeInteger(retryAfterMs) ? retryAfterMs : null;
+  }
+
+  if (Number.isFinite(Number(value))) return null;
 
   const retryAt = Date.parse(value);
   if (Number.isNaN(retryAt)) return null;
@@ -33,8 +37,9 @@ function parseRetryAfterMs(value: string | null): number | null {
 
 async function buildApiError(response: Response, fallbackMessage: string): Promise<ApiClientError> {
   try {
-    const payload = (await response.clone().json()) as ApiErrorPayload;
-    const { code: rawCode, message: rawMessage, ...details } = payload.error ?? {};
+    const payload = (await response.clone().json()) as unknown;
+    const error = isRecord(payload) && isRecord(payload.error) ? payload.error : {};
+    const { code: rawCode, message: rawMessage, ...details } = error;
     const code = typeof rawCode === "string" ? rawCode : "request_failed";
     const message = typeof rawMessage === "string" ? rawMessage : fallbackMessage;
     return new ApiClientError(

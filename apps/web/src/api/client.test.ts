@@ -147,6 +147,54 @@ describe("api client", () => {
     });
   });
 
+  it.each([
+    ["negative", "-1"],
+    ["fractional", "1.5"],
+    ["exponent", "1e3"],
+    ["hexadecimal", "0x10"],
+    ["infinite", "Infinity"],
+    ["signed", "+5"],
+    ["unsafe after conversion to milliseconds", "9007199254741"],
+    ["overflowing after conversion to milliseconds", "1".padEnd(309, "0")]
+  ])("rejects %s Retry-After delay-seconds", async (_description, retryAfter) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(JSON.stringify({ error: { code: "rate_limited" } }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": retryAfter }
+        });
+      })
+    );
+
+    await expect(apiPatch("/api/board/completions", { patches: [] })).rejects.toMatchObject({
+      retryAfterMs: null
+    });
+  });
+
+  it.each([
+    ["string", "not-an-error-object"],
+    ["array", [{ code: "leaked_code", message: "Leaked message", rejectedKeys: ["cell-1"] }]],
+    ["null", null]
+  ])("uses fallback metadata for a %s error payload", async (_description, error) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(JSON.stringify({ error }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" }
+        });
+      })
+    );
+
+    await expect(apiPatch("/api/board/completions", { patches: [] })).rejects.toMatchObject({
+      status: 400,
+      code: "request_failed",
+      message: "PATCH /api/board/completions failed",
+      details: null
+    });
+  });
+
   it("preserves structured error details without changing their shape", async () => {
     const rejectedKeys = [
       { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1", periodKey: "2026-07-15" }
