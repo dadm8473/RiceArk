@@ -1,4 +1,5 @@
 import type { Env } from "../env";
+import { fetchExternal } from "../http/externalFetch";
 
 const D1_ROWS_READ_DAILY_LIMIT = 5_000_000;
 const D1_ROWS_WRITTEN_DAILY_LIMIT = 100_000;
@@ -42,6 +43,17 @@ type D1MetricGroup = {
     rowsRead?: number;
     rowsWritten?: number;
   };
+};
+
+type D1Metrics = {
+  readQueries: number;
+  writeQueries: number;
+  rowsRead: number;
+  rowsWritten: number;
+};
+
+type PagesProjectResult = {
+  production_script_name?: string;
 };
 
 type D1MetricsGraphqlResponse = {
@@ -111,6 +123,28 @@ type CacheEntry = {
 
 let usageCache: CacheEntry | null = null;
 
+function tokenFingerprint(token: string | undefined): string {
+  if (!token) return "";
+  let hash = 2_166_136_261;
+  for (let index = 0; index < token.length; index += 1) {
+    hash ^= token.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function errorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : "알 수 없는 오류";
+}
+
+async function settle<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
+  try {
+    return { status: "fulfilled", value: await promise };
+  } catch (reason) {
+    return { status: "rejected", reason };
+  }
+}
+
 function toNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
@@ -178,30 +212,30 @@ function estimateCapacity(params: {
   };
 }
 
-async function fetchD1Usage(env: Env): Promise<NonNullable<CloudflareUsageSummary["d1"]>> {
-  const accountId = encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID ?? "");
-  const databaseId = encodeURIComponent(env.CLOUDFLARE_D1_DATABASE_ID ?? "");
-  const [database, metrics] = await Promise.all([fetchD1DatabaseInfo(env, accountId, databaseId), fetchD1Metrics(env)]);
-
-  const databaseSizeBytes = toNumber(database.file_size) ?? toNumber(database.database_size);
-  const rowsRead24h = metrics.rowsRead ?? toNumber(database.rows_read_24h);
-  const rowsWritten24h = metrics.rowsWritten ?? toNumber(database.rows_written_24h);
+function buildD1Usage(
+  database: D1DatabaseResult | null,
+  metrics: D1Metrics | null
+): NonNullable<CloudflareUsageSummary["d1"]> | null {
+  if (!database && !metrics) return null;
+  const databaseSizeBytes = toNumber(database?.file_size) ?? toNumber(database?.database_size);
+  const rowsRead24h = metrics?.rowsRead ?? toNumber(database?.rows_read_24h);
+  const rowsWritten24h = metrics?.rowsWritten ?? toNumber(database?.rows_written_24h);
   return {
-    databaseName: database.name ?? null,
+    databaseName: database?.name ?? null,
     databaseSizeBytes,
     storagePercent: percent(databaseSizeBytes, D1_STORAGE_BYTES_LIMIT),
     rowsRead24h,
     rowsWritten24h,
-    readQueries24h: metrics.readQueries ?? toNumber(database.read_queries_24h),
-    writeQueries24h: metrics.writeQueries ?? toNumber(database.write_queries_24h),
+    readQueries24h: metrics?.readQueries ?? toNumber(database?.read_queries_24h),
+    writeQueries24h: metrics?.writeQueries ?? toNumber(database?.write_queries_24h),
     rowsReadPercent: percent(rowsRead24h, D1_ROWS_READ_DAILY_LIMIT),
     rowsWrittenPercent: percent(rowsWritten24h, D1_ROWS_WRITTEN_DAILY_LIMIT),
-    numTables: toNumber(database.num_tables)
+    numTables: toNumber(database?.num_tables)
   };
 }
 
 async function fetchD1DatabaseInfo(env: Env, accountId: string, databaseId: string): Promise<D1DatabaseResult> {
-  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}`, {
+  const response = await fetchExternal(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}`, {
     headers: {
       Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
       Accept: "application/json"
@@ -219,15 +253,10 @@ async function fetchD1DatabaseInfo(env: Env, accountId: string, databaseId: stri
   return result;
 }
 
-async function fetchD1Metrics(env: Env): Promise<{
-  readQueries: number;
-  writeQueries: number;
-  rowsRead: number;
-  rowsWritten: number;
-}> {
+async function fetchD1Metrics(env: Env): Promise<D1Metrics> {
   const datetimeEnd = new Date().toISOString();
   const datetimeStart = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const response = await fetch("https://api.cloudflare.com/client/v4/graphql", {
+  const response = await fetchExternal("https://api.cloudflare.com/client/v4/graphql", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
@@ -288,13 +317,10 @@ async function fetchD1Metrics(env: Env): Promise<{
   );
 }
 
-async function fetchWorkersUsage(env: Env): Promise<NonNullable<CloudflareUsageSummary["workers"]> | null> {
-  const scriptName = env.CLOUDFLARE_WORKER_SCRIPT_NAME;
-  if (!scriptName) return null;
-
+async function fetchWorkersUsage(env: Env, scriptName: string): Promise<NonNullable<CloudflareUsageSummary["workers"]>> {
   const datetimeEnd = new Date().toISOString();
   const datetimeStart = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const response = await fetch("https://api.cloudflare.com/client/v4/graphql", {
+  const response = await fetchExternal("https://api.cloudflare.com/client/v4/graphql", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
@@ -362,6 +388,26 @@ async function fetchWorkersUsage(env: Env): Promise<NonNullable<CloudflareUsageS
   };
 }
 
+async function fetchPagesProductionScriptName(env: Env, accountId: string, projectName: string): Promise<string | null> {
+  const response = await fetchExternal(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/pages/projects/${encodeURIComponent(projectName)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
+        Accept: "application/json"
+      }
+    }
+  );
+  if (!response.ok) throw new Error(`Cloudflare Pages API returned ${response.status}`);
+
+  const payload = (await response.json()) as CloudflareApiResponse<PagesProjectResult>;
+  if (payload.success === false) {
+    const message = payload.errors?.map((error) => error.message).filter(Boolean).join(", ");
+    throw new Error(message || "Cloudflare Pages API returned an error");
+  }
+  return payload.result?.production_script_name || null;
+}
+
 export async function getCloudflareUsage(env: Env, activeUsers24h: number): Promise<CloudflareUsageSummary> {
   const requiredSecrets = getMissingSecrets(env);
   if (requiredSecrets.length > 0) {
@@ -378,7 +424,13 @@ export async function getCloudflareUsage(env: Env, activeUsers24h: number): Prom
     };
   }
 
-  const cacheKey = [env.CLOUDFLARE_ACCOUNT_ID, env.CLOUDFLARE_D1_DATABASE_ID, env.CLOUDFLARE_WORKER_SCRIPT_NAME ?? ""].join(":");
+  const cacheKey = JSON.stringify([
+    env.CLOUDFLARE_ACCOUNT_ID,
+    env.CLOUDFLARE_D1_DATABASE_ID,
+    env.CLOUDFLARE_PAGES_PROJECT_NAME ?? "",
+    env.CLOUDFLARE_WORKER_SCRIPT_NAME ?? "",
+    tokenFingerprint(env.CLOUDFLARE_API_TOKEN)
+  ]);
   const now = Date.now();
   if (usageCache?.key === cacheKey && usageCache.expiresAt > now) {
     return {
@@ -393,18 +445,52 @@ export async function getCloudflareUsage(env: Env, activeUsers24h: number): Prom
   }
 
   const warnings: string[] = [];
-  const [d1Result, workersResult] = await Promise.allSettled([fetchD1Usage(env), fetchWorkersUsage(env)]);
-  const d1 = d1Result.status === "fulfilled" ? d1Result.value : null;
-  const workers = workersResult.status === "fulfilled" ? workersResult.value : null;
+  const accountId = encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID ?? "");
+  const databaseId = encodeURIComponent(env.CLOUDFLARE_D1_DATABASE_ID ?? "");
+  const d1InfoResultPromise = settle(fetchD1DatabaseInfo(env, accountId, databaseId));
+  const d1MetricsResultPromise = settle(fetchD1Metrics(env));
+  const pagesResult = env.CLOUDFLARE_PAGES_PROJECT_NAME
+    ? await settle(fetchPagesProductionScriptName(env, accountId, env.CLOUDFLARE_PAGES_PROJECT_NAME))
+    : ({ status: "fulfilled", value: null } satisfies PromiseFulfilledResult<null>);
 
-  if (d1Result.status === "rejected") warnings.push(`D1 사용량을 불러오지 못했습니다: ${d1Result.reason instanceof Error ? d1Result.reason.message : "알 수 없는 오류"}`);
-  if (workersResult.status === "rejected") {
-    warnings.push(`Workers 사용량을 불러오지 못했습니다: ${workersResult.reason instanceof Error ? workersResult.reason.message : "알 수 없는 오류"}`);
-  } else if (!env.CLOUDFLARE_WORKER_SCRIPT_NAME) {
-    warnings.push("CLOUDFLARE_WORKER_SCRIPT_NAME이 없어 Workers 요청 수는 표시하지 않습니다.");
+  if (pagesResult.status === "rejected") {
+    warnings.push(`Pages 프로젝트 정보를 불러오지 못했습니다: ${errorMessage(pagesResult.reason)}`);
   }
+  const scriptName = (pagesResult.status === "fulfilled" ? pagesResult.value : null) ?? env.CLOUDFLARE_WORKER_SCRIPT_NAME ?? null;
+  if (!scriptName) {
+    warnings.push("Pages production script 이름과 CLOUDFLARE_WORKER_SCRIPT_NAME이 없어 Workers 요청 수는 표시하지 않습니다.");
+  }
+
+  const workersResultPromise = scriptName ? settle(fetchWorkersUsage(env, scriptName)) : Promise.resolve(null);
+  const [d1InfoResult, d1MetricsResult, workersResult] = await Promise.all([
+    d1InfoResultPromise,
+    d1MetricsResultPromise,
+    workersResultPromise
+  ]);
+
+  if (d1InfoResult.status === "rejected") {
+    warnings.push(`D1 데이터베이스 정보를 불러오지 못했습니다: ${errorMessage(d1InfoResult.reason)}`);
+  }
+  if (d1MetricsResult.status === "rejected") {
+    warnings.push(`D1 GraphQL 사용량을 불러오지 못했습니다: ${errorMessage(d1MetricsResult.reason)}`);
+  }
+  if (workersResult?.status === "rejected") {
+    warnings.push(`Workers GraphQL 사용량을 불러오지 못했습니다: ${errorMessage(workersResult.reason)}`);
+  }
+
+  const d1 = buildD1Usage(
+    d1InfoResult.status === "fulfilled" ? d1InfoResult.value : null,
+    d1MetricsResult.status === "fulfilled" ? d1MetricsResult.value : null
+  );
+  const workers = workersResult?.status === "fulfilled" ? workersResult.value : null;
   if (d1 && d1.rowsRead24h === null) warnings.push("Cloudflare D1 API 응답에 24시간 rows read 값이 없어 DB 크기만 표시합니다.");
   if (d1 && d1.rowsWritten24h === null) warnings.push("Cloudflare D1 API 응답에 24시간 rows written 값이 없어 DB 크기만 표시합니다.");
+  const hasD1Traffic = [d1?.rowsRead24h, d1?.rowsWritten24h, d1?.readQueries24h, d1?.writeQueries24h].some(
+    (metric) => typeof metric === "number" && metric > 0
+  );
+  if (hasD1Traffic && workers?.requests24h === 0) {
+    warnings.push("Workers 요청 수가 0이지만 D1 사용량이 있습니다. Pages production script 이름을 확인해주세요.");
+  }
 
   const status: CloudflareUsageSummary["status"] = d1 || workers ? (warnings.length ? "partial" : "ok") : "error";
   const value: Omit<CloudflareUsageSummary, "capacity"> = {
@@ -428,4 +514,8 @@ export async function getCloudflareUsage(env: Env, activeUsers24h: number): Prom
       workerRequests24h: workers?.requests24h ?? null
     })
   };
+}
+
+export function resetCloudflareUsageCacheForTests(): void {
+  usageCache = null;
 }

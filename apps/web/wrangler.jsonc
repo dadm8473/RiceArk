@@ -10,6 +10,7 @@
     "ENVIRONMENT": "production",
     "CLOUDFLARE_ACCOUNT_ID": "16c2df7fdd69ecc11400c17af64eeaab",
     "CLOUDFLARE_D1_DATABASE_ID": "c93687c6-a34f-474a-a096-08b78c4fadd3",
+    "CLOUDFLARE_PAGES_PROJECT_NAME": "riceark",
     "CLOUDFLARE_WORKER_SCRIPT_NAME": "riceark"
   },
   "d1_databases": [

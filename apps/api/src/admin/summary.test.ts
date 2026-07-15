@@ -142,21 +142,22 @@ describe("admin summary metrics", () => {
     expect(metricsDb.userReads).toBe(2);
   });
 
-  it("keys cached metrics by Cloudflare account, database, and script configuration", async () => {
+  it("keys cached metrics by Cloudflare account, database, Pages project, and script configuration", async () => {
     const metricsDb = createMetricsDb();
     const base = createEnv(metricsDb.database, {
       CLOUDFLARE_ACCOUNT_ID: "account-a",
       CLOUDFLARE_D1_DATABASE_ID: "database-a"
     });
 
-    await getAdminSummaryMetrics({ ...base, CLOUDFLARE_WORKER_SCRIPT_NAME: "script-a" });
-    await getAdminSummaryMetrics({ ...base, CLOUDFLARE_WORKER_SCRIPT_NAME: "script-a" });
+    await getAdminSummaryMetrics({ ...base, CLOUDFLARE_PAGES_PROJECT_NAME: "pages-a", CLOUDFLARE_WORKER_SCRIPT_NAME: "script-a" });
+    await getAdminSummaryMetrics({ ...base, CLOUDFLARE_PAGES_PROJECT_NAME: "pages-a", CLOUDFLARE_WORKER_SCRIPT_NAME: "script-a" });
+    await getAdminSummaryMetrics({ ...base, CLOUDFLARE_PAGES_PROJECT_NAME: "pages-b", CLOUDFLARE_WORKER_SCRIPT_NAME: "script-a" });
     await getAdminSummaryMetrics({ ...base, CLOUDFLARE_WORKER_SCRIPT_NAME: "script-b" });
     await getAdminSummaryMetrics({ ...base, CLOUDFLARE_ACCOUNT_ID: "account-b", CLOUDFLARE_WORKER_SCRIPT_NAME: "script-a" });
     await getAdminSummaryMetrics({ ...base, CLOUDFLARE_D1_DATABASE_ID: "database-b", CLOUDFLARE_WORKER_SCRIPT_NAME: "script-a" });
 
-    expect(metricsDb.userReads).toBe(4);
-    expect(metricsDb.dataReads).toBe(4);
+    expect(metricsDb.userReads).toBe(5);
+    expect(metricsDb.dataReads).toBe(5);
   });
 
   it("invalidates cached metrics when a present Cloudflare API token rotates", async () => {

@@ -137,6 +137,7 @@ function cacheKey(env: Env): string {
     env.ENVIRONMENT,
     env.CLOUDFLARE_ACCOUNT_ID ?? "",
     database,
+    env.CLOUDFLARE_PAGES_PROJECT_NAME ?? "",
     env.CLOUDFLARE_WORKER_SCRIPT_NAME ?? "",
     tokenFingerprint(env.CLOUDFLARE_API_TOKEN)
   ]);

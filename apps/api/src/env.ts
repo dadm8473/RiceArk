@@ -9,6 +9,7 @@ export interface Env {
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_API_TOKEN?: string;
   CLOUDFLARE_D1_DATABASE_ID?: string;
+  CLOUDFLARE_PAGES_PROJECT_NAME?: string;
   CLOUDFLARE_WORKER_SCRIPT_NAME?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
