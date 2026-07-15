@@ -91,6 +91,11 @@ export interface BoardCellCompletion {
   completed: number;
 }
 
+export interface BoardMutationVersions {
+  sheets: Array<{ id: string; version: number }>;
+  manifestVersion?: number;
+}
+
 export interface BoardPayload {
   userId: string;
   readOnly?: boolean | undefined;
