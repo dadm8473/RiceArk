@@ -40,14 +40,6 @@ function abortableDeferred<T>(signal: AbortSignal) {
   return result;
 }
 
-function mockAbortSignalTimeout() {
-  return vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
-    const controller = new AbortController();
-    setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), milliseconds);
-    return controller.signal;
-  });
-}
-
 function makeQueue(
   overrides: Partial<ReliablePatchQueueOptions<Patch, string>> = {}
 ) {
@@ -132,6 +124,34 @@ describe("ReliablePatchQueue", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it("still schedules work when onPendingChange throws synchronously", async () => {
+    const send = vi.fn(async (patches: Patch[]) => accepted(patches));
+    const { queue } = makeQueue({
+      send,
+      onPendingChange: () => {
+        throw new Error("render observer failed");
+      }
+    });
+
+    expect(() => queue.enqueue({ key: "a", value: true })).not.toThrow();
+    await vi.advanceTimersByTimeAsync(800);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+  });
+
+  it("handles a rejected thenable returned by a void observer", async () => {
+    const send = vi.fn(async (patches: Patch[]) => accepted(patches));
+    const rejectedObserver = (() => Promise.reject(new Error("async observer failed"))) as (
+      patches: Patch[]
+    ) => void;
+    const { queue } = makeQueue({ send, onPendingChange: rejectedObserver });
+
+    queue.enqueue({ key: "a", value: true });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+  });
+
   it("allows only one active send", async () => {
     const first = deferred<SendOutcome<string>>();
     let active = 0;
@@ -157,6 +177,82 @@ describe("ReliablePatchQueue", () => {
     await queue.flush();
     expect(send).toHaveBeenCalledTimes(2);
     expect(maximumActive).toBe(1);
+  });
+
+  it.each([
+    ["serialization", "flush"],
+    ["oversize", "retry"]
+  ] as const)(
+    "reserves one worker when a %s failure observer calls %s synchronously",
+    async (failureKind, reentrantAction) => {
+      let queue!: ReliablePatchQueue<Patch, string>;
+      let activeSends = 0;
+      let maximumActiveSends = 0;
+      const send = vi.fn(async (patches: Patch[]) => {
+        activeSends += 1;
+        maximumActiveSends = Math.max(maximumActiveSends, activeSends);
+        await Promise.resolve();
+        activeSends -= 1;
+        return accepted(patches);
+      });
+      ({ queue } = makeQueue({
+        serializeBody: (patches) => {
+          if (failureKind === "serialization" && patches.some(({ key }) => key === "bad")) {
+            throw new Error("Cannot serialize bad patch");
+          }
+          return JSON.stringify({ patches });
+        },
+        send,
+        onPermanentFailure: () => {
+          if (reentrantAction === "flush") {
+            void queue.flush().catch(() => undefined);
+          } else {
+            queue.retry();
+          }
+        }
+      }));
+      queue.enqueueMany([
+        {
+          key: "bad",
+          value: true,
+          ...(failureKind === "oversize"
+            ? { payload: "x".repeat(PATCH_QUEUE_MAX_BODY_BYTES) }
+            : {})
+        },
+        { key: "good", value: false }
+      ]);
+
+      await expect(queue.flush()).resolves.toBeUndefined();
+      expect(maximumActiveSends).toBe(1);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(queue.getPendingSnapshot()).toEqual([]);
+    }
+  );
+
+  it("schedules an enqueue that lands between drain resolution and worker finalization", async () => {
+    let queue!: ReliablePatchQueue<Patch, string>;
+    let nestedEnqueueScheduled = false;
+    const send = vi.fn(async (patches: Patch[]) => accepted(patches));
+    ({ queue } = makeQueue({
+      send,
+      onPendingChange: (patches) => {
+        if (patches.length === 0 && !nestedEnqueueScheduled) {
+          nestedEnqueueScheduled = true;
+          queueMicrotask(() => {
+            queueMicrotask(() => queue.enqueue({ key: "nested", value: true }));
+          });
+        }
+      }
+    }));
+    queue.enqueue({ key: "initial", value: true });
+
+    await vi.advanceTimersByTimeAsync(800);
+    expect(queue.getPendingSnapshot()).toEqual([{ key: "nested", value: true }]);
+    await vi.advanceTimersByTimeAsync(799);
+    expect(send).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(queue.getPendingSnapshot()).toEqual([]);
   });
 
   it("splits sends at 200 patches", async () => {
@@ -239,7 +335,6 @@ describe("ReliablePatchQueue", () => {
   });
 
   it("aborts at the 10 second deadline before scheduling a retry", async () => {
-    const timeoutSpy = mockAbortSignalTimeout();
     const signals: AbortSignal[] = [];
     const send = vi.fn(async (patches: Patch[], context) => {
       signals.push(context!.signal);
@@ -253,13 +348,35 @@ describe("ReliablePatchQueue", () => {
     await vi.advanceTimersByTimeAsync(800);
 
     await vi.advanceTimersByTimeAsync(PATCH_QUEUE_REQUEST_TIMEOUT_MS);
-    expect(timeoutSpy).toHaveBeenCalledWith(PATCH_QUEUE_REQUEST_TIMEOUT_MS);
     expect(signals[0]?.aborted).toBe(true);
     expect(send).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(999);
     expect(send).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses a portable queue timer when AbortSignal.timeout is unavailable", async () => {
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+      throw new Error("AbortSignal.timeout is unavailable");
+    });
+    const signals: AbortSignal[] = [];
+    const send = vi.fn(async (_patches: Patch[], context) => {
+      signals.push(context.signal);
+      return abortableDeferred<SendOutcome<string>>(context.signal).promise;
+    });
+    const { queue } = makeQueue({ send });
+    queue.enqueue({ key: "a", value: true });
+
+    const flushResult = queue.flush().catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(PATCH_QUEUE_REQUEST_TIMEOUT_MS);
+
+    expect(await flushResult).toMatchObject({
+      name: "ReliablePatchQueueFlushError",
+      reason: "timeout",
+      cause: expect.objectContaining({ name: "TimeoutError" })
+    });
+    expect(signals[0]?.aborted).toBe(true);
   });
 
   it("rejects flush with the retry cause while pending work remains", async () => {
@@ -297,7 +414,6 @@ describe("ReliablePatchQueue", () => {
   });
 
   it("bounds flush when send ignores abort and waits for that stale transport before retrying", async () => {
-    mockAbortSignalTimeout();
     const first = deferred<SendOutcome<string>>();
     const signals: AbortSignal[] = [];
     const send = vi.fn(async (patches: Patch[], context) => {
@@ -389,6 +505,45 @@ describe("ReliablePatchQueue", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(send).toHaveBeenCalledTimes(4);
   });
+
+  it.each(["accepted", "rejected"] as const)(
+    "resets retry backoff when a known stale generation is %s",
+    async (staleOutcome) => {
+      const staleAttempt = deferred<SendOutcome<string>>();
+      const send = vi.fn(async (patches: Patch[]) => {
+        switch (send.mock.calls.length) {
+          case 1:
+          case 2:
+            return { type: "retry", error: new Error("offline"), retryAfterMs: null } as const;
+          case 3:
+            return staleAttempt.promise;
+          case 4:
+            return { type: "retry", error: new Error("offline again"), retryAfterMs: null } as const;
+          default:
+            return accepted(patches);
+        }
+      });
+      const { queue } = makeQueue({ send });
+      queue.enqueue({ key: "cell", value: true });
+
+      await vi.advanceTimersByTimeAsync(800 + 1_000 + 2_000);
+      expect(send).toHaveBeenCalledTimes(3);
+      queue.enqueue({ key: "cell", value: false });
+      staleAttempt.resolve(
+        staleOutcome === "accepted"
+          ? { type: "accepted", acknowledgedKeys: ["cell"] }
+          : { type: "rejected", rejectedKeys: ["cell"], message: "Stale patch rejected" }
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(send).toHaveBeenCalledTimes(4);
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(send).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(send).toHaveBeenCalledTimes(5);
+      expect(queue.getPendingSnapshot()).toEqual([]);
+    }
+  );
 
   it("delivers accepted versions only after a known acknowledgment", async () => {
     const versions: BoardMutationVersions = {
@@ -551,6 +706,34 @@ describe("ReliablePatchQueue", () => {
     expect(queue.getPendingSnapshot()).toEqual([]);
   });
 
+  it.each(["synchronous", "microtask"] as const)(
+    "honors a %s retry requested from onAuthPause immediately after the worker stops",
+    async (retryTiming) => {
+      let queue!: ReliablePatchQueue<Patch, string>;
+      const authError = new ApiClientError(401, "unauthorized", "Login required");
+      const send = vi
+        .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()
+        .mockResolvedValueOnce({ type: "auth", error: authError })
+        .mockImplementation(async (patches) => accepted(patches));
+      ({ queue } = makeQueue({
+        send,
+        onAuthPause: () => {
+          const retry = () => queue.retry();
+          if (retryTiming === "synchronous") {
+            retry();
+            throw new Error("auth observer failed after retry");
+          }
+          queueMicrotask(retry);
+        }
+      }));
+      queue.enqueue({ key: "a", value: true });
+
+      await vi.advanceTimersByTimeAsync(800);
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(queue.getPendingSnapshot()).toEqual([]);
+    }
+  );
+
   it("reconciles permanently rejected keys and reports the failure", async () => {
     const rejection: SendOutcome<string> = {
       type: "rejected",
@@ -579,6 +762,49 @@ describe("ReliablePatchQueue", () => {
     ]);
     expect(queue.getPendingSnapshot()).toEqual([]);
     expect(pendingChanges.at(-1)).toEqual([]);
+  });
+
+  it("continues remaining work when onPermanentFailure throws", async () => {
+    const send = vi
+      .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()
+      .mockResolvedValueOnce({ type: "rejected", rejectedKeys: ["a"], message: "Invalid" })
+      .mockImplementation(async (patches) => accepted(patches));
+    const { queue } = makeQueue({
+      send,
+      onPermanentFailure: () => {
+        throw new Error("failure observer failed");
+      }
+    });
+    queue.enqueueMany([
+      { key: "a", value: true },
+      { key: "b", value: false }
+    ]);
+
+    await expect(queue.flush()).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+  });
+
+  it("continues remaining work when onVersions throws", async () => {
+    const versions: BoardMutationVersions = { sheets: [{ id: "sheet-1", version: 2 }] };
+    const send = vi
+      .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()
+      .mockResolvedValueOnce({ type: "accepted", acknowledgedKeys: ["a"], versions })
+      .mockImplementation(async (patches) => accepted(patches));
+    const { queue } = makeQueue({
+      send,
+      onVersions: () => {
+        throw new Error("version observer failed");
+      }
+    });
+    queue.enqueueMany([
+      { key: "a", value: true },
+      { key: "b", value: false }
+    ]);
+
+    await expect(queue.flush()).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(queue.getPendingSnapshot()).toEqual([]);
   });
 
   it.each([
@@ -869,6 +1095,28 @@ describe("ReliablePatchQueue", () => {
     ]);
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0]?.[0]).toEqual([{ key: "good", value: false }]);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+  });
+
+  it("turns an unexpected internal worker failure into a bounded retry", async () => {
+    let serializationCalls = 0;
+    const send = vi.fn(async (patches: Patch[]) => accepted(patches));
+    const { queue } = makeQueue({
+      serializeBody: (patches) => {
+        serializationCalls += 1;
+        if (serializationCalls === 1) return Symbol("invalid body") as unknown as string;
+        return JSON.stringify({ patches });
+      },
+      send
+    });
+    queue.enqueue({ key: "a", value: true });
+
+    await vi.advanceTimersByTimeAsync(800);
+    expect(send).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(send).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(1);
     expect(queue.getPendingSnapshot()).toEqual([]);
   });
 

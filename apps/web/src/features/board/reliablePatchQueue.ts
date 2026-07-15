@@ -186,6 +186,7 @@ export class ReliablePatchQueue<T, K> {
   private retryIndex = 0;
   private authPaused = false;
   private lastAuthError: ApiClientError | null = null;
+  private immediateWakeRequested = false;
   private disposed = false;
 
   private readonly handleImmediateRetry = () => {
@@ -233,6 +234,10 @@ export class ReliablePatchQueue<T, K> {
     if (this.disposed) return;
     this.authPaused = false;
     this.lastAuthError = null;
+    if (this.worker !== null || this.activeTransport !== null) {
+      this.immediateWakeRequested = true;
+      return;
+    }
     void this.startWorker();
   }
 
@@ -249,6 +254,7 @@ export class ReliablePatchQueue<T, K> {
     this.authPaused = false;
     this.lastAuthError = null;
     this.retryIndex = 0;
+    this.immediateWakeRequested = false;
     this.notifyPendingChange();
     return discarded;
   }
@@ -258,6 +264,7 @@ export class ReliablePatchQueue<T, K> {
     if (this.disposed) return snapshot;
 
     this.disposed = true;
+    this.immediateWakeRequested = false;
     this.lifecycleEpoch += 1;
     this.clearTimers();
     this.eventTarget?.removeEventListener("focus", this.handleImmediateRetry);
@@ -274,23 +281,53 @@ export class ReliablePatchQueue<T, K> {
     }, PATCH_QUEUE_DEBOUNCE_MS);
   }
 
-  private async startWorker(): Promise<DrainResult> {
-    if (this.disposed) return this.stopResult("disposed");
-    if (this.authPaused) return this.stopResult("auth", this.lastAuthError);
-    if (this.pending.size === 0) return this.completeResult();
+  private startWorker(): Promise<DrainResult> {
+    if (this.disposed) return Promise.resolve(this.stopResult("disposed"));
+    if (this.authPaused) return Promise.resolve(this.stopResult("auth", this.lastAuthError));
+    if (this.pending.size === 0) return Promise.resolve(this.completeResult());
     if (this.worker !== null) return this.worker;
     this.clearTimers();
     if (this.activeTransport !== null) {
-      return this.activeTransport.timedOut
-        ? this.stopResult("timeout", this.activeTransport.timeoutCause)
-        : this.stopResult("non-progress");
+      return Promise.resolve(
+        this.activeTransport.timedOut
+          ? this.stopResult("timeout", this.activeTransport.timeoutCause)
+          : this.stopResult("non-progress")
+      );
     }
 
-    const worker = this.drain().finally(() => {
-      if (this.worker === worker) this.worker = null;
-    });
+    let worker!: Promise<DrainResult>;
+    worker = Promise.resolve()
+      .then(() => this.drain())
+      .catch((error: unknown) => {
+        this.scheduleRetry(this.retryAfterFrom(null, error));
+        return this.stopResult("retry", error);
+      })
+      .finally(() => this.finishWorker(worker));
     this.worker = worker;
     return worker;
+  }
+
+  private finishWorker(worker: Promise<DrainResult>): void {
+    if (this.worker !== worker) return;
+    this.worker = null;
+    if (this.pending.size === 0) {
+      this.immediateWakeRequested = false;
+      return;
+    }
+    if (
+      !this.disposed &&
+      !this.authPaused &&
+      this.retryTimer === null &&
+      this.activeTransport === null &&
+      this.debounceTimer === null
+    ) {
+      if (this.immediateWakeRequested) {
+        this.immediateWakeRequested = false;
+        void this.startWorker();
+      } else {
+        this.scheduleDebounce();
+      }
+    }
   }
 
   private async drain(): Promise<DrainResult> {
@@ -353,7 +390,6 @@ export class ReliablePatchQueue<T, K> {
 
   private async sendChunk(entries: Array<PendingEntry<T, K>>): Promise<DrainControl> {
     const controller = new AbortController();
-    const timeoutSignal = AbortSignal.timeout(PATCH_QUEUE_REQUEST_TIMEOUT_MS);
     const transport: ActiveTransport = {
       epoch: ++this.transportEpoch,
       lifecycleEpoch: this.lifecycleEpoch,
@@ -379,16 +415,19 @@ export class ReliablePatchQueue<T, K> {
       (outcome) => ({ type: "outcome", outcome }),
       (error: unknown) => ({ type: "error", error })
     );
-    let handleTimeout!: () => void;
+    let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
     const deadlineResult = new Promise<TransportResult<K>>((resolve) => {
-      handleTimeout = () => {
-        const cause = timeoutSignal.reason ?? new DOMException("Timed out", "TimeoutError");
+      deadlineTimer = setTimeout(() => {
+        deadlineTimer = null;
+        const cause = new DOMException(
+          `Patch request exceeded ${PATCH_QUEUE_REQUEST_TIMEOUT_MS} ms`,
+          "TimeoutError"
+        );
         transport.timedOut = true;
         transport.timeoutCause = cause;
         controller.abort(cause);
         resolve({ type: "timeout", cause });
-      };
-      timeoutSignal.addEventListener("abort", handleTimeout, { once: true });
+      }, PATCH_QUEUE_REQUEST_TIMEOUT_MS);
     });
     const racedResult = Promise.race([transportResult, deadlineResult]);
     void transportResult.then(() => this.handleTransportSettled(transport));
@@ -404,7 +443,7 @@ export class ReliablePatchQueue<T, K> {
       if (result.type === "outcome") return this.handleOutcome(entries, result.outcome);
       return this.handleThrownError(entries, result.error);
     } finally {
-      timeoutSignal.removeEventListener("abort", handleTimeout);
+      if (deadlineTimer !== null) clearTimeout(deadlineTimer);
     }
   }
 
@@ -413,13 +452,15 @@ export class ReliablePatchQueue<T, K> {
       case "accepted": {
         const acknowledged = this.canonicalKeyIds(outcome.acknowledgedKeys);
         const acknowledgedEntries = entries.filter(({ keyId }) => acknowledged.has(keyId));
-        const reconciledCount = this.reconcileEntries(acknowledgedEntries);
+        this.reconcileEntries(acknowledgedEntries);
         if (acknowledgedEntries.length === 0 && entries.length > 0) {
           this.scheduleRetry(null);
           return { continue: false, result: this.stopResult("non-progress", outcome) };
         }
-        if (reconciledCount > 0) this.retryIndex = 0;
-        if (outcome.versions !== undefined) this.options.onVersions?.(outcome.versions);
+        this.retryIndex = 0;
+        if (outcome.versions !== undefined) {
+          this.invokeObserver(this.options.onVersions, outcome.versions);
+        }
         return { continue: true, result: this.completeResult() };
       }
       case "rejected": {
@@ -429,18 +470,18 @@ export class ReliablePatchQueue<T, K> {
           this.scheduleRetry(null);
           return { continue: false, result: this.stopResult("non-progress", outcome) };
         }
-        const reconciledCount = this.rejectEntries(
+        this.rejectEntries(
           rejectedEntries,
           rejectedEntries.map(({ key }) => key),
           outcome.message
         );
-        if (reconciledCount > 0) this.retryIndex = 0;
+        this.retryIndex = 0;
         return { continue: true, result: this.completeResult() };
       }
       case "auth":
         this.authPaused = true;
         this.lastAuthError = outcome.error;
-        this.options.onAuthPause(outcome.error);
+        this.invokeObserver(this.options.onAuthPause, outcome.error);
         return { continue: false, result: this.stopResult("auth", outcome.error) };
       case "retry":
         this.scheduleRetry(this.retryAfterFrom(outcome.retryAfterMs, outcome.error));
@@ -453,7 +494,7 @@ export class ReliablePatchQueue<T, K> {
       case "auth":
         this.authPaused = true;
         this.lastAuthError = error as ApiClientError;
-        this.options.onAuthPause(error as ApiClientError);
+        this.invokeObserver(this.options.onAuthPause, error as ApiClientError);
         return { continue: false, result: this.stopResult("auth", error) };
       case "retry":
         this.scheduleRetry(this.retryAfterFrom(null, error));
@@ -480,6 +521,11 @@ export class ReliablePatchQueue<T, K> {
 
     const continueAfterWorker = () => {
       if (this.disposed || this.pending.size === 0) return;
+      if (this.immediateWakeRequested && !this.authPaused) {
+        this.immediateWakeRequested = false;
+        void this.startWorker();
+        return;
+      }
       if (transport.lifecycleEpoch !== this.lifecycleEpoch) {
         if (!this.authPaused) void this.startWorker();
         return;
@@ -496,7 +542,7 @@ export class ReliablePatchQueue<T, K> {
 
   private rejectEntries(entries: Array<PendingEntry<T, K>>, rejectedKeys: K[], message: string): number {
     const reconciledCount = this.reconcileEntries(entries);
-    this.options.onPermanentFailure({ type: "rejected", rejectedKeys, message });
+    this.invokeObserver(this.options.onPermanentFailure, { type: "rejected", rejectedKeys, message });
     return reconciledCount;
   }
 
@@ -547,7 +593,26 @@ export class ReliablePatchQueue<T, K> {
   }
 
   private notifyPendingChange(): void {
-    this.options.onPendingChange(this.getPendingSnapshot());
+    this.invokeObserver(this.options.onPendingChange, this.getPendingSnapshot());
+  }
+
+  private invokeObserver<A extends unknown[]>(
+    observer: ((...args: A) => void) | undefined,
+    ...args: A
+  ): void {
+    if (observer === undefined) return;
+    try {
+      const result = (observer as (...observerArgs: A) => unknown)(...args);
+      if (
+        result !== null &&
+        (typeof result === "object" || typeof result === "function") &&
+        typeof (result as PromiseLike<unknown>).then === "function"
+      ) {
+        void Promise.resolve(result).catch(() => undefined);
+      }
+    } catch {
+      // Observer failures must not affect queue state or scheduling.
+    }
   }
 
   private createEntry(patch: T): PendingEntry<T, K> {
