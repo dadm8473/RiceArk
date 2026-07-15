@@ -38,6 +38,9 @@ import {
   type GuardedBoardCellStatePayloadRow,
   type GuardedBoardCompletionPayloadRow
 } from "./boardBulkSql";
+import type { BoardVersionSummary as CanonicalBoardVersionSummary } from "./boardReads";
+
+export type { BoardVersionSummary } from "./boardReads";
 
 export const DEFAULT_SHEET_NAME = "기본";
 export const DEFAULT_TABLE_NAME = "숙제";
@@ -145,12 +148,6 @@ export interface BoardShareFavoriteSummary extends BoardShareSummary {
 export interface SharedBoardPayload extends BoardPayload {
   shareId: string;
   readOnly: true;
-}
-
-export interface BoardVersionSummary {
-  manifestVersion: number;
-  sheets: Array<{ id: string; version: number }>;
-  periodFingerprint: string;
 }
 
 export interface SharedBoardVersionSummary {
@@ -1457,19 +1454,31 @@ export async function loadSharedBoard(env: Env, shareId: string, now = new Date(
   };
 }
 
-export async function loadBoardVersionSummary(env: Env, userId: string, _now = new Date()): Promise<BoardVersionSummary> {
+export async function loadBoardVersionSummary(
+  env: Env,
+  userId: string,
+  _now = new Date()
+): Promise<CanonicalBoardVersionSummary> {
   const [manifest, sheets] = await Promise.all([
     env.DB.prepare("SELECT version FROM board_manifest_versions WHERE user_id = ?")
       .bind(userId)
       .first<{ version: number }>(),
-    env.DB.prepare("SELECT id, content_version FROM sheets WHERE user_id = ? ORDER BY sort_order, name")
+    env.DB.prepare(
+      "SELECT id, name, sort_order, is_default, content_version FROM sheets WHERE user_id = ? ORDER BY sort_order, name"
+    )
       .bind(userId)
-      .all<{ id: string; content_version: number }>()
+      .all<{ id: string; name: string; sort_order: number; is_default: number; content_version: number }>()
   ]);
 
   return {
     manifestVersion: manifest?.version ?? 0,
-    sheets: sheets.results.map((sheet) => ({ id: sheet.id, version: sheet.content_version })),
+    sheets: sheets.results.map((sheet) => ({
+      id: sheet.id,
+      name: sheet.name,
+      sort_order: sheet.sort_order,
+      is_default: sheet.is_default,
+      version: sheet.content_version
+    })),
     periodFingerprint: ""
   };
 }

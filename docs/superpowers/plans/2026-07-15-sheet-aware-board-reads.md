@@ -21,9 +21,11 @@
 
 - [ ] **Step 1: Write failing contract tests**
 
-Test that a manifest item carries navigation metadata plus content version, a sheet payload exposes one active-sheet envelope with no top-level all-sheet collection, and a bootstrap includes the same version snapshot used for cache validation.
+Test that a manifest item carries navigation metadata plus content version, a sheet payload exposes one active-sheet envelope with no top-level all-sheet collection, and the bootstrap manifest version/sheets fields are type-identical to the version summary manifestVersion/sheets fields.
 
 Value-level cross-sheet isolation for tables, notes, axis items, cell states, and completions depends on the Task 2 loaders and SQL ownership predicates. Cover that behavior in Task 2 Step 1 rather than with a tautological fixture or a premature runtime validator around these intentionally `unknown[]` contract fields.
+
+Value-level snapshot consistency also belongs to the Task 2 loader tests. Task 1 establishes the public type relationship only.
 
 - [ ] **Step 2: Run tests and confirm failure**
 
@@ -81,6 +83,8 @@ export interface BoardVersionSummary {
 
 Move only new read-path code into `boardReads.ts`; keep the legacy `BoardPayload` and `loadBoard()` export in `board.ts` during compatibility rollout.
 
+Treat `BoardVersionSummary` in `boardReads.ts` as canonical. Import and re-export it from `board.ts` so existing type imports remain compatible, and update the existing two-statement `loadBoardVersionSummary()` query and mapping to include all manifest item metadata. Task 2 retains responsibility for collapsing that loader to one statement.
+
 - [ ] **Step 4: Run tests and commit**
 
 Run: `pnpm test apps/api/src/db/boardReads.test.ts && pnpm --filter @riceark/api check`
@@ -98,7 +102,7 @@ git commit -m "Define sheet-aware board read contracts"
 
 - [ ] **Step 1: Add failing ownership, fallback, and query-budget tests**
 
-Cover requested owned sheet, foreign/missing requested sheet fallback to default then first sorted, no sheet initialization fallback, period fingerprint, expired reserved marks, and explicit-column SQL. Prove value-level cross-sheet isolation across tables, notes, axis items, cell states, and completions, including rows reachable only through a foreign table. Count D1 statements and require at most nine read-path statements excluding session/auth for an established board, so the route stays at or below 10 including `requireUser`; require at most 30 statements for first-ever default-board initialization.
+Cover requested owned sheet, foreign/missing requested sheet fallback to default then first sorted, no sheet initialization fallback, period fingerprint, expired reserved marks, explicit-column SQL, and value-level bootstrap/version-summary snapshot mapping. Prove value-level cross-sheet isolation across tables, notes, axis items, cell states, and completions, including rows reachable only through a foreign table. Count D1 statements and require at most nine read-path statements excluding session/auth for an established board, so the route stays at or below 10 including `requireUser`; require at most 30 statements for first-ever default-board initialization.
 
 - [ ] **Step 2: Run tests and confirm failure**
 

@@ -1123,7 +1123,7 @@ describe("board db defaults", () => {
     expect(preparedSql.some((sql) => sql.includes("INSERT INTO board_tables"))).toBe(false);
   });
 
-  it("loads owner board versions without scanning axis items on every poll", async () => {
+  it("loads owner board manifest metadata without scanning axis items on every poll", async () => {
     const preparedSql: string[] = [];
     const env = {
       DB: {
@@ -1141,7 +1141,17 @@ describe("board db defaults", () => {
             },
             async all() {
               if (sql.includes("FROM sheets")) {
-                return { results: [{ id: "sheet-1", content_version: 5 }] };
+                return {
+                  results: [
+                    {
+                      id: "sheet-1",
+                      name: "숙제",
+                      sort_order: 10,
+                      is_default: 1,
+                      content_version: 5
+                    }
+                  ]
+                };
               }
               if (sql.includes("FROM board_axis_items")) throw new Error("versions should not scan axis items");
               return { results: [] };
@@ -1153,9 +1163,14 @@ describe("board db defaults", () => {
 
     await expect(loadBoardVersionSummary(env, "user-1", new Date("2026-06-05T03:00:00.000Z"))).resolves.toEqual({
       manifestVersion: 3,
-      sheets: [{ id: "sheet-1", version: 5 }],
+      sheets: [{ id: "sheet-1", name: "숙제", sort_order: 10, is_default: 1, version: 5 }],
       periodFingerprint: ""
     });
+    const sheetQuery = preparedSql.find((sql) => sql.includes("FROM sheets"));
+    expect(sheetQuery).toContain("name");
+    expect(sheetQuery).toContain("sort_order");
+    expect(sheetQuery).toContain("is_default");
+    expect(sheetQuery).toContain("content_version");
     expect(preparedSql.some((sql) => sql.includes("FROM board_axis_items"))).toBe(false);
   });
 

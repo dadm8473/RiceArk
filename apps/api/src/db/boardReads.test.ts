@@ -7,6 +7,7 @@ import type {
   BoardSheetPayloadItem,
   BoardVersionSummary
 } from "./boardReads";
+import type { BoardVersionSummary as BoardModuleVersionSummary } from "./board";
 
 const manifestItem = {
   id: "sheet-1",
@@ -15,11 +16,6 @@ const manifestItem = {
   is_default: 1,
   version: 7
 } satisfies BoardSheetManifestItem;
-
-const manifest = {
-  version: 3,
-  sheets: [manifestItem]
-} satisfies BoardSheetManifest;
 
 const activeSheet = {
   sheet: {
@@ -37,13 +33,6 @@ const activeSheet = {
   periodFingerprint: "weekly:2026-07-15"
 } satisfies BoardSheetPayload;
 
-const bootstrap = {
-  userId: "user-1",
-  settings: { show_display_name: 1 },
-  manifest,
-  activeSheet
-} satisfies BoardBootstrapPayload;
-
 describe("sheet-aware board read contracts", () => {
   it("publishes the sheet-aware contracts from their dedicated read module", async () => {
     await expect(import("./boardReads")).resolves.toBeDefined();
@@ -56,6 +45,10 @@ describe("sheet-aware board read contracts", () => {
       sort_order: number;
       is_default: number;
       version: number;
+    }>();
+    expectTypeOf<BoardSheetManifest>().toEqualTypeOf<{
+      version: number;
+      sheets: BoardSheetManifestItem[];
     }>();
     expect(manifestItem).toEqual({
       id: "sheet-1",
@@ -95,20 +88,12 @@ describe("sheet-aware board read contracts", () => {
     expect("sheets" in activeSheet).toBe(false);
   });
 
-  it("bootstraps the same version snapshot used for sheet cache validation", () => {
-    const versionSummary = {
-      manifestVersion: bootstrap.manifest.version,
-      sheets: bootstrap.manifest.sheets,
-      periodFingerprint: ""
-    } satisfies BoardVersionSummary;
-    const activeManifestItem = versionSummary.sheets.find((sheet) => sheet.id === bootstrap.activeSheet.sheet.id);
-
-    expect(activeManifestItem?.version).toBe(bootstrap.activeSheet.sheet.content_version);
-    expect(versionSummary).toEqual({
-      manifestVersion: 3,
-      sheets: [manifestItem],
-      periodFingerprint: ""
-    });
-    expectTypeOf(versionSummary.periodFingerprint).toEqualTypeOf<"">();
+  it("shares the manifest snapshot field types with bootstrap and legacy board imports", () => {
+    expectTypeOf<BoardBootstrapPayload["manifest"]["version"]>().toEqualTypeOf<
+      BoardVersionSummary["manifestVersion"]
+    >();
+    expectTypeOf<BoardBootstrapPayload["manifest"]["sheets"]>().toEqualTypeOf<BoardVersionSummary["sheets"]>();
+    expectTypeOf<BoardModuleVersionSummary>().toEqualTypeOf<BoardVersionSummary>();
+    expectTypeOf<BoardVersionSummary["periodFingerprint"]>().toEqualTypeOf<"">();
   });
 });
