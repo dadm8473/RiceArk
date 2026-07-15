@@ -146,7 +146,7 @@ function createCharacterDatabase(): DatabaseSync {
       combat_power TEXT,
       memo TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
-      source TEXT NOT NULL,
+      source TEXT NOT NULL CHECK (source IN ('lostark', 'manual')),
       enabled INTEGER NOT NULL DEFAULT 1,
       deleted_at TEXT,
       last_refresh_attempt_at TEXT,
@@ -541,12 +541,12 @@ describe("refreshCharactersFromLostArk", () => {
         character: { id, ...refreshedProfile(id) }
       })));
       expect(result.versions).toEqual({ sheets: [] });
-      expect(statements).toHaveLength(4);
+      expect(statements).toHaveLength(5);
       expect(statements.every((statement) => statement.values.length < 100)).toBe(true);
-      expect(statements.every((statement) => statement.sql.includes("json_each"))).toBe(true);
+      expect(statements.filter((statement) => statement.sql.includes("json_each"))).toHaveLength(5);
       expect(statements.filter((statement) => statement.sql.includes("last_refresh_attempt_at"))).toHaveLength(2);
       expect(batches).toHaveLength(1);
-      expect(batches[0]).toHaveLength(2);
+      expect(batches[0]).toHaveLength(3);
     } finally {
       database.close();
     }
@@ -663,7 +663,7 @@ describe("refreshCharactersFromLostArk", () => {
         { id: "sheet-unreferenced", content_version: 0 }
       ]);
       expect(batches).toHaveLength(1);
-      expect(batches[0]).toHaveLength(2);
+      expect(batches[0]).toHaveLength(3);
 
       vi.setSystemTime(new Date("2026-06-02T10:01:01.000Z"));
       await expect(
@@ -673,6 +673,82 @@ describe("refreshCharactersFromLostArk", () => {
         { id: "sheet-hidden", content_version: 1 },
         { id: "sheet-shared", content_version: 1 },
         { id: "sheet-unreferenced", content_version: 0 }
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rolls back every profile and sheet version when one successful character update is suppressed", async () => {
+    const database = createCharacterDatabase();
+    try {
+      insertCharacter(database, "character-1");
+      insertCharacter(database, "character-2");
+      insertProjection(database, "character-1");
+      database.prepare(
+        "INSERT INTO board_axis_items (id, user_id, table_id, character_id) VALUES (?, ?, ?, ?)"
+      ).run("axis-character-2", "user-1", "table-1", "character-2");
+      database.exec(`
+        CREATE TRIGGER suppress_second_character_refresh
+        BEFORE UPDATE OF class_name, item_level, combat_power ON characters
+        WHEN OLD.id = 'character-2' AND NEW.class_name = '환수사'
+        BEGIN
+          SELECT RAISE(IGNORE);
+        END;
+      `);
+      const { env, batches } = createSqliteEnv(database);
+      profileMock().mockImplementation(async (_env, name) => refreshedProfile(name.replace("name-", "")));
+
+      await expect(
+        getRefreshCharactersFromLostArk()(env, "user-1", ["character-1", "character-2"])
+      ).resolves.toEqual({
+        results: [
+          { id: "character-1", status: "failed", code: "character_refresh_conflict" },
+          { id: "character-2", status: "failed", code: "character_refresh_conflict" }
+        ],
+        versions: { sheets: [] }
+      });
+      expect(database.prepare(
+        "SELECT id, class_name, item_level, combat_power FROM characters ORDER BY id"
+      ).all()).toEqual([
+        { id: "character-1", class_name: "브레이커", item_level: "1,640.00", combat_power: "2,500.00" },
+        { id: "character-2", class_name: "브레이커", item_level: "1,640.00", combat_power: "2,500.00" }
+      ]);
+      expect(database.prepare("SELECT id, content_version FROM sheets ORDER BY id").all()).toEqual([
+        { id: "sheet-1", content_version: 0 },
+        { id: "sheet-2", content_version: 0 }
+      ]);
+      expect(batches).toHaveLength(2);
+      expect(batches.every((batch) => batch.length === 3)).toBe(true);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("does not swallow an unrelated character-update trigger error", async () => {
+    const database = createCharacterDatabase();
+    try {
+      insertCharacter(database, "character-1");
+      insertProjection(database, "character-1");
+      database.exec(`
+        CREATE TRIGGER reject_character_refresh
+        BEFORE UPDATE OF class_name ON characters
+        WHEN OLD.id = 'character-1' AND NEW.class_name = '환수사'
+        BEGIN
+          SELECT RAISE(ABORT, 'unexpected character refresh trigger');
+        END;
+      `);
+      const { env } = createSqliteEnv(database);
+      profileMock().mockResolvedValue(refreshedProfile("character-1"));
+
+      await expect(
+        getRefreshCharactersFromLostArk()(env, "user-1", ["character-1"])
+      ).rejects.toThrow("unexpected character refresh trigger");
+      expect(database.prepare("SELECT class_name FROM characters WHERE id = ?").get("character-1"))
+        .toEqual({ class_name: "브레이커" });
+      expect(database.prepare("SELECT content_version FROM sheets ORDER BY id").all()).toEqual([
+        { content_version: 0 },
+        { content_version: 0 }
       ]);
     } finally {
       database.close();
@@ -701,6 +777,55 @@ describe("refreshCharactersFromLostArk", () => {
         { content_version: 0 },
         { content_version: 0 }
       ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("retries only profiles that remain eligible after one character disappears", async () => {
+    const database = createCharacterDatabase();
+    try {
+      insertCharacter(database, "character-1");
+      insertCharacter(database, "character-2");
+      insertProjection(database, "character-1");
+      database.prepare(
+        "INSERT INTO board_axis_items (id, user_id, table_id, character_id) VALUES (?, ?, ?, ?)"
+      ).run("axis-character-2", "user-1", "table-1", "character-2");
+      const { env, batches, statements } = createSqliteEnv(database);
+      profileMock().mockImplementation(async (_env, name) => {
+        const id = name.replace("name-", "");
+        if (id === "character-1") {
+          database.prepare("UPDATE characters SET enabled = 0, deleted_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .run(id);
+        }
+        return refreshedProfile(id);
+      });
+
+      await expect(
+        getRefreshCharactersFromLostArk()(env, "user-1", ["character-1", "character-2"])
+      ).resolves.toEqual({
+        results: [
+          { id: "character-1", status: "not_found" },
+          {
+            id: "character-2",
+            status: "updated",
+            character: { id: "character-2", ...refreshedProfile("character-2") }
+          }
+        ],
+        versions: { sheets: [{ id: "sheet-1", version: 1 }] }
+      });
+      expect(database.prepare("SELECT id, class_name FROM characters ORDER BY id").all()).toEqual([
+        { id: "character-1", class_name: "브레이커" },
+        { id: "character-2", class_name: "환수사" }
+      ]);
+      expect(database.prepare("SELECT id, content_version FROM sheets ORDER BY id").all()).toEqual([
+        { id: "sheet-1", content_version: 1 },
+        { id: "sheet-2", content_version: 0 }
+      ]);
+      expect(statements).toHaveLength(9);
+      expect(statements.every((statement) => statement.values.length < 100)).toBe(true);
+      expect(batches).toHaveLength(2);
+      expect(batches.every((batch) => batch.length === 3)).toBe(true);
     } finally {
       database.close();
     }

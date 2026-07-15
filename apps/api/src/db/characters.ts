@@ -45,6 +45,12 @@ export interface CharacterRefreshBatchResult {
 
 export const CHARACTER_REFRESH_COOLDOWN_MS = 60_000;
 export const CHARACTER_REFRESH_BATCH_MAX_COUNT = 40;
+const CHARACTER_REFRESH_APPLY_MAX_ATTEMPTS = 2;
+const CHARACTER_REFRESH_CONFLICT_CODE = "character_refresh_conflict";
+const CHARACTER_REFRESH_GUARD_CONSTRAINT_PATH =
+  "$[riceark_character_refresh_exact_set_guard_constraint_v1";
+const CHARACTER_REFRESH_GUARD_CONSTRAINT_SIGNATURE =
+  `bad JSON path: '${CHARACTER_REFRESH_GUARD_CONSTRAINT_PATH}'`;
 
 interface CharacterRefreshRow {
   position: number;
@@ -57,6 +63,18 @@ interface CharacterRefreshRow {
   combat_power: string | null;
   source: string | null;
   last_refresh_attempt_at: string | null;
+}
+
+interface CharacterRefreshRetryRow {
+  position: number;
+  requested_id: string;
+  id: string | null;
+}
+
+interface CharacterRefreshProfileSuccess {
+  index: number;
+  id: string;
+  profile: ImportedCharacterCandidate;
 }
 
 function firstBatchRow<T>(result: unknown): T | null {
@@ -104,6 +122,23 @@ function returnedUniqueIdSubset(result: unknown, expectedIds: Set<string>, error
     throw new Error(errorMessage);
   }
   return new Set(ids);
+}
+
+function returnedExactIdSet(result: unknown, expectedIds: Set<string>, errorMessage: string): Set<string> {
+  const ids = returnedIds(result);
+  if (
+    ids === null ||
+    ids.length !== expectedIds.size ||
+    new Set(ids).size !== ids.length ||
+    ids.some((id) => !expectedIds.has(id))
+  ) {
+    throw new Error(errorMessage);
+  }
+  return new Set(ids);
+}
+
+function isCharacterRefreshGuardConstraint(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(CHARACTER_REFRESH_GUARD_CONSTRAINT_SIGNATURE);
 }
 
 function completeCharacterRefreshResults(
@@ -167,6 +202,188 @@ function parseStoredTimestamp(value: string | null | undefined): number | null {
   if (!value) return null;
   const parsed = Date.parse(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+async function applyCharacterRefreshProfiles(
+  env: Env,
+  userId: string,
+  successes: CharacterRefreshProfileSuccess[]
+): Promise<BoardSheetVersion[]> {
+  const profilesJson = JSON.stringify(successes.map(({ id, profile }) => ({
+    id,
+    className: profile.className,
+    itemLevel: profile.itemLevel,
+    combatPower: profile.combatPower
+  })));
+  const [versionResult, updatedResult, guardResult] = await env.DB.batch([
+    env.DB.prepare(
+      `WITH input AS (
+         SELECT json_extract(value, '$.id') AS id,
+                json_extract(value, '$.className') AS class_name,
+                json_extract(value, '$.itemLevel') AS item_level,
+                json_extract(value, '$.combatPower') AS combat_power
+         FROM json_each(?2)
+       ),
+       valid_input AS (
+         SELECT *
+         FROM input
+         WHERE typeof(id) = 'text'
+           AND typeof(class_name) = 'text'
+           AND typeof(item_level) = 'text'
+           AND (combat_power IS NULL OR typeof(combat_power) = 'text')
+       ),
+       changed_characters AS (
+         SELECT characters.id
+         FROM characters
+         JOIN valid_input ON valid_input.id = characters.id
+         WHERE characters.user_id = ?1
+           AND characters.enabled = 1
+           AND characters.deleted_at IS NULL
+           AND characters.source <> 'manual'
+           AND (
+             characters.class_name IS NOT valid_input.class_name
+             OR characters.item_level IS NOT valid_input.item_level
+             OR characters.combat_power IS NOT valid_input.combat_power
+             OR characters.source <> 'lostark'
+           )
+       ),
+       affected_sheets AS (
+         SELECT DISTINCT board_tables.sheet_id
+         FROM board_axis_items
+         JOIN board_tables
+           ON board_tables.id = board_axis_items.table_id
+          AND board_tables.user_id = board_axis_items.user_id
+         JOIN changed_characters
+           ON changed_characters.id = board_axis_items.character_id
+         WHERE board_axis_items.user_id = ?1
+           AND board_tables.user_id = ?1
+       )
+       UPDATE sheets
+       SET content_version = content_version + 1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE sheets.user_id = ?1
+         AND json_array_length(?2) > 0
+         AND (SELECT COUNT(*) FROM valid_input) = json_array_length(?2)
+         AND (SELECT COUNT(DISTINCT id) FROM valid_input) = json_array_length(?2)
+         AND sheets.id IN (SELECT sheet_id FROM affected_sheets)
+       RETURNING id, content_version AS version`
+    ).bind(userId, profilesJson),
+    env.DB.prepare(
+      `WITH input AS (
+         SELECT json_extract(value, '$.id') AS id,
+                json_extract(value, '$.className') AS class_name,
+                json_extract(value, '$.itemLevel') AS item_level,
+                json_extract(value, '$.combatPower') AS combat_power
+         FROM json_each(?2)
+       ),
+       valid_input AS (
+         SELECT *
+         FROM input
+         WHERE typeof(id) = 'text'
+           AND typeof(class_name) = 'text'
+           AND typeof(item_level) = 'text'
+           AND (combat_power IS NULL OR typeof(combat_power) = 'text')
+       )
+       UPDATE characters
+       SET class_name = (SELECT class_name FROM valid_input WHERE valid_input.id = characters.id),
+           item_level = (SELECT item_level FROM valid_input WHERE valid_input.id = characters.id),
+           combat_power = (SELECT combat_power FROM valid_input WHERE valid_input.id = characters.id),
+           source = 'lostark',
+           updated_at = CURRENT_TIMESTAMP
+       WHERE characters.user_id = ?1
+         AND characters.enabled = 1
+         AND characters.deleted_at IS NULL
+         AND characters.source <> 'manual'
+         AND characters.id IN (SELECT id FROM valid_input)
+         AND (SELECT COUNT(*) FROM valid_input) = json_array_length(?2)
+         AND (SELECT COUNT(DISTINCT id) FROM valid_input) = json_array_length(?2)
+       RETURNING id`
+    ).bind(userId, profilesJson),
+    env.DB.prepare(
+      // The invalid JSON path is evaluated only on a count mismatch and gives this rollback guard a unique signature.
+      `INSERT INTO characters (
+         id, user_id, name, server_name, class_name, item_level, combat_power,
+         sort_order, enabled, deleted_at, source, updated_at
+       )
+       SELECT '__riceark_character_refresh_exact_set_guard__',
+              ?1,
+              '__riceark_character_refresh_exact_set_guard__',
+              '__riceark_character_refresh_exact_set_guard__',
+              '__riceark_character_refresh_exact_set_guard__',
+              '0',
+              NULL,
+              0,
+              1,
+              NULL,
+              json_extract('[]', ?3),
+              CURRENT_TIMESTAMP
+       WHERE changes() <> json_array_length(?2)
+          OR (SELECT COUNT(*) FROM json_each(?2)) <> json_array_length(?2)
+          OR (
+            SELECT COUNT(DISTINCT json_extract(value, '$.id'))
+            FROM json_each(?2)
+          ) <> json_array_length(?2)
+       RETURNING id`
+    ).bind(userId, profilesJson, CHARACTER_REFRESH_GUARD_CONSTRAINT_PATH)
+  ]);
+
+  const sheetVersions = returnedSheetVersions(versionResult);
+  if (
+    sheetVersions === null ||
+    new Set(sheetVersions.map((sheet) => sheet.id)).size !== sheetVersions.length
+  ) {
+    throw new Error("Character refresh batch returned invalid sheet versions");
+  }
+  const expectedSuccessIds = new Set(successes.map((success) => success.id));
+  returnedExactIdSet(
+    updatedResult,
+    expectedSuccessIds,
+    "Character refresh batch returned invalid character ids"
+  );
+  const guardIds = returnedIds(guardResult);
+  if (guardIds === null || guardIds.length !== 0) {
+    throw new Error("Character refresh batch returned an invalid exact-set guard result");
+  }
+  return sheetVersions;
+}
+
+async function reloadEligibleCharacterRefreshProfiles(
+  env: Env,
+  userId: string,
+  successes: CharacterRefreshProfileSuccess[],
+  results: Array<CharacterRefreshBatchItem | undefined>
+): Promise<CharacterRefreshProfileSuccess[]> {
+  const ids = successes.map((success) => success.id);
+  const loaded = await env.DB.prepare(
+    `WITH input AS (
+       SELECT CAST(key AS INTEGER) AS position,
+              CASE WHEN typeof(value) = 'text' THEN value END AS id
+       FROM json_each(?2)
+     )
+     SELECT input.position,
+            input.id AS requested_id,
+            characters.id
+     FROM input
+     LEFT JOIN characters
+       ON characters.id = input.id
+      AND characters.user_id = ?1
+      AND characters.enabled = 1
+      AND characters.deleted_at IS NULL
+      AND characters.source <> 'manual'
+     ORDER BY input.position`
+  ).bind(userId, JSON.stringify(ids)).all<CharacterRefreshRetryRow>();
+  const rows = loaded.results ?? [];
+  if (
+    rows.length !== successes.length ||
+    rows.some((row, index) => row.position !== index || row.requested_id !== successes[index]?.id)
+  ) {
+    throw new Error("Character refresh retry load did not return every requested id in order");
+  }
+  return successes.filter((success, index) => {
+    if (rows[index]?.id === success.id) return true;
+    results[success.index] = { id: success.id, status: "not_found" };
+    return false;
+  });
 }
 
 export async function saveSelectedCharacters(env: Env, userId: string, selected: CharacterSelection[]): Promise<void> {
@@ -490,11 +707,7 @@ export async function refreshCharactersFromLostArk(
     }
   });
 
-  const successes: Array<{
-    index: number;
-    id: string;
-    profile: ImportedCharacterCandidate;
-  }> = [];
+  const successes: CharacterRefreshProfileSuccess[] = [];
   for (const outcome of profileOutcomes) {
     if ("profile" in outcome) successes.push(outcome);
     else results[outcome.index] = outcome.result;
@@ -503,120 +716,36 @@ export async function refreshCharactersFromLostArk(
     return { results: completeCharacterRefreshResults(results), versions: { sheets: [] } };
   }
 
-  const profilesJson = JSON.stringify(successes.map(({ id, profile }) => ({
-    id,
-    className: profile.className,
-    itemLevel: profile.itemLevel,
-    combatPower: profile.combatPower
-  })));
-  const [versionResult, updatedResult] = await env.DB.batch([
-    env.DB.prepare(
-      `WITH input AS (
-         SELECT json_extract(value, '$.id') AS id,
-                json_extract(value, '$.className') AS class_name,
-                json_extract(value, '$.itemLevel') AS item_level,
-                json_extract(value, '$.combatPower') AS combat_power
-         FROM json_each(?2)
-       ),
-       valid_input AS (
-         SELECT *
-         FROM input
-         WHERE typeof(id) = 'text'
-           AND typeof(class_name) = 'text'
-           AND typeof(item_level) = 'text'
-           AND (combat_power IS NULL OR typeof(combat_power) = 'text')
-       ),
-       changed_characters AS (
-         SELECT characters.id
-         FROM characters
-         JOIN valid_input ON valid_input.id = characters.id
-         WHERE characters.user_id = ?1
-           AND characters.enabled = 1
-           AND characters.deleted_at IS NULL
-           AND (
-             characters.class_name IS NOT valid_input.class_name
-             OR characters.item_level IS NOT valid_input.item_level
-             OR characters.combat_power IS NOT valid_input.combat_power
-             OR characters.source <> 'lostark'
-           )
-       ),
-       affected_sheets AS (
-         SELECT DISTINCT board_tables.sheet_id
-         FROM board_axis_items
-         JOIN board_tables
-           ON board_tables.id = board_axis_items.table_id
-          AND board_tables.user_id = board_axis_items.user_id
-         JOIN changed_characters
-           ON changed_characters.id = board_axis_items.character_id
-         WHERE board_axis_items.user_id = ?1
-           AND board_tables.user_id = ?1
-       )
-       UPDATE sheets
-       SET content_version = content_version + 1,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE sheets.user_id = ?1
-         AND json_array_length(?2) > 0
-         AND (SELECT COUNT(*) FROM valid_input) = json_array_length(?2)
-         AND (SELECT COUNT(DISTINCT id) FROM valid_input) = json_array_length(?2)
-         AND sheets.id IN (SELECT sheet_id FROM affected_sheets)
-       RETURNING id, content_version AS version`
-    ).bind(userId, profilesJson),
-    env.DB.prepare(
-      `WITH input AS (
-         SELECT json_extract(value, '$.id') AS id,
-                json_extract(value, '$.className') AS class_name,
-                json_extract(value, '$.itemLevel') AS item_level,
-                json_extract(value, '$.combatPower') AS combat_power
-         FROM json_each(?2)
-       ),
-       valid_input AS (
-         SELECT *
-         FROM input
-         WHERE typeof(id) = 'text'
-           AND typeof(class_name) = 'text'
-           AND typeof(item_level) = 'text'
-           AND (combat_power IS NULL OR typeof(combat_power) = 'text')
-       )
-       UPDATE characters
-       SET class_name = (SELECT class_name FROM valid_input WHERE valid_input.id = characters.id),
-           item_level = (SELECT item_level FROM valid_input WHERE valid_input.id = characters.id),
-           combat_power = (SELECT combat_power FROM valid_input WHERE valid_input.id = characters.id),
-           source = 'lostark',
-           updated_at = CURRENT_TIMESTAMP
-       WHERE characters.user_id = ?1
-         AND characters.enabled = 1
-         AND characters.deleted_at IS NULL
-         AND characters.id IN (SELECT id FROM valid_input)
-         AND (SELECT COUNT(*) FROM valid_input) = json_array_length(?2)
-         AND (SELECT COUNT(DISTINCT id) FROM valid_input) = json_array_length(?2)
-       RETURNING id`
-    ).bind(userId, profilesJson)
-  ]);
-
-  const sheetVersions = returnedSheetVersions(versionResult);
-  if (
-    sheetVersions === null ||
-    new Set(sheetVersions.map((sheet) => sheet.id)).size !== sheetVersions.length
-  ) {
-    throw new Error("Character refresh batch returned invalid sheet versions");
-  }
-  const expectedSuccessIds = new Set(successes.map((success) => success.id));
-  const updatedIds = returnedUniqueIdSubset(
-    updatedResult,
-    expectedSuccessIds,
-    "Character refresh batch returned invalid character ids"
-  );
-  if (updatedIds.size === 0 && sheetVersions.length > 0) {
-    throw new Error("Character refresh batch returned invalid sheet versions");
-  }
-  for (const success of successes) {
-    results[success.index] = updatedIds.has(success.id)
-      ? {
-          id: success.id,
-          status: "updated",
-          character: { id: success.id, ...success.profile }
+  let pendingSuccesses = successes;
+  let appliedSuccesses: CharacterRefreshProfileSuccess[] = [];
+  let sheetVersions: BoardSheetVersion[] = [];
+  for (let attempt = 0; attempt < CHARACTER_REFRESH_APPLY_MAX_ATTEMPTS && pendingSuccesses.length > 0; attempt += 1) {
+    try {
+      sheetVersions = await applyCharacterRefreshProfiles(env, userId, pendingSuccesses);
+      appliedSuccesses = pendingSuccesses;
+      break;
+    } catch (error) {
+      if (!isCharacterRefreshGuardConstraint(error)) throw error;
+      if (attempt + 1 >= CHARACTER_REFRESH_APPLY_MAX_ATTEMPTS) {
+        for (const success of pendingSuccesses) {
+          results[success.index] = {
+            id: success.id,
+            status: "failed",
+            code: CHARACTER_REFRESH_CONFLICT_CODE
+          };
         }
-      : { id: success.id, status: "not_found" };
+        pendingSuccesses = [];
+        break;
+      }
+      pendingSuccesses = await reloadEligibleCharacterRefreshProfiles(env, userId, pendingSuccesses, results);
+    }
+  }
+  for (const success of appliedSuccesses) {
+    results[success.index] = {
+      id: success.id,
+      status: "updated",
+      character: { id: success.id, ...success.profile }
+    };
   }
 
   return {
