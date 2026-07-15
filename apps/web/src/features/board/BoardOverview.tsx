@@ -180,6 +180,7 @@ interface BoardCharacterRefreshBatchResponse {
 
 export interface TableCharacterRefreshSummary {
   failedCount: number;
+  message?: string | undefined;
   refreshedCount: number;
   totalCount: number;
 }
@@ -287,6 +288,8 @@ type BoardCharacterRefreshPostRequest = (
 ) => Promise<BoardCharacterRefreshBatchResponse>;
 
 export const CHARACTER_REFRESH_BATCH_MAX_COUNT = 40;
+export const CHARACTER_REFRESH_BATCH_LIMIT_MESSAGE =
+  `캐릭터 정보는 한 번에 최대 ${CHARACTER_REFRESH_BATCH_MAX_COUNT}명까지 갱신할 수 있습니다.`;
 
 export function applyBoardCharacterRefreshResultsToAxisItems(
   items: BoardAxisItem[],
@@ -316,7 +319,12 @@ export async function refreshBoardTableCharactersRequest(
   postRequest: BoardCharacterRefreshPostRequest = (path, body) => apiPost<BoardCharacterRefreshBatchResponse>(path, body)
 ): Promise<TableCharacterRefreshSummary> {
   if (characterIds.length > CHARACTER_REFRESH_BATCH_MAX_COUNT) {
-    return { failedCount: characterIds.length, refreshedCount: 0, totalCount: characterIds.length };
+    return {
+      failedCount: characterIds.length,
+      message: CHARACTER_REFRESH_BATCH_LIMIT_MESSAGE,
+      refreshedCount: 0,
+      totalCount: characterIds.length
+    };
   }
   if (characterIds.length === 0) return { failedCount: 0, refreshedCount: 0, totalCount: 0 };
 
@@ -1707,8 +1715,13 @@ export function BoardOverview({
       return { failedCount: 0, refreshedCount: 0, totalCount: 0 };
     }
     if (characterIds.length > CHARACTER_REFRESH_BATCH_MAX_COUNT) {
-      setFormError(`캐릭터 정보는 한 번에 최대 ${CHARACTER_REFRESH_BATCH_MAX_COUNT}명까지 갱신할 수 있습니다.`);
-      return { failedCount: characterIds.length, refreshedCount: 0, totalCount: characterIds.length };
+      setFormError(CHARACTER_REFRESH_BATCH_LIMIT_MESSAGE);
+      return {
+        failedCount: characterIds.length,
+        message: CHARACTER_REFRESH_BATCH_LIMIT_MESSAGE,
+        refreshedCount: 0,
+        totalCount: characterIds.length
+      };
     }
 
     return runMutation(async () => {
@@ -3183,24 +3196,37 @@ export function BoardTableToolModal({
     tool === "characters" ? "캐릭터 추가/가져오기" : tool === "tasks" ? "숙제 추가" : "완료 열 추가";
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [refreshMessageTone, setRefreshMessageTone] = useState<"notice" | "error">("notice");
+  const refreshLimitMessage = (refreshableCharacterCount ?? 0) > CHARACTER_REFRESH_BATCH_MAX_COUNT
+    ? CHARACTER_REFRESH_BATCH_LIMIT_MESSAGE
+    : null;
 
   async function refreshCharacters() {
-    if (!onRefreshCharacters || isRefreshingCharacters || !refreshableCharacterCount) return;
+    if (!onRefreshCharacters || isRefreshingCharacters || !refreshableCharacterCount || refreshLimitMessage) return;
 
     setRefreshMessage(null);
-    const result = await onRefreshCharacters();
-    if (result.totalCount === 0) {
+    try {
+      const result = await onRefreshCharacters();
+      if (result.message) {
+        setRefreshMessageTone("error");
+        setRefreshMessage(result.message);
+        return;
+      }
+      if (result.totalCount === 0) {
+        setRefreshMessageTone("error");
+        setRefreshMessage("갱신할 가져온 캐릭터가 없습니다.");
+        return;
+      }
+      if (result.failedCount > 0) {
+        setRefreshMessageTone("error");
+        setRefreshMessage(`${result.refreshedCount}명 업데이트, ${result.failedCount}명 실패했습니다.`);
+        return;
+      }
+      setRefreshMessageTone("notice");
+      setRefreshMessage(`${result.refreshedCount}명 업데이트 완료`);
+    } catch {
       setRefreshMessageTone("error");
-      setRefreshMessage("갱신할 가져온 캐릭터가 없습니다.");
-      return;
+      setRefreshMessage("캐릭터 정보를 업데이트하지 못했습니다. 잠시 후 다시 시도해주세요.");
     }
-    if (result.failedCount > 0) {
-      setRefreshMessageTone("error");
-      setRefreshMessage(`${result.refreshedCount}명 업데이트, ${result.failedCount}명 실패했습니다.`);
-      return;
-    }
-    setRefreshMessageTone("notice");
-    setRefreshMessage(`${result.refreshedCount}명 업데이트 완료`);
   }
 
   return (
@@ -3224,14 +3250,18 @@ export function BoardTableToolModal({
                 </div>
                 <button
                   className="primary-button"
-                  disabled={isRefreshingCharacters || !refreshableCharacterCount}
+                  disabled={isRefreshingCharacters || !refreshableCharacterCount || Boolean(refreshLimitMessage)}
                   type="button"
                   onClick={() => void refreshCharacters()}
                 >
                   <RefreshCw aria-hidden="true" size={16} />
                   {isRefreshingCharacters ? "업데이트 중" : "업데이트"}
                 </button>
-                {refreshMessage ? <p className={refreshMessageTone === "error" ? "error-text" : "notice-text"}>{refreshMessage}</p> : null}
+                {refreshLimitMessage || refreshMessage ? (
+                  <p className={refreshLimitMessage || refreshMessageTone === "error" ? "error-text" : "notice-text"}>
+                    {refreshLimitMessage ?? refreshMessage}
+                  </p>
+                ) : null}
               </section>
               <CharacterImport tableId={table.id} onSaved={onSaved} runMutation={runMutation} />
             </div>

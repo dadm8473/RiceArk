@@ -40,17 +40,39 @@ function lostArkApiError(response: Response): ApiError {
   );
 }
 
-function normalizeLostArkProfile(value: unknown): ImportedCharacterCandidate {
-  const profile = value && typeof value === "object"
-    ? (value as Partial<LostArkArmoryCharacter>)
-    : {};
+function invalidLostArkProfile(): ApiError {
+  return new ApiError(502, "lostark_profile_invalid", "Lost Ark profile response was invalid");
+}
+
+function requiredProfileText(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) throw invalidLostArkProfile();
+  return value.trim();
+}
+
+function normalizeLostArkProfile(value: unknown): ImportedCharacterCandidate | null {
+  if (value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidLostArkProfile();
+  const profile = value as Partial<LostArkArmoryCharacter>;
+  const itemLevel = normalizeItemLevel(profile.ItemAvgLevel);
+  const numericItemLevel = Number(itemLevel.replaceAll(",", ""));
+  if (!Number.isFinite(numericItemLevel) || numericItemLevel <= 0) throw invalidLostArkProfile();
   return {
-    name: String(profile.CharacterName ?? ""),
-    serverName: String(profile.ServerName ?? ""),
-    className: String(profile.CharacterClassName ?? ""),
-    itemLevel: normalizeItemLevel(profile.ItemAvgLevel),
+    name: requiredProfileText(profile.CharacterName),
+    serverName: requiredProfileText(profile.ServerName),
+    className: requiredProfileText(profile.CharacterClassName),
+    itemLevel,
     combatPower: normalizeCombatPower(profile.CombatPower)
   };
+}
+
+async function readLostArkProfile(response: Response): Promise<ImportedCharacterCandidate | null> {
+  let value: unknown;
+  try {
+    value = await response.json();
+  } catch {
+    throw invalidLostArkProfile();
+  }
+  return normalizeLostArkProfile(value);
 }
 
 export async function mapWithConcurrency<Item, Result>(
@@ -65,14 +87,24 @@ export async function mapWithConcurrency<Item, Result>(
 
   const results = new Array<Result>(items.length);
   let nextIndex = 0;
+  let firstError: unknown;
+  let rejected = false;
   const runWorker = async () => {
-    while (nextIndex < items.length) {
+    while (!rejected && nextIndex < items.length) {
       const index = nextIndex;
       nextIndex += 1;
-      results[index] = await worker(items[index] as Item, index);
+      try {
+        results[index] = await worker(items[index] as Item, index);
+      } catch (error) {
+        if (!rejected) {
+          rejected = true;
+          firstError = error;
+        }
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, runWorker));
+  if (rejected) throw firstError;
   return results;
 }
 
@@ -86,7 +118,7 @@ export async function fetchLostArkCharacterProfile(
   );
   if (response.status === 404) return null;
   if (!response.ok) throw lostArkApiError(response);
-  return normalizeLostArkProfile(await readJsonOrNull(response));
+  return readLostArkProfile(response);
 }
 
 function normalizeCachedImportedCharacter(character: Partial<ImportedCharacterCandidate> | null | undefined): ImportedCharacterCandidate {

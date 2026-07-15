@@ -70,6 +70,7 @@ function profileMock() {
 
 function createBatchResultEnv(batchResults: unknown[]): Env {
   return {
+    LOSTARK_API_KEY: "lostark-key",
     DB: {
       prepare(sql: string) {
         return {
@@ -105,6 +106,7 @@ function createScriptedRefreshEnv(batchResults: unknown[]): Env {
     [{ id: "character-1" }]
   ];
   return {
+    LOSTARK_API_KEY: "lostark-key",
     DB: {
       prepare(sql: string) {
         return {
@@ -198,6 +200,7 @@ function createSqliteEnv(database: DatabaseSync): {
   };
 
   const env = {
+    LOSTARK_API_KEY: "lostark-key",
     DB: {
       prepare(sql: string) {
         const statement = {
@@ -449,6 +452,23 @@ describe("refreshCharactersFromLostArk", () => {
     }
   });
 
+  it("rejects a missing API key before any non-empty refresh work", async () => {
+    const prepare = vi.fn();
+    const env = {
+      LOSTARK_API_KEY: "",
+      DB: { prepare }
+    } as unknown as Env;
+
+    await expect(
+      getRefreshCharactersFromLostArk()(env, "user-1", ["character-1"])
+    ).rejects.toMatchObject({
+      status: 500,
+      code: "lostark_key_missing"
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(profileMock()).not.toHaveBeenCalled();
+  });
+
   it("classifies manual, missing, and cooldown rows without creating attempt or mutation sets", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-02T10:00:00.000Z"));
@@ -506,6 +526,46 @@ describe("refreshCharactersFromLostArk", () => {
     }
   });
 
+  it("does not mutate characters or versions for null and invalid direct profiles", async () => {
+    const database = createCharacterDatabase();
+    try {
+      insertCharacter(database, "unavailable");
+      insertCharacter(database, "invalid");
+      insertProjection(database, "unavailable");
+      database.prepare(
+        "INSERT INTO board_axis_items (id, user_id, table_id, character_id) VALUES (?, ?, ?, ?)"
+      ).run("axis-invalid", "user-1", "table-1", "invalid");
+      const { env, batches } = createSqliteEnv(database);
+      profileMock().mockImplementation(async (_env, name) => {
+        if (name === "name-unavailable") return null;
+        throw new ApiError(502, "lostark_profile_invalid", "sensitive upstream profile detail");
+      });
+
+      await expect(
+        getRefreshCharactersFromLostArk()(env, "user-1", ["unavailable", "invalid"])
+      ).resolves.toEqual({
+        results: [
+          { id: "unavailable", status: "not_available" },
+          { id: "invalid", status: "failed", code: "lostark_profile_invalid" }
+        ],
+        versions: { sheets: [] }
+      });
+      expect(database.prepare(
+        "SELECT id, class_name, item_level, combat_power FROM characters ORDER BY id"
+      ).all()).toEqual([
+        { id: "invalid", class_name: "브레이커", item_level: "1,640.00", combat_power: "2,500.00" },
+        { id: "unavailable", class_name: "브레이커", item_level: "1,640.00", combat_power: "2,500.00" }
+      ]);
+      expect(database.prepare("SELECT content_version FROM sheets ORDER BY id").all()).toEqual([
+        { content_version: 0 },
+        { content_version: 0 }
+      ]);
+      expect(batches).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
   it("refreshes 20 characters in order with at most four active profiles and bounded JSON D1 work", async () => {
     const database = createCharacterDatabase();
     try {
@@ -547,6 +607,138 @@ describe("refreshCharactersFromLostArk", () => {
       expect(statements.filter((statement) => statement.sql.includes("last_refresh_attempt_at"))).toHaveLength(2);
       expect(batches).toHaveLength(1);
       expect(batches[0]).toHaveLength(3);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("atomically grants one cooldown claim to concurrent refresh requests", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-02T10:00:00.000Z"));
+    const database = createCharacterDatabase();
+    try {
+      insertCharacter(database, "character-1");
+      const { env, batches, statements } = createSqliteEnv(database);
+      profileMock().mockResolvedValue(refreshedProfile("character-1"));
+
+      const first = getRefreshCharactersFromLostArk()(env, "user-1", ["character-1"]);
+      const second = getRefreshCharactersFromLostArk()(env, "user-1", ["character-1"]);
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+
+      expect(firstResult).toEqual({
+        results: [{
+          id: "character-1",
+          status: "updated",
+          character: { id: "character-1", ...refreshedProfile("character-1") }
+        }],
+        versions: { sheets: [] }
+      });
+      expect(secondResult).toEqual({
+        results: [{ id: "character-1", status: "rate_limited", retryAfterSeconds: 60 }],
+        versions: { sheets: [] }
+      });
+      expect(profileMock()).toHaveBeenCalledTimes(1);
+      expect(database.prepare("SELECT last_refresh_attempt_at FROM characters WHERE id = ?").get("character-1"))
+        .toEqual({ last_refresh_attempt_at: "2026-06-02T10:00:00.000Z" });
+      expect(statements).toHaveLength(8);
+      expect(statements.every((statement) => statement.values.length < 100)).toBe(true);
+      expect(batches).toHaveLength(1);
+      expect(batches[0]).toHaveLength(3);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("re-reads and classifies every cooldown-claim contention result in order", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-02T10:00:00.000Z"));
+    const database = createCharacterDatabase();
+    try {
+      for (const id of ["manual", "recent", "disabled", "deleted", "conflict"]) insertCharacter(database, id);
+      database.exec(`
+        CREATE TRIGGER contend_manual_refresh
+        BEFORE UPDATE OF last_refresh_attempt_at ON characters
+        WHEN OLD.id = 'manual'
+        BEGIN
+          UPDATE characters SET source = 'manual' WHERE id = OLD.id;
+          SELECT RAISE(IGNORE);
+        END;
+        CREATE TRIGGER contend_recent_refresh
+        BEFORE UPDATE OF last_refresh_attempt_at ON characters
+        WHEN OLD.id = 'recent'
+        BEGIN
+          UPDATE characters SET last_refresh_attempt_at = '2026-06-02T10:00:00.000Z' WHERE id = OLD.id;
+          SELECT RAISE(IGNORE);
+        END;
+        CREATE TRIGGER contend_disabled_refresh
+        BEFORE UPDATE OF last_refresh_attempt_at ON characters
+        WHEN OLD.id = 'disabled'
+        BEGIN
+          UPDATE characters SET enabled = 0 WHERE id = OLD.id;
+          SELECT RAISE(IGNORE);
+        END;
+        CREATE TRIGGER contend_deleted_refresh
+        BEFORE UPDATE OF last_refresh_attempt_at ON characters
+        WHEN OLD.id = 'deleted'
+        BEGIN
+          DELETE FROM characters WHERE id = OLD.id;
+          SELECT RAISE(IGNORE);
+        END;
+        CREATE TRIGGER contend_eligible_refresh
+        BEFORE UPDATE OF last_refresh_attempt_at ON characters
+        WHEN OLD.id = 'conflict'
+        BEGIN
+          SELECT RAISE(IGNORE);
+        END;
+      `);
+      const { env, batches, statements } = createSqliteEnv(database);
+
+      await expect(
+        getRefreshCharactersFromLostArk()(env, "user-1", ["manual", "recent", "disabled", "deleted", "conflict"])
+      ).resolves.toEqual({
+        results: [
+          { id: "manual", status: "manual" },
+          { id: "recent", status: "rate_limited", retryAfterSeconds: 60 },
+          { id: "disabled", status: "not_found" },
+          { id: "deleted", status: "not_found" },
+          { id: "conflict", status: "failed", code: "character_refresh_conflict" }
+        ],
+        versions: { sheets: [] }
+      });
+      expect(profileMock()).not.toHaveBeenCalled();
+      expect(statements).toHaveLength(3);
+      expect(statements.every((statement) => statement.sql.includes("json_each"))).toBe(true);
+      expect(batches).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("treats SQLite timestamps consistently and malformed cooldown timestamps as eligible", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-02T10:00:00.000Z"));
+    const database = createCharacterDatabase();
+    try {
+      for (const id of ["recent", "stale", "malformed"]) insertCharacter(database, id);
+      database.prepare("UPDATE characters SET last_refresh_attempt_at = ? WHERE id = ?")
+        .run("2026-06-02 09:59:30", "recent");
+      database.prepare("UPDATE characters SET last_refresh_attempt_at = ? WHERE id = ?")
+        .run("2026-06-02 09:58:59", "stale");
+      database.prepare("UPDATE characters SET last_refresh_attempt_at = ? WHERE id = ?")
+        .run("not-a-timestamp", "malformed");
+      const { env } = createSqliteEnv(database);
+      profileMock().mockImplementation(async (_env, name) => refreshedProfile(name.replace("name-", "")));
+
+      await expect(
+        getRefreshCharactersFromLostArk()(env, "user-1", ["recent", "stale", "malformed"])
+      ).resolves.toMatchObject({
+        results: [
+          { id: "recent", status: "rate_limited", retryAfterSeconds: 30 },
+          { id: "stale", status: "updated" },
+          { id: "malformed", status: "updated" }
+        ]
+      });
+      expect(profileMock()).toHaveBeenCalledTimes(2);
     } finally {
       database.close();
     }
@@ -615,6 +807,71 @@ describe("refreshCharactersFromLostArk", () => {
         { id: "unavailable", last_refresh_attempt_at: "2026-06-02T10:00:00.000Z" },
         { id: "updated", last_refresh_attempt_at: "2026-06-02T10:00:00.000Z" }
       ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each([
+    ["name", { name: "다른캐릭터" }],
+    ["server", { serverName: "카단" }]
+  ])("rejects a direct profile with a mismatched stored %s", async (_field, identityPatch) => {
+    const database = createCharacterDatabase();
+    try {
+      insertCharacter(database, "character-1");
+      insertProjection(database, "character-1");
+      const { env, batches } = createSqliteEnv(database);
+      profileMock().mockResolvedValue({ ...refreshedProfile("character-1"), ...identityPatch });
+
+      await expect(
+        getRefreshCharactersFromLostArk()(env, "user-1", ["character-1"])
+      ).resolves.toEqual({
+        results: [{
+          id: "character-1",
+          status: "failed",
+          code: "lostark_profile_identity_mismatch"
+        }],
+        versions: { sheets: [] }
+      });
+      expect(database.prepare(
+        "SELECT name, server_name, class_name, item_level, combat_power FROM characters WHERE id = ?"
+      ).get("character-1")).toEqual({
+        name: "name-character-1",
+        server_name: "아만",
+        class_name: "브레이커",
+        item_level: "1,640.00",
+        combat_power: "2,500.00"
+      });
+      expect(database.prepare("SELECT content_version FROM sheets ORDER BY id").all()).toEqual([
+        { content_version: 0 },
+        { content_version: 0 }
+      ]);
+      expect(batches).toEqual([]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each([
+    ["zero seconds", "0"],
+    ["past HTTP date", "Tue, 02 Jun 2026 09:59:59 GMT"]
+  ])("clamps an upstream Retry-After %s to one second", async (_description, retryAfter) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-02T10:00:00.000Z"));
+    const database = createCharacterDatabase();
+    try {
+      insertCharacter(database, "character-1");
+      const { env } = createSqliteEnv(database);
+      profileMock().mockRejectedValue(new ApiError(429, "lostark_api_error", "slow down", {
+        headers: { "Retry-After": retryAfter }
+      }));
+
+      await expect(
+        getRefreshCharactersFromLostArk()(env, "user-1", ["character-1"])
+      ).resolves.toEqual({
+        results: [{ id: "character-1", status: "rate_limited", retryAfterSeconds: 1 }],
+        versions: { sheets: [] }
+      });
     } finally {
       database.close();
     }

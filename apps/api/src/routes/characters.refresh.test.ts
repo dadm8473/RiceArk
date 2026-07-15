@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import app from "../index";
 import * as CharacterDb from "../db/characters";
+import { ApiError } from "../http/errors";
 
 const {
   deleteCharacter,
@@ -218,6 +219,36 @@ describe("versioned character routes", () => {
 
     expect(response.status).toBe(200);
     expect(refreshCharactersMock()).toHaveBeenCalledWith(expect.anything(), "user-1", characterIds);
+  });
+
+  it.each([
+    ["batch", "/api/characters/refresh-batch", { characterIds: ["character-1"] }],
+    ["single", "/api/characters/character-1/refresh", undefined]
+  ] as const)("returns HTTP 500 for a missing API key on the %s refresh route", async (_route, path, body) => {
+    refreshCharactersMock().mockRejectedValue(
+      new ApiError(500, "lostark_key_missing", "Lost Ark API key is not configured")
+    );
+
+    const response = await app.request(
+      path,
+      body === undefined
+        ? { method: "POST" }
+        : {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+          },
+      env
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "lostark_key_missing",
+        message: "Lost Ark API key is not configured"
+      }
+    });
+    expect(refreshCharactersMock()).toHaveBeenCalledTimes(1);
   });
 
   it.each([

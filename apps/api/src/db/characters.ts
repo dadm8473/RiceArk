@@ -71,9 +71,21 @@ interface CharacterRefreshRetryRow {
   id: string | null;
 }
 
-interface CharacterRefreshProfileSuccess {
+interface CharacterRefreshClaimRow extends CharacterRefreshRetryRow {
+  source: string | null;
+  enabled: number | null;
+  deleted_at: string | null;
+  last_refresh_attempt_at: string | null;
+}
+
+interface CharacterRefreshEligibleCandidate {
   index: number;
   id: string;
+  name: string;
+  serverName: string;
+}
+
+interface CharacterRefreshProfileSuccess extends CharacterRefreshEligibleCandidate {
   profile: ImportedCharacterCandidate;
 }
 
@@ -154,11 +166,11 @@ function retryAfterSecondsFrom(error: ApiError): number {
   const retryAfter = error.options.headers?.["Retry-After"];
   if (retryAfter && /^\d+$/.test(retryAfter)) {
     const seconds = Number(retryAfter);
-    if (Number.isSafeInteger(seconds)) return seconds;
+    if (Number.isSafeInteger(seconds)) return Math.max(1, seconds);
   }
   if (retryAfter) {
     const retryAt = Date.parse(retryAfter);
-    if (!Number.isNaN(retryAt)) return Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+    if (!Number.isNaN(retryAt)) return Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
   }
   return CHARACTER_REFRESH_COOLDOWN_MS / 1000;
 }
@@ -202,6 +214,63 @@ function parseStoredTimestamp(value: string | null | undefined): number | null {
   if (!value) return null;
   const parsed = Date.parse(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
   return Number.isNaN(parsed) ? null : parsed;
+}
+
+async function classifyUnclaimedCharacterRefreshes(
+  env: Env,
+  userId: string,
+  candidates: CharacterRefreshEligibleCandidate[],
+  now: number,
+  results: Array<CharacterRefreshBatchItem | undefined>
+): Promise<void> {
+  const ids = candidates.map((candidate) => candidate.id);
+  const loaded = await env.DB.prepare(
+    `WITH input AS (
+       SELECT CAST(key AS INTEGER) AS position,
+              CASE WHEN typeof(value) = 'text' THEN value END AS id
+       FROM json_each(?2)
+     )
+     SELECT input.position,
+            input.id AS requested_id,
+            characters.id,
+            characters.source,
+            characters.enabled,
+            characters.deleted_at,
+            characters.last_refresh_attempt_at
+     FROM input
+     LEFT JOIN characters
+       ON characters.id = input.id
+      AND characters.user_id = ?1
+     ORDER BY input.position`
+  ).bind(userId, JSON.stringify(ids)).all<CharacterRefreshClaimRow>();
+  const rows = loaded.results ?? [];
+  if (
+    rows.length !== candidates.length ||
+    rows.some((row, index) => row.position !== index || row.requested_id !== candidates[index]?.id)
+  ) {
+    throw new Error("Character refresh claim reload did not return every requested id in order");
+  }
+
+  for (const [index, candidate] of candidates.entries()) {
+    const row = rows[index];
+    if (!row?.id || row.enabled !== 1 || row.deleted_at !== null) {
+      results[candidate.index] = { id: candidate.id, status: "not_found" };
+      continue;
+    }
+    if (row.source === "manual") {
+      results[candidate.index] = { id: candidate.id, status: "manual" };
+      continue;
+    }
+    const lastAttempt = parseStoredTimestamp(row.last_refresh_attempt_at);
+    const retryAfterMs = lastAttempt === null ? 0 : CHARACTER_REFRESH_COOLDOWN_MS - (now - lastAttempt);
+    results[candidate.index] = retryAfterMs > 0
+      ? {
+          id: candidate.id,
+          status: "rate_limited",
+          retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000))
+        }
+      : { id: candidate.id, status: "failed", code: CHARACTER_REFRESH_CONFLICT_CODE };
+  }
 }
 
 async function applyCharacterRefreshProfiles(
@@ -586,6 +655,9 @@ export async function refreshCharactersFromLostArk(
   characterIds: string[]
 ): Promise<CharacterRefreshBatchResult> {
   if (characterIds.length === 0) return { results: [], versions: { sheets: [] } };
+  if (!env.LOSTARK_API_KEY) {
+    throw new ApiError(500, "lostark_key_missing", "Lost Ark API key is not configured");
+  }
   if (characterIds.length > CHARACTER_REFRESH_BATCH_MAX_COUNT) {
     throw new RangeError(`Character refresh accepts at most ${CHARACTER_REFRESH_BATCH_MAX_COUNT} ids`);
   }
@@ -628,9 +700,9 @@ export async function refreshCharactersFromLostArk(
 
   const now = Date.now();
   const results: Array<CharacterRefreshBatchItem | undefined> = new Array(characterIds.length);
-  const eligible: Array<{ index: number; id: string; name: string }> = [];
+  const eligible: CharacterRefreshEligibleCandidate[] = [];
   for (const row of rows) {
-    if (!row.id || !row.name) {
+    if (!row.id || !row.name || !row.server_name) {
       results[row.position] = { id: row.requested_id, status: "not_found" };
       continue;
     }
@@ -648,7 +720,7 @@ export async function refreshCharactersFromLostArk(
       };
       continue;
     }
-    eligible.push({ index: row.position, id: row.id, name: row.name });
+    eligible.push({ index: row.position, id: row.id, name: row.name, serverName: row.server_name });
   }
 
   if (eligible.length === 0) {
@@ -657,6 +729,8 @@ export async function refreshCharactersFromLostArk(
 
   const eligibleIds = eligible.map((candidate) => candidate.id);
   const expectedEligibleIds = new Set(eligibleIds);
+  const attemptAt = new Date(now).toISOString();
+  const cutoffAt = new Date(now - CHARACTER_REFRESH_COOLDOWN_MS).toISOString();
   const stamped = await env.DB.prepare(
     `WITH input AS (
        SELECT value AS id
@@ -670,24 +744,39 @@ export async function refreshCharactersFromLostArk(
        AND deleted_at IS NULL
        AND source <> 'manual'
        AND id IN (SELECT id FROM input)
+       AND (
+         last_refresh_attempt_at IS NULL
+         OR julianday(last_refresh_attempt_at) IS NULL
+         OR julianday(last_refresh_attempt_at) <= julianday(?4)
+       )
        AND (SELECT COUNT(DISTINCT id) FROM input) = json_array_length(?2)
      RETURNING id`
-  ).bind(userId, JSON.stringify(eligibleIds), new Date(now).toISOString()).all<{ id: string }>();
+  ).bind(userId, JSON.stringify(eligibleIds), attemptAt, cutoffAt).all<{ id: string }>();
   const stampedIds = returnedUniqueIdSubset(
     stamped,
     expectedEligibleIds,
     "Character refresh attempt stamp returned invalid character ids"
   );
-  const attempted = eligible.filter((candidate) => {
-    if (stampedIds.has(candidate.id)) return true;
-    results[candidate.index] = { id: candidate.id, status: "not_found" };
-    return false;
-  });
+  const attempted = eligible.filter((candidate) => stampedIds.has(candidate.id));
+  const unclaimed = eligible.filter((candidate) => !stampedIds.has(candidate.id));
+  if (unclaimed.length > 0) {
+    await classifyUnclaimedCharacterRefreshes(env, userId, unclaimed, now, results);
+  }
 
   const profileOutcomes = await mapWithConcurrency(attempted, 4, async (candidate) => {
     try {
       const profile = await fetchLostArkCharacterProfile(env, candidate.name);
       if (!profile) return { ...candidate, result: { id: candidate.id, status: "not_available" } as const };
+      if (profile.name !== candidate.name || profile.serverName !== candidate.serverName) {
+        return {
+          ...candidate,
+          result: {
+            id: candidate.id,
+            status: "failed",
+            code: "lostark_profile_identity_mismatch"
+          } as const
+        };
+      }
       return { ...candidate, profile };
     } catch (error) {
       if (error instanceof ApiError && error.status === 429) {
@@ -744,7 +833,14 @@ export async function refreshCharactersFromLostArk(
     results[success.index] = {
       id: success.id,
       status: "updated",
-      character: { id: success.id, ...success.profile }
+      character: {
+        id: success.id,
+        name: success.name,
+        serverName: success.serverName,
+        className: success.profile.className,
+        itemLevel: success.profile.itemLevel,
+        combatPower: success.profile.combatPower
+      }
     };
   }
 

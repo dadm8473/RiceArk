@@ -1056,9 +1056,42 @@ describe("BoardOverview", () => {
 
     await expect(
       getRefreshBoardTableCharactersRequest()(characterIds, applyLocal, postRequest)
-    ).resolves.toEqual({ failedCount: 41, refreshedCount: 0, totalCount: 41 });
+    ).resolves.toEqual({
+      failedCount: 41,
+      refreshedCount: 0,
+      totalCount: 41,
+      message: "캐릭터 정보는 한 번에 최대 40명까지 갱신할 수 있습니다."
+    });
     expect(postRequest).not.toHaveBeenCalled();
     expect(applyLocal).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the 40-character refresh limit directly in the character tool modal", () => {
+    const html = renderToStaticMarkup(
+      createElement(BoardTableToolModal, {
+        isRefreshingCharacters: false,
+        onClose: vi.fn(),
+        onRefreshCharacters: async () => ({ failedCount: 41, refreshedCount: 0, totalCount: 41 }),
+        onSaved: vi.fn(),
+        refreshableCharacterCount: 41,
+        table: board.tables[0]!,
+        tool: "characters"
+      })
+    );
+
+    expect(html).toContain("캐릭터 정보는 한 번에 최대 40명까지 갱신할 수 있습니다.");
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*업데이트[\s\S]*<\/button>/);
+  });
+
+  it("catches modal refresh failures while the table owner clears its pending state", () => {
+    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+
+    expect(source).toMatch(
+      /async function refreshCharacters\(\)[\s\S]{0,700}try \{[\s\S]{0,300}await onRefreshCharacters\(\)[\s\S]{0,700}catch \{[\s\S]{0,300}캐릭터 정보를 업데이트하지 못했습니다/
+    );
+    expect(source).toMatch(
+      /async function handleRefreshTableCharacters[\s\S]{0,1800}finally \{[\s\S]{0,120}setRefreshingCharacterTableId\(null\)/
+    );
   });
 
   it("offers a Lost Ark event table template from the table creation flow", () => {
