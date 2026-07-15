@@ -46,6 +46,26 @@ function createEnv(current: FakeCharacterRow | null) {
   return { env, runs };
 }
 
+function createBatchResultEnv(batchResults: unknown[]): Env {
+  return {
+    DB: {
+      prepare(sql: string) {
+        return {
+          sql,
+          values: [] as unknown[],
+          bind(...values: unknown[]) {
+            this.values = values;
+            return this;
+          }
+        };
+      },
+      async batch() {
+        return batchResults;
+      }
+    }
+  } as unknown as Env;
+}
+
 interface SqliteD1Statement {
   sql: string;
   values: unknown[];
@@ -429,5 +449,44 @@ describe("character projection mutations", () => {
     } finally {
       database.close();
     }
+  });
+});
+
+describe("character mutation batch result validation", () => {
+  it.each([
+    { shape: "missing", versionResults: [] },
+    {
+      shape: "malformed",
+      versionResults: [{ results: [{ id: "sheet-1", version: "4" }] }]
+    }
+  ])("rejects a $shape sheet-version result", async ({ versionResults }) => {
+    const env = createBatchResultEnv([
+      { results: [{ id: "character-1" }] },
+      ...versionResults
+    ]);
+
+    await expect(updateCharacterDisplayName(env, "user-1", "character-1", "레이드")).rejects.toThrow(
+      "Character mutation batch returned malformed version rows"
+    );
+  });
+
+  it("rejects version rows without a matching mutation RETURNING row", async () => {
+    const env = createBatchResultEnv([
+      { results: [] },
+      { results: [{ id: "sheet-1", version: 4 }] }
+    ]);
+
+    await expect(updateCharacterDisplayName(env, "user-1", "character-1", "레이드")).rejects.toThrow(
+      "Character mutation batch returned versions without a character mutation"
+    );
+  });
+
+  it("does not report success for a mismatched mutation RETURNING identity", async () => {
+    const env = createBatchResultEnv([
+      { results: [{ id: "character-2" }] },
+      { results: [] }
+    ]);
+
+    await expect(updateCharacterDisplayName(env, "user-1", "character-1", "레이드")).resolves.toBeNull();
   });
 });
