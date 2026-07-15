@@ -170,19 +170,27 @@ export const boardAxisOrderSchema = z
   });
 
 export const updateBoardAxisItemSchema = z.object({
-  label: safeBoardNameSchema,
+  label: safeBoardNameSchema.optional(),
   taskColor: boardTaskColorSchema.nullable().optional(),
   taskResetType: boardTaskResetTypeSchema.optional(),
   separator: boardAxisSeparatorSchema.nullable().optional(),
-  displaySettings: boardDisplaySettingsSchema.nullable().optional()
-}).strict();
+  displaySettings: boardDisplaySettingsSchema.nullable().optional(),
+  sizePx: boardAxisPrimarySizeSchema.optional(),
+  crossSizePx: boardAxisLabelSizeSchema.optional()
+}).strict().refine((input) => Object.keys(input).length > 0, {
+  message: "At least one axis item field is required"
+});
 
 export const updateBoardTableSettingsSchema = z.object({
   name: safeBoardNameSchema,
   defaultRowHeight: boardDefaultRowHeightSchema,
   defaultColumnWidth: boardDefaultColumnWidthSchema,
+  applyRowSize: z.boolean().default(false),
+  applyColumnSize: z.boolean().default(false),
   locked: z.union([z.literal(0), z.literal(1)]).optional(),
   displaySettings: boardDisplaySettingsSchema.nullable().optional(),
+  characterSeparator: boardAxisSeparatorSchema.nullable().optional(),
+  characterDisplaySettings: boardDisplaySettingsSchema.nullable().optional(),
   eventOptions: z
     .object({
       rewardFilters: z
@@ -620,7 +628,7 @@ boardRoutes.patch(
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
     const taskResetRule = input.taskResetType
-      ? buildTaskDefinition({ name: input.label, scope: "character", resetType: input.taskResetType }).resetRule
+      ? buildTaskDefinition({ name: input.label ?? "", scope: "character", resetType: input.taskResetType }).resetRule
       : undefined;
     const updated = await updateBoardAxisItem(c.env, user.id, id, { ...input, taskResetRule });
     if (!updated) {

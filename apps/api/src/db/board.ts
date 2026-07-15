@@ -291,8 +291,12 @@ export interface UpdateBoardTableSettingsInput {
   name: string;
   defaultRowHeight: number;
   defaultColumnWidth: number;
+  applyRowSize?: boolean | undefined;
+  applyColumnSize?: boolean | undefined;
   locked?: 0 | 1 | undefined;
   displaySettings?: BoardDisplaySettingsInput | null | undefined;
+  characterSeparator?: BoardAxisSeparatorInput | null | undefined;
+  characterDisplaySettings?: BoardDisplaySettingsInput | null | undefined;
   eventOptions?: BoardEventOptionsInput | null | undefined;
 }
 
@@ -327,11 +331,13 @@ export interface BoardAxisItemTransposePlanEntry {
 }
 
 export interface UpdateBoardAxisItemInput {
-  label: string;
+  label?: string | undefined;
   taskColor?: string | null | undefined;
   taskResetRule?: ResetRule | undefined;
   separator?: BoardAxisSeparatorInput | null | undefined;
   displaySettings?: BoardDisplaySettingsInput | null | undefined;
+  sizePx?: number | undefined;
+  crossSizePx?: number | undefined;
 }
 
 export interface BoardAxisSeparatorInput {
@@ -493,6 +499,14 @@ export function canApplyBoardTableSettingsUpdate(
   input: UpdateBoardTableSettingsInput
 ): boolean {
   if (current.locked !== 1) return true;
+  if (
+    input.applyRowSize ||
+    input.applyColumnSize ||
+    input.characterSeparator !== undefined ||
+    input.characterDisplaySettings !== undefined
+  ) {
+    return false;
+  }
 
   const displayOptionsJson = getNextBoardTableDisplayOptionsJson(current, input);
   const eventOptionsJson = getNextBoardTableEventOptionsJson(current, input);
@@ -2074,6 +2088,159 @@ export async function deleteBoardNote(env: Env, userId: string, noteId: string):
   return { ok: true, versions: buildBoardMutationVersions([sheetVersion]) };
 }
 
+function prepareBoardTableSettingsPreconditionAssertion(
+  env: Env,
+  userId: string,
+  tableId: string,
+  expectedLock: 0 | 1
+) {
+  return env.DB.prepare(
+    `INSERT INTO board_cell_completions
+       (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
+     SELECT 'board-table-settings-precondition-guard', NULL, '', '', '', '', 0, CURRENT_TIMESTAMP
+     WHERE NOT EXISTS (
+       SELECT 1
+       FROM board_tables
+       WHERE id = ? AND user_id = ? AND locked = ?
+     )`
+  ).bind(tableId, userId, expectedLock);
+}
+
+function prepareBoardTableSettingsPropagationAssertion(
+  env: Env,
+  userId: string,
+  tableId: string,
+  input: UpdateBoardTableSettingsInput,
+  expectedLock: 0 | 1
+) {
+  return env.DB.prepare(
+    `INSERT INTO board_cell_completions
+       (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
+     SELECT 'board-table-settings-propagation-guard', NULL, '', '', '', '', 0, CURRENT_TIMESTAMP
+     WHERE changes() <> (
+       SELECT COUNT(*)
+       FROM board_axis_items
+       WHERE user_id = ? AND table_id = ? AND visible = 1
+         AND (
+           (? = 1 AND axis = 'row')
+           OR (? = 1 AND axis = 'column')
+           OR ((? = 1 OR ? = 1) AND kind = 'character')
+         )
+         AND EXISTS (
+           SELECT 1
+           FROM board_tables
+           WHERE board_tables.id = board_axis_items.table_id
+             AND board_tables.user_id = board_axis_items.user_id
+             AND board_tables.locked = ?
+         )
+     )`
+  ).bind(
+    userId,
+    tableId,
+    input.applyRowSize ? 1 : 0,
+    input.applyColumnSize ? 1 : 0,
+    input.characterSeparator !== undefined ? 1 : 0,
+    input.characterDisplaySettings !== undefined ? 1 : 0,
+    expectedLock
+  );
+}
+
+function prepareBoardTableSettingsWriteAssertion(env: Env) {
+  return env.DB.prepare(
+    `INSERT INTO board_cell_completions
+       (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
+     SELECT 'board-table-settings-write-guard', NULL, '', '', '', '', 0, CURRENT_TIMESTAMP
+     WHERE changes() <> 1`
+  );
+}
+
+function prepareBoardTableSettingsFinalAssertion(
+  env: Env,
+  userId: string,
+  tableId: string,
+  input: UpdateBoardTableSettingsInput,
+  displayOptionsJson: string | null,
+  eventOptionsJson: string | null,
+  separatorJson: string | null,
+  characterDisplayOptionsJson: string | null,
+  nextLocked: 0 | 1
+) {
+  return env.DB.prepare(
+    `INSERT INTO board_cell_completions
+       (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
+     SELECT 'board-table-settings-final-guard', NULL, '', '', '', '', 0, CURRENT_TIMESTAMP
+     WHERE changes() <> 1 OR NOT EXISTS (
+       SELECT 1
+       FROM board_tables
+       WHERE id = ?
+         AND user_id = ?
+         AND name = ?
+         AND default_row_height = ?
+         AND default_column_width = ?
+         AND display_options_json IS ?
+         AND event_options_json IS ?
+         AND locked = ?
+         AND (
+           ? = 0 OR NOT EXISTS (
+             SELECT 1
+             FROM board_axis_items
+             WHERE user_id = ? AND table_id = ? AND axis = 'row' AND visible = 1
+               AND size_px IS NOT ?
+           )
+         )
+         AND (
+           ? = 0 OR NOT EXISTS (
+             SELECT 1
+             FROM board_axis_items
+             WHERE user_id = ? AND table_id = ? AND axis = 'column' AND visible = 1
+               AND size_px IS NOT ?
+           )
+         )
+         AND (
+           ? = 0 OR NOT EXISTS (
+             SELECT 1
+             FROM board_axis_items
+             WHERE user_id = ? AND table_id = ? AND kind = 'character' AND visible = 1
+               AND separator_json IS NOT ?
+           )
+         )
+         AND (
+           ? = 0 OR NOT EXISTS (
+             SELECT 1
+             FROM board_axis_items
+             WHERE user_id = ? AND table_id = ? AND kind = 'character' AND visible = 1
+               AND display_options_json IS NOT ?
+           )
+         )
+     )`
+  ).bind(
+    tableId,
+    userId,
+    input.name,
+    input.defaultRowHeight,
+    input.defaultColumnWidth,
+    displayOptionsJson,
+    eventOptionsJson,
+    nextLocked,
+    input.applyRowSize ? 1 : 0,
+    userId,
+    tableId,
+    input.defaultRowHeight,
+    input.applyColumnSize ? 1 : 0,
+    userId,
+    tableId,
+    input.defaultColumnWidth,
+    input.characterSeparator !== undefined ? 1 : 0,
+    userId,
+    tableId,
+    separatorJson,
+    input.characterDisplaySettings !== undefined ? 1 : 0,
+    userId,
+    tableId,
+    characterDisplayOptionsJson
+  );
+}
+
 export async function updateBoardTableSettings(
   env: Env,
   userId: string,
@@ -2097,8 +2264,71 @@ export async function updateBoardTableSettings(
     return "locked";
   }
 
-  const [sheetVersionResult, updatedResult] = await env.DB.batch([
-    bumpBoardSheetVersionForTableAtExpectedLock(env, userId, tableId, current.locked === 1 ? 1 : 0),
+  const expectedLock = current.locked === 1 ? 1 : 0;
+  const characterSeparatorJson =
+    input.characterSeparator === undefined || input.characterSeparator === null
+      ? null
+      : JSON.stringify(input.characterSeparator);
+  const characterDisplayOptionsJson = serializeBoardDisplaySettings(input.characterDisplaySettings);
+  const statements: Array<ReturnType<Env["DB"]["prepare"]>> = [];
+  let propagationResultIndex: number | null = null;
+  if (
+    input.applyRowSize ||
+    input.applyColumnSize ||
+    input.characterSeparator !== undefined ||
+    input.characterDisplaySettings !== undefined
+  ) {
+    propagationResultIndex = statements.length;
+    statements.push(
+      env.DB.prepare(
+        `UPDATE board_axis_items
+         SET size_px = CASE
+               WHEN ? = 1 AND axis = 'row' THEN ?
+               WHEN ? = 1 AND axis = 'column' THEN ?
+               ELSE size_px
+             END,
+             separator_json = CASE WHEN ? = 1 AND kind = 'character' THEN ? ELSE separator_json END,
+             display_options_json = CASE WHEN ? = 1 AND kind = 'character' THEN ? ELSE display_options_json END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = ? AND table_id = ? AND visible = 1
+           AND (
+             (? = 1 AND axis = 'row')
+             OR (? = 1 AND axis = 'column')
+             OR ((? = 1 OR ? = 1) AND kind = 'character')
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM board_tables
+             WHERE board_tables.id = board_axis_items.table_id
+               AND board_tables.user_id = board_axis_items.user_id
+               AND board_tables.locked = ?
+           )
+         RETURNING id`
+      ).bind(
+        input.applyRowSize ? 1 : 0,
+        input.defaultRowHeight,
+        input.applyColumnSize ? 1 : 0,
+        input.defaultColumnWidth,
+        input.characterSeparator !== undefined ? 1 : 0,
+        characterSeparatorJson,
+        input.characterDisplaySettings !== undefined ? 1 : 0,
+        characterDisplayOptionsJson,
+        userId,
+        tableId,
+        input.applyRowSize ? 1 : 0,
+        input.applyColumnSize ? 1 : 0,
+        input.characterSeparator !== undefined ? 1 : 0,
+        input.characterDisplaySettings !== undefined ? 1 : 0,
+        expectedLock
+      ),
+      prepareBoardTableSettingsPropagationAssertion(env, userId, tableId, input, expectedLock)
+    );
+  }
+  statements.push(
+    prepareBoardTableSettingsPreconditionAssertion(env, userId, tableId, expectedLock)
+  );
+  const tableUpdateResultIndex = statements.length;
+  statements.push(
     env.DB.prepare(
       `UPDATE board_tables
        SET name = ?,
@@ -2120,11 +2350,41 @@ export async function updateBoardTableSettings(
       tableId,
       userId,
       current.locked
+    ),
+    prepareBoardTableSettingsWriteAssertion(env)
+  );
+  const sheetVersionResultIndex = statements.length;
+  statements.push(
+    bumpBoardSheetVersionForTableAtExpectedLock(env, userId, tableId, nextLocked),
+    prepareBoardTableSettingsFinalAssertion(
+      env,
+      userId,
+      tableId,
+      input,
+      displayOptionsJson,
+      eventOptionsJson,
+      characterSeparatorJson,
+      characterDisplayOptionsJson,
+      nextLocked
     )
-  ]);
-  const updatedId = returnedMutationId(updatedResult, tableId);
-  const sheetVersion = returnedAnySheetVersion(sheetVersionResult);
-  if (!updatedId && !sheetVersion) return "not_found";
+  );
+
+  let results;
+  try {
+    results = await env.DB.batch(statements);
+  } catch (error) {
+    if (isBoardBulkGuardAssertionError(error)) return incompleteBoardMutation();
+    throw error;
+  }
+  if (results.length !== statements.length) return incompleteBoardMutation();
+  if (propagationResultIndex !== null) {
+    const propagationIds = returnedIds(results[propagationResultIndex]);
+    if (propagationIds === null || new Set(propagationIds).size !== propagationIds.length) {
+      return incompleteBoardMutation();
+    }
+  }
+  const updatedId = returnedMutationId(results[tableUpdateResultIndex], tableId);
+  const sheetVersion = returnedAnySheetVersion(results[sheetVersionResultIndex]);
   if (!updatedId || !sheetVersion) return incompleteBoardMutation();
   return { ok: true, versions: buildBoardMutationVersions([sheetVersion]) };
 }
@@ -3116,6 +3376,124 @@ export async function transposeBoardTable(env: Env, userId: string, tableId: str
   return { ok: true, versions: buildBoardMutationVersions([sheetVersion]) };
 }
 
+function prepareBoardAxisItemPreconditionAssertion(env: Env, userId: string, axisItemId: string) {
+  return env.DB.prepare(
+    `INSERT INTO board_cell_completions
+       (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
+     SELECT 'board-axis-item-precondition-guard', NULL, '', '', '', '', 0, CURRENT_TIMESTAMP
+     WHERE NOT EXISTS (
+       SELECT 1
+       FROM board_axis_items
+       JOIN board_tables
+         ON board_tables.id = board_axis_items.table_id
+        AND board_tables.user_id = board_axis_items.user_id
+       WHERE board_axis_items.id = ?
+         AND board_axis_items.user_id = ?
+         AND board_axis_items.visible = 1
+         AND board_tables.locked = 0
+     )`
+  ).bind(axisItemId, userId);
+}
+
+function prepareBoardAxisItemWriteAssertion(env: Env, userId: string) {
+  return env.DB.prepare(
+    `INSERT INTO board_cell_completions
+       (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
+     SELECT 'board-axis-item-write-guard', ?, NULL, '', '', '', 0, CURRENT_TIMESTAMP
+     WHERE changes() <> 1`
+  ).bind(userId);
+}
+
+function prepareBoardAxisItemCrossSizeAssertion(env: Env, userId: string, axisItemId: string) {
+  return env.DB.prepare(
+    `INSERT INTO board_cell_completions
+       (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
+     SELECT 'board-axis-item-cross-size-guard', ?, NULL, '', '', '', 0, CURRENT_TIMESTAMP
+     WHERE changes() <> (
+       SELECT COUNT(*)
+       FROM board_axis_items AS peer
+       JOIN board_axis_items AS target
+         ON target.table_id = peer.table_id
+        AND target.axis = peer.axis
+        AND target.user_id = peer.user_id
+       JOIN board_tables
+         ON board_tables.id = target.table_id
+        AND board_tables.user_id = target.user_id
+       WHERE target.id = ?
+         AND target.user_id = ?
+         AND target.visible = 1
+         AND peer.visible = 1
+         AND board_tables.locked = 0
+     )`
+  ).bind(userId, axisItemId, userId);
+}
+
+function prepareBoardAxisItemFinalAssertion(
+  env: Env,
+  userId: string,
+  axisItemId: string,
+  input: UpdateBoardAxisItemInput,
+  separatorJson: string | null,
+  displayOptionsJson: string | null
+) {
+  const taskResetRuleJson = input.taskResetRule === undefined ? null : JSON.stringify(input.taskResetRule);
+  return env.DB.prepare(
+    `INSERT INTO board_cell_completions
+       (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
+     SELECT 'board-axis-item-final-guard', ?, NULL, '', '', '', 0, CURRENT_TIMESTAMP
+     WHERE changes() <> 1 OR NOT EXISTS (
+       SELECT 1
+       FROM board_axis_items AS target
+       JOIN board_tables
+         ON board_tables.id = target.table_id
+        AND board_tables.user_id = target.user_id
+       WHERE target.id = ?
+         AND target.user_id = ?
+         AND target.visible = 1
+         AND board_tables.locked = 0
+         AND (? = 0 OR target.label = ?)
+         AND (? = 0 OR target.kind <> 'task' OR target.task_color IS ?)
+         AND (? = 0 OR target.kind <> 'task' OR target.task_reset_type IS ?)
+         AND (? = 0 OR target.kind <> 'task' OR target.task_reset_rule_json IS ?)
+         AND (? = 0 OR target.separator_json IS ?)
+         AND (? = 0 OR target.display_options_json IS ?)
+         AND (? = 0 OR target.size_px IS ?)
+         AND (
+           ? = 0 OR NOT EXISTS (
+             SELECT 1
+             FROM board_axis_items AS peer
+             WHERE peer.user_id = ?
+               AND peer.table_id = target.table_id
+               AND peer.axis = target.axis
+               AND peer.visible = 1
+               AND peer.cross_size_px IS NOT ?
+           )
+         )
+     )`
+  ).bind(
+    userId,
+    axisItemId,
+    userId,
+    input.label !== undefined ? 1 : 0,
+    input.label ?? null,
+    input.taskColor !== undefined ? 1 : 0,
+    input.taskColor ?? null,
+    input.taskResetRule !== undefined ? 1 : 0,
+    input.taskResetRule?.type ?? null,
+    input.taskResetRule !== undefined ? 1 : 0,
+    taskResetRuleJson,
+    input.separator !== undefined ? 1 : 0,
+    separatorJson,
+    input.displaySettings !== undefined ? 1 : 0,
+    displayOptionsJson,
+    input.sizePx !== undefined ? 1 : 0,
+    input.sizePx ?? null,
+    input.crossSizePx !== undefined ? 1 : 0,
+    userId,
+    input.crossSizePx ?? null
+  );
+}
+
 export async function updateBoardAxisItem(
   env: Env,
   userId: string,
@@ -3127,16 +3505,17 @@ export async function updateBoardAxisItem(
     input.displaySettings === undefined || input.displaySettings === null
       ? null
       : serializeBoardDisplaySettings(input.displaySettings);
-  const [sheetVersionResult, updatedResult] = await env.DB.batch([
-    bumpBoardSheetVersionForAxisItem(env, userId, axisItemId),
+  const statements: Array<ReturnType<Env["DB"]["prepare"]>> = [
+    prepareBoardAxisItemPreconditionAssertion(env, userId, axisItemId),
     env.DB.prepare(
       `UPDATE board_axis_items
-       SET label = ?,
+       SET label = CASE WHEN ? = 1 THEN ? ELSE label END,
            task_color = CASE WHEN ? = 1 AND kind = 'task' THEN ? ELSE task_color END,
            task_reset_type = CASE WHEN ? = 1 AND kind = 'task' THEN ? ELSE task_reset_type END,
            task_reset_rule_json = CASE WHEN ? = 1 AND kind = 'task' THEN ? ELSE task_reset_rule_json END,
            separator_json = CASE WHEN ? = 1 THEN ? ELSE separator_json END,
            display_options_json = CASE WHEN ? = 1 THEN ? ELSE display_options_json END,
+           size_px = CASE WHEN ? = 1 THEN ? ELSE size_px END,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ? AND user_id = ? AND visible = 1
          AND EXISTS (
@@ -3148,7 +3527,8 @@ export async function updateBoardAxisItem(
          )
        RETURNING id`
     ).bind(
-      input.label,
+      input.label !== undefined ? 1 : 0,
+      input.label ?? null,
       input.taskColor !== undefined ? 1 : 0,
       input.taskColor ?? null,
       input.taskResetRule !== undefined ? 1 : 0,
@@ -3159,13 +3539,65 @@ export async function updateBoardAxisItem(
       separatorJson,
       input.displaySettings !== undefined ? 1 : 0,
       displayOptionsJson,
+      input.sizePx !== undefined ? 1 : 0,
+      input.sizePx ?? null,
       axisItemId,
       userId
-    )
-  ]);
-  const sheetVersion = returnedAnySheetVersion(sheetVersionResult);
-  const updatedId = returnedMutationId(updatedResult, axisItemId);
-  if (!sheetVersion && !updatedId) return null;
+    ),
+    prepareBoardAxisItemWriteAssertion(env, userId)
+  ];
+  let crossSizeResultIndex: number | null = null;
+  if (input.crossSizePx !== undefined) {
+    crossSizeResultIndex = statements.length;
+    statements.push(
+      env.DB.prepare(
+        `UPDATE board_axis_items
+         SET cross_size_px = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE board_axis_items.user_id = ?
+           AND board_axis_items.visible = 1
+           AND EXISTS (
+             SELECT 1
+             FROM board_axis_items AS target
+             JOIN board_tables
+               ON board_tables.id = target.table_id
+              AND board_tables.user_id = target.user_id
+             WHERE target.id = ?
+               AND target.user_id = ?
+               AND target.visible = 1
+               AND target.table_id = board_axis_items.table_id
+               AND target.axis = board_axis_items.axis
+               AND board_tables.locked = 0
+           )
+         RETURNING id`
+      ).bind(input.crossSizePx, userId, axisItemId, userId),
+      prepareBoardAxisItemCrossSizeAssertion(env, userId, axisItemId)
+    );
+  }
+  const sheetVersionResultIndex = statements.length;
+  statements.push(
+    bumpBoardSheetVersionForAxisItem(env, userId, axisItemId),
+    prepareBoardAxisItemFinalAssertion(env, userId, axisItemId, input, separatorJson, displayOptionsJson)
+  );
+
+  let results;
+  try {
+    results = await env.DB.batch(statements);
+  } catch (error) {
+    if (isBoardBulkGuardAssertionError(error)) return null;
+    if (isBoardAxisItemFinalAssertionError(error)) return incompleteBoardMutation();
+    throw error;
+  }
+  if (results.length !== statements.length) return incompleteBoardMutation();
+  const updatedId = returnedMutationId(results[1], axisItemId);
+  const crossSizeIds = crossSizeResultIndex === null ? [] : returnedIds(results[crossSizeResultIndex]);
+  const sheetVersion = returnedAnySheetVersion(results[sheetVersionResultIndex]);
+  if (!sheetVersion && !updatedId && crossSizeIds?.length === 0) return null;
+  if (
+    input.crossSizePx !== undefined &&
+    (!crossSizeIds || new Set(crossSizeIds).size !== crossSizeIds.length || !crossSizeIds.includes(axisItemId))
+  ) {
+    return incompleteBoardMutation();
+  }
   if (!sheetVersion || !updatedId) return incompleteBoardMutation();
   return { ok: true, versions: buildBoardMutationVersions([sheetVersion]) };
 }
@@ -3456,6 +3888,10 @@ function hasExactSheetVersions(actual: BoardSheetVersion[] | null, expectedIds: 
 
 function isBoardBulkGuardAssertionError(error: unknown): boolean {
   return /NOT NULL constraint failed:\s*board_cell_completions\.user_id/i.test(String(error));
+}
+
+function isBoardAxisItemFinalAssertionError(error: unknown): boolean {
+  return /NOT NULL constraint failed:\s*board_cell_completions\.table_id/i.test(String(error));
 }
 
 function unique(values: string[]): string[] {

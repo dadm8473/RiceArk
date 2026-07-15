@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as BoardOverviewModule from "./BoardOverview";
 import {
   applyBoardTableSettingsToAxisItems,
   applyBoardAxisItemSaveToAxisItems,
@@ -51,6 +52,61 @@ function deferred<T>() {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+type BoardTableSettingsRequestInput = {
+  name: string;
+  defaultRowHeight: number;
+  defaultColumnWidth: number;
+  displaySettings: BoardPayload["settings"] | null;
+  eventOptions?: { rewardFilters: Array<"gold" | "card" | "coin" | "silver" | "cardXp"> } | null | undefined;
+  applyRowSize: boolean;
+  applyColumnSize: boolean;
+  locked: 0 | 1;
+  characterSeparator?: { widthPx: number; style: "solid" | "dashed" | "dotted"; color: string } | null | undefined;
+  characterDisplaySettings?: BoardPayload["settings"] | null | undefined;
+};
+
+type BoardAxisItemRequestInput = {
+  label: string;
+  taskColor?: string | null | undefined;
+  taskResetType?: "daily" | "weekly" | "biweekly" | "none" | undefined;
+  taskResetRuleJson?: string | undefined;
+  separator?: { widthPx: number; style: "solid" | "dashed" | "dotted"; color: string } | null | undefined;
+  sizePx?: number | null | undefined;
+  crossSizePx?: number | null | undefined;
+  displaySettings?: BoardPayload["settings"] | null | undefined;
+  shouldUpdateDetails: boolean;
+};
+
+type SaveBoardTableSettingsRequest = (
+  tableId: string,
+  input: BoardTableSettingsRequestInput,
+  applyLocal: () => void
+) => Promise<void>;
+
+type SaveBoardAxisItemRequest = (
+  axisItemId: string,
+  input: BoardAxisItemRequestInput,
+  applyLocal: () => void
+) => Promise<void>;
+
+function getSaveBoardTableSettingsRequest(): SaveBoardTableSettingsRequest {
+  const candidate = (BoardOverviewModule as unknown as {
+    saveBoardTableSettingsRequest?: SaveBoardTableSettingsRequest;
+  }).saveBoardTableSettingsRequest;
+  expect(candidate).toBeTypeOf("function");
+  if (!candidate) throw new Error("saveBoardTableSettingsRequest is unavailable");
+  return candidate;
+}
+
+function getSaveBoardAxisItemRequest(): SaveBoardAxisItemRequest {
+  const candidate = (BoardOverviewModule as unknown as {
+    saveBoardAxisItemRequest?: SaveBoardAxisItemRequest;
+  }).saveBoardAxisItemRequest;
+  expect(candidate).toBeTypeOf("function");
+  if (!candidate) throw new Error("saveBoardAxisItemRequest is unavailable");
+  return candidate;
 }
 
 const board: BoardPayload = {
@@ -125,6 +181,7 @@ const board: BoardPayload = {
 describe("BoardOverview", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("admits character metadata and axis detail save as one operation", async () => {
@@ -180,6 +237,212 @@ describe("BoardOverview", () => {
 
     expect(admission).toHaveBeenCalledTimes(1);
     expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves 97-item table settings with one HTTP request and applies local state after success", async () => {
+    const saveBoardTableSettingsRequest = getSaveBoardTableSettingsRequest();
+    const response = deferred<Response>();
+    const fetchMock = vi.fn(() => response.promise);
+    vi.stubGlobal("fetch", fetchMock);
+    const axisItems: BoardAxisItem[] = Array.from({ length: 97 }, (_, index) => {
+      const row = index % 2 === 0;
+      return {
+        ...(row ? board.axisItems[0]! : board.axisItems[1]!),
+        id: `table-axis-${index}`,
+        axis: row ? "row" : "column",
+        kind: row ? "task" : "character",
+        sort_order: index * 10,
+        size_px: null,
+        separator_json: null,
+        display_options_json: null,
+        visible: 1
+      };
+    });
+    const displaySettings: BoardPayload["settings"] = {
+      show_display_name: 1,
+      show_server_name: 1,
+      show_class_name: 1,
+      show_item_level: 1,
+      show_combat_power: 1
+    };
+    const input: BoardTableSettingsRequestInput = {
+      name: "Weekly",
+      defaultRowHeight: 52,
+      defaultColumnWidth: 148,
+      displaySettings,
+      eventOptions: { rewardFilters: ["gold", "card"] },
+      applyRowSize: true,
+      applyColumnSize: true,
+      locked: 0,
+      characterSeparator: { widthPx: 4, style: "dashed", color: "#334455" },
+      characterDisplaySettings: displaySettings
+    };
+    let localAxisItems = axisItems;
+
+    const pending = saveBoardTableSettingsRequest("table-1", input, () => {
+      localAxisItems = applyBoardTableSettingsToAxisItems(localAxisItems, "table-1", {
+        defaultRowHeight: input.defaultRowHeight,
+        defaultColumnWidth: input.defaultColumnWidth,
+        displaySettings: input.characterDisplaySettings,
+        applyRowSize: input.applyRowSize,
+        applyColumnSize: input.applyColumnSize,
+        characterSeparator: input.characterSeparator
+      });
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(localAxisItems).toBe(axisItems);
+    const [path, request] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(path).toBe("/api/board/tables/table-1");
+    expect(request.method).toBe("PATCH");
+    expect(JSON.parse(String(request.body))).toEqual(input);
+
+    response.resolve(new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    }));
+    await pending;
+
+    expect(localAxisItems).not.toBe(axisItems);
+    expect(localAxisItems).toHaveLength(97);
+    expect(localAxisItems.filter((item) => item.axis === "row").every((item) => item.size_px === 52)).toBe(true);
+    expect(localAxisItems.filter((item) => item.axis === "column").every((item) => item.size_px === 148)).toBe(true);
+    expect(localAxisItems.filter((item) => item.kind === "character").every((item) =>
+      item.separator_json === JSON.stringify(input.characterSeparator) &&
+      item.display_options_json === JSON.stringify(displaySettings)
+    )).toBe(true);
+  });
+
+  it("keeps table settings local state unchanged when the single request fails", async () => {
+    const saveBoardTableSettingsRequest = getSaveBoardTableSettingsRequest();
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      error: { code: "request_failed", message: "failed" }
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const applyLocal = vi.fn();
+
+    await expect(saveBoardTableSettingsRequest("table-1", {
+      name: "Weekly",
+      defaultRowHeight: 52,
+      defaultColumnWidth: 148,
+      displaySettings: null,
+      applyRowSize: true,
+      applyColumnSize: true,
+      locked: 0,
+      characterSeparator: null,
+      characterDisplaySettings: null
+    }, applyLocal)).rejects.toThrow("failed");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(applyLocal).not.toHaveBeenCalled();
+  });
+
+  it("saves axis details and 97-item cross sizing with one HTTP request", async () => {
+    const saveBoardAxisItemRequest = getSaveBoardAxisItemRequest();
+    const response = deferred<Response>();
+    const fetchMock = vi.fn(() => response.promise);
+    vi.stubGlobal("fetch", fetchMock);
+    const axisItems: BoardAxisItem[] = Array.from({ length: 97 }, (_, index) => ({
+      ...board.axisItems[0]!,
+      id: `row-peer-${index}`,
+      table_id: "table-1",
+      axis: "row",
+      kind: "task",
+      label: `Peer ${index}`,
+      sort_order: index * 10,
+      size_px: null,
+      cross_size_px: null,
+      visible: 1
+    }));
+    const input: BoardAxisItemRequestInput = {
+      label: "Updated",
+      taskColor: "#334455",
+      taskResetType: "weekly",
+      taskResetRuleJson: '{"type":"weekly","weekday":3,"hour":6,"timezone":"Asia/Seoul"}',
+      separator: { widthPx: 3, style: "solid", color: "#112233" },
+      sizePx: 44,
+      crossSizePx: 96,
+      displaySettings: board.settings,
+      shouldUpdateDetails: true
+    };
+    let localAxisItems = axisItems;
+
+    const pending = saveBoardAxisItemRequest("row-peer-0", input, () => {
+      localAxisItems = applyBoardAxisItemSaveToAxisItems(localAxisItems, {
+        axisItemId: "row-peer-0",
+        ...input
+      });
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(localAxisItems).toBe(axisItems);
+    const [path, request] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(path).toBe("/api/board/axis-items/row-peer-0");
+    expect(JSON.parse(String(request.body))).toEqual({
+      label: "Updated",
+      taskColor: "#334455",
+      taskResetType: "weekly",
+      separator: { widthPx: 3, style: "solid", color: "#112233" },
+      sizePx: 44,
+      crossSizePx: 96,
+      displaySettings: board.settings
+    });
+
+    response.resolve(new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    }));
+    await pending;
+
+    expect(localAxisItems).toHaveLength(97);
+    expect(localAxisItems.every((item) => item.cross_size_px === 96)).toBe(true);
+    expect(localAxisItems[0]).toMatchObject({ label: "Updated", size_px: 44, task_color: "#334455" });
+    expect(localAxisItems[1]?.size_px).toBeNull();
+  });
+
+  it("sends only sizes when axis details should not be updated", async () => {
+    const saveBoardAxisItemRequest = getSaveBoardAxisItemRequest();
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const axisItems: BoardAxisItem[] = [
+      { ...board.axisItems[0]!, id: "row-1", label: "Original", task_color: "#112233", size_px: 40, cross_size_px: 80 },
+      { ...board.axisItems[0]!, id: "row-2", label: "Peer", size_px: 40, cross_size_px: 80, sort_order: 10 }
+    ];
+    const input: BoardAxisItemRequestInput = {
+      label: "Must not be sent",
+      taskColor: "#abcdef",
+      taskResetType: "weekly",
+      separator: null,
+      sizePx: 48,
+      crossSizePx: 120,
+      displaySettings: board.settings,
+      shouldUpdateDetails: false
+    };
+    let localAxisItems = axisItems;
+
+    await saveBoardAxisItemRequest("row-1", input, () => {
+      localAxisItems = applyBoardAxisItemSaveToAxisItems(localAxisItems, {
+        axisItemId: "row-1",
+        ...input
+      });
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, request] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(request.body))).toEqual({ sizePx: 48, crossSizePx: 120 });
+    expect(localAxisItems[0]).toMatchObject({
+      label: "Original",
+      task_color: "#112233",
+      size_px: 48,
+      cross_size_px: 120
+    });
+    expect(localAxisItems[1]).toMatchObject({ label: "Peer", size_px: 40, cross_size_px: 120 });
   });
 
   it("caches note input values before updating note state", () => {
@@ -622,7 +885,6 @@ describe("BoardOverview", () => {
     expect(source).toContain("board-schedule-island-list");
     expect(source).toContain("board-schedule-interest");
     expect(source).toContain('row.label === "모험섬" && eventOptions.rewardFilters.length === 0');
-    expect(source).toContain("eventOptions: input.eventOptions");
     expect(source).toContain("eventOptions.rewardFilters");
     expect(source).toContain("rewardFilters={rewardFilters}");
     expect(source).toContain('className="board-table-menu-wrap"');

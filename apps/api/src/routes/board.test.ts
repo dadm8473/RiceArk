@@ -451,8 +451,15 @@ describe("board route schemas", () => {
   });
 
   it("validates board table settings strictly", () => {
+    const displaySettings = {
+      show_display_name: 1 as const,
+      show_server_name: 0 as const,
+      show_class_name: 0 as const,
+      show_item_level: 1 as const,
+      show_combat_power: 0 as const
+    };
     expect(
-      updateBoardTableSettingsSchema.safeParse({
+      updateBoardTableSettingsSchema.parse({
         name: "숙제",
         defaultRowHeight: 40,
         defaultColumnWidth: 132,
@@ -460,15 +467,37 @@ describe("board route schemas", () => {
         eventOptions: {
           rewardFilters: []
         },
-        displaySettings: {
-          show_display_name: 1,
-          show_server_name: 0,
-          show_class_name: 0,
-          show_item_level: 1,
-          show_combat_power: 0
-        }
-      }).success
-    ).toBe(true);
+        displaySettings,
+        characterDisplaySettings: displaySettings,
+        characterSeparator: { widthPx: 3, style: "dashed", color: "#3344AA" },
+        applyRowSize: true,
+        applyColumnSize: true
+      })
+    ).toEqual({
+      name: "숙제",
+      defaultRowHeight: 40,
+      defaultColumnWidth: 132,
+      locked: 1,
+      eventOptions: { rewardFilters: [] },
+      displaySettings,
+      characterDisplaySettings: displaySettings,
+      characterSeparator: { widthPx: 3, style: "dashed", color: "#3344aa" },
+      applyRowSize: true,
+      applyColumnSize: true
+    });
+    expect(
+      updateBoardTableSettingsSchema.parse({
+        name: "숙제",
+        defaultRowHeight: 40,
+        defaultColumnWidth: 132
+      })
+    ).toEqual({
+      name: "숙제",
+      defaultRowHeight: 40,
+      defaultColumnWidth: 132,
+      applyRowSize: false,
+      applyColumnSize: false
+    });
     expect(
       updateBoardTableSettingsSchema.safeParse({
         name: "숙제",
@@ -482,7 +511,9 @@ describe("board route schemas", () => {
         name: "숙제",
         defaultRowHeight: 40,
         defaultColumnWidth: 132,
-        applyRowSize: true
+        characterSeparator: null,
+        characterDisplaySettings: null,
+        unknown: true
       }).success
     ).toBe(false);
     expect(
@@ -524,6 +555,10 @@ describe("board route schemas", () => {
   it("accepts normalized board axis item labels for updates", () => {
     expect(updateBoardAxisItemSchema.parse({ label: "  카제로스  " })).toEqual({ label: "카제로스" });
     expect(updateBoardAxisItemSchema.parse({ label: "카제로스🙂" })).toEqual({ label: "카제로스🙂" });
+    expect(updateBoardAxisItemSchema.parse({ sizePx: 44, crossSizePx: 96 })).toEqual({ sizePx: 44, crossSizePx: 96 });
+    expect(updateBoardAxisItemSchema.safeParse({}).success).toBe(false);
+    expect(updateBoardAxisItemSchema.safeParse({ sizePx: 15 }).success).toBe(false);
+    expect(updateBoardAxisItemSchema.safeParse({ crossSizePx: 0 }).success).toBe(false);
   });
 
   it("accepts normalized task colors for board axis item updates", () => {
@@ -583,6 +618,7 @@ describe("board route schemas", () => {
       }).success
     ).toBe(false);
     expect(updateBoardAxisItemSchema.safeParse({ label: "카제로스", unknown: true }).success).toBe(false);
+    expect(updateBoardAxisItemSchema.safeParse({ sizePx: 44, unknown: true }).success).toBe(false);
   });
 
   it("rejects unsafe table-scoped character imports", () => {
@@ -907,6 +943,108 @@ describe("board mutation routes", () => {
 
     return { env, batches, prepared };
   }
+
+  it("collapses table settings propagation into one bounded route mutation", async () => {
+    const { env, batches, prepared } = createRemainingMutationRouteEnv();
+    const characterDisplaySettings = {
+      show_display_name: 1,
+      show_server_name: 1,
+      show_class_name: 0,
+      show_item_level: 1,
+      show_combat_power: 0
+    };
+    const response = await app.request(
+      "/api/board/tables/table-1",
+      {
+        method: "PATCH",
+        headers: {
+          Cookie: "riceark_session=test-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          name: "Table",
+          defaultRowHeight: 52,
+          defaultColumnWidth: 148,
+          locked: 0,
+          displaySettings: characterDisplaySettings,
+          applyRowSize: true,
+          applyColumnSize: true,
+          characterSeparator: { widthPx: 4, style: "dashed", color: "#334455" },
+          characterDisplaySettings
+        })
+      },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      versions: { sheets: [{ id: "sheet-1", version: 4 }] }
+    });
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(7);
+    expect(prepared.length).toBeLessThanOrEqual(10);
+    expect(batches[0]?.filter((statement) => statement.sql.includes("UPDATE sheets"))).toHaveLength(1);
+    expect(batches[0]?.filter((statement) => statement.sql.includes("UPDATE board_axis_items"))).toHaveLength(1);
+  });
+
+  it("collapses axis details, primary size, and cross-size propagation into one bounded route mutation", async () => {
+    const { env, batches, prepared } = createRemainingMutationRouteEnv();
+    const response = await app.request(
+      "/api/board/axis-items/axis-1",
+      {
+        method: "PATCH",
+        headers: {
+          Cookie: "riceark_session=test-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          label: "바뀐 행",
+          taskColor: "#334455",
+          taskResetType: "weekly",
+          sizePx: 44,
+          crossSizePx: 96
+        })
+      },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      versions: { sheets: [{ id: "sheet-1", version: 4 }] }
+    });
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(7);
+    expect(prepared.length).toBeLessThanOrEqual(10);
+    expect(batches[0]?.filter((statement) => statement.sql.includes("UPDATE sheets"))).toHaveLength(1);
+    expect(batches[0]?.filter((statement) => statement.sql.includes("UPDATE board_axis_items"))).toHaveLength(2);
+  });
+
+  it("unlocks a table through the compatible settings payload without propagating axes", async () => {
+    const { env, batches } = createRemainingMutationRouteEnv({ lockedTable: true });
+    const response = await app.request(
+      "/api/board/tables/table-1",
+      {
+        method: "PATCH",
+        headers: {
+          Cookie: "riceark_session=test-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          name: "Table",
+          defaultRowHeight: 40,
+          defaultColumnWidth: 132,
+          locked: 0
+        })
+      },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]?.some((statement) => statement.sql.includes("UPDATE board_axis_items"))).toBe(false);
+  });
 
   it.each([
     {

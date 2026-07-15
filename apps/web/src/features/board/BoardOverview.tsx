@@ -238,6 +238,66 @@ interface BoardEventOptions {
   rewardFilters: LostArkEventRewardFilter[];
 }
 
+export interface BoardTableSettingsSaveInput {
+  name: string;
+  defaultRowHeight: number;
+  defaultColumnWidth: number;
+  displaySettings: BoardDisplaySettings | null;
+  eventOptions?: BoardEventOptions | null | undefined;
+  applyRowSize: boolean;
+  applyColumnSize: boolean;
+  locked: 0 | 1;
+  characterSeparator?: BoardAxisSeparator | null | undefined;
+  characterDisplaySettings?: BoardDisplaySettings | null | undefined;
+}
+
+export interface BoardAxisItemSaveInput {
+  label: string;
+  taskColor?: string | null | undefined;
+  taskResetType?: BoardTaskResetType | undefined;
+  taskResetRuleJson?: string | undefined;
+  separator?: BoardAxisSeparator | null | undefined;
+  sizePx?: number | null | undefined;
+  crossSizePx?: number | null | undefined;
+  displaySettings?: BoardDisplaySettings | null | undefined;
+  shouldUpdateDetails: boolean;
+}
+
+type BoardPatchRequest = (path: string, body: unknown) => Promise<unknown>;
+
+export async function saveBoardTableSettingsRequest(
+  tableId: string,
+  input: BoardTableSettingsSaveInput,
+  applyLocal: () => void,
+  patchRequest: BoardPatchRequest = apiPatch
+): Promise<void> {
+  await patchRequest("/api/board/tables/" + encodeURIComponent(tableId), input);
+  applyLocal();
+}
+
+export async function saveBoardAxisItemRequest(
+  axisItemId: string,
+  input: BoardAxisItemSaveInput,
+  applyLocal: () => void,
+  patchRequest: BoardPatchRequest = apiPatch
+): Promise<void> {
+  const body = {
+    ...(input.shouldUpdateDetails
+      ? {
+          label: input.label,
+          ...(input.taskColor !== undefined ? { taskColor: input.taskColor } : {}),
+          ...(input.taskResetType !== undefined ? { taskResetType: input.taskResetType } : {}),
+          ...(input.separator !== undefined ? { separator: input.separator } : {}),
+          ...(input.displaySettings !== undefined ? { displaySettings: input.displaySettings } : {})
+        }
+      : {}),
+    ...(input.sizePx !== undefined && input.sizePx !== null ? { sizePx: input.sizePx } : {}),
+    ...(input.crossSizePx !== undefined && input.crossSizePx !== null ? { crossSizePx: input.crossSizePx } : {})
+  };
+  await patchRequest("/api/board/axis-items/" + encodeURIComponent(axisItemId), body);
+  applyLocal();
+}
+
 interface LostArkSimpleEventSummary {
   available: boolean;
   detail: string | null;
@@ -1496,52 +1556,34 @@ export function BoardOverview({
     displaySettings?: BoardDisplaySettings | null,
     shouldUpdateDetails = true
   ) {
-    if (shouldUpdateDetails) {
-      await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId), {
-        label,
-        taskColor,
-        taskResetType,
-        separator,
-        displaySettings
-      });
-    }
-    const sizePatch = {
-      ...(sizePx !== undefined && sizePx !== null ? { sizePx } : {}),
-      ...(crossSizePx !== undefined && crossSizePx !== null ? { crossSizePx } : {})
+    const input: BoardAxisItemSaveInput = {
+      label,
+      taskColor,
+      taskResetType,
+      taskResetRuleJson,
+      separator,
+      sizePx,
+      crossSizePx,
+      displaySettings,
+      shouldUpdateDetails
     };
-    const editedItem = axisItems.find((item) => item.id === axisItemId);
-    const sizePatches = new Map<string, typeof sizePatch>();
-    if (Object.keys(sizePatch).length > 0) {
-      sizePatches.set(axisItemId, sizePatch);
-    }
-    if (crossSizePx !== undefined && crossSizePx !== null && editedItem) {
-      for (const item of axisItems) {
-        if (item.table_id !== editedItem.table_id || item.axis !== editedItem.axis || item.visible !== 1) continue;
-        sizePatches.set(item.id, { ...(sizePatches.get(item.id) ?? {}), crossSizePx });
-      }
-    }
-    if (sizePatches.size > 0) {
-      await Promise.all(
-        [...sizePatches.entries()].map(([targetAxisItemId, patch]) =>
-          apiPatch("/api/board/axis-items/" + encodeURIComponent(targetAxisItemId) + "/size", patch)
-        )
+    await saveBoardAxisItemRequest(axisItemId, input, () => {
+      setAxisItems((current) =>
+        applyBoardAxisItemSaveToAxisItems(current, {
+          axisItemId,
+          label,
+          taskColor,
+          taskResetType,
+          taskResetRuleJson,
+          separator,
+          sizePx,
+          crossSizePx,
+          displaySettings,
+          shouldUpdateDetails
+        })
       );
-    }
-    setAxisItems((current) =>
-      applyBoardAxisItemSaveToAxisItems(current, {
-        axisItemId,
-        label,
-        taskColor,
-        taskResetType,
-        taskResetRuleJson,
-        separator,
-        sizePx,
-        crossSizePx,
-        displaySettings,
-        shouldUpdateDetails
-      })
-    );
-    setEditingAxisItem(null);
+      setEditingAxisItem(null);
+    });
   }
 
   async function handleBoardCharacterSave(
@@ -1844,78 +1886,42 @@ export function BoardOverview({
 
   async function handleTableSettingsSave(
     tableId: string,
-    input: {
-      name: string;
-      defaultRowHeight: number;
-      defaultColumnWidth: number;
-      displaySettings: BoardDisplaySettings | null;
-      eventOptions?: BoardEventOptions | null | undefined;
-      applyRowSize: boolean;
-      applyColumnSize: boolean;
-      locked: 0 | 1;
-      characterSeparator?: BoardAxisSeparator | null | undefined;
-    }
+    input: BoardTableSettingsSaveInput
   ) {
     return runMutation(async () => {
       const currentTable = tables.find((table) => table.id === tableId);
       const wasLocked = currentTable ? isBoardTableLocked(currentTable) : false;
-      const rows = axisItems.filter((item) => item.table_id === tableId && item.axis === "row" && item.visible === 1);
-      const columns = axisItems.filter((item) => item.table_id === tableId && item.axis === "column" && item.visible === 1);
-      const characterItems = axisItems.filter((item) => item.table_id === tableId && item.kind === "character" && item.visible === 1);
-
-      if (!wasLocked && input.applyRowSize) {
-        await Promise.all(rows.map((item) => apiPatch("/api/board/axis-items/" + encodeURIComponent(item.id) + "/size", { sizePx: input.defaultRowHeight })));
-      }
-      if (!wasLocked && input.applyColumnSize) {
-        await Promise.all(
-          columns.map((item) => apiPatch("/api/board/axis-items/" + encodeURIComponent(item.id) + "/size", { sizePx: input.defaultColumnWidth }))
-        );
-      }
-      if (!wasLocked && (input.characterSeparator !== undefined || input.displaySettings !== undefined)) {
-        await Promise.all(
-          characterItems.map((item) =>
-            apiPatch("/api/board/axis-items/" + encodeURIComponent(item.id), {
-              label: item.label,
-              ...(input.characterSeparator !== undefined ? { separator: input.characterSeparator } : {}),
-              ...(input.displaySettings !== undefined ? { displaySettings: input.displaySettings } : {})
-            })
+      await saveBoardTableSettingsRequest(tableId, input, () => {
+        setTables((current) =>
+          current.map((table) =>
+            table.id === tableId
+              ? {
+                  ...table,
+                  name: input.name,
+                  default_row_height: input.defaultRowHeight,
+                  default_column_width: input.defaultColumnWidth,
+                  locked: input.locked,
+                  display_options_json: input.displaySettings ? JSON.stringify(input.displaySettings) : null,
+                  event_options_json:
+                    input.eventOptions === undefined
+                      ? table.event_options_json
+                      : input.eventOptions
+                        ? JSON.stringify(input.eventOptions)
+                        : null
+                }
+              : table
           )
         );
-      }
-
-      await apiPatch("/api/board/tables/" + encodeURIComponent(tableId), {
-        name: input.name,
-        defaultRowHeight: input.defaultRowHeight,
-        defaultColumnWidth: input.defaultColumnWidth,
-        locked: input.locked,
-        displaySettings: input.displaySettings,
-        eventOptions: input.eventOptions
+        if (!wasLocked) {
+          setAxisItems((current) =>
+            applyBoardTableSettingsToAxisItems(current, tableId, {
+              ...input,
+              displaySettings: input.characterDisplaySettings
+            })
+          );
+        }
+        setEditingTable(null);
       });
-
-      setTables((current) =>
-        current.map((table) =>
-          table.id === tableId
-            ? {
-                ...table,
-                name: input.name,
-                default_row_height: input.defaultRowHeight,
-                default_column_width: input.defaultColumnWidth,
-                locked: input.locked,
-                display_options_json: input.displaySettings ? JSON.stringify(input.displaySettings) : null,
-                event_options_json:
-                  input.eventOptions === undefined
-                    ? table.event_options_json
-                    : input.eventOptions
-                      ? JSON.stringify(input.eventOptions)
-                      : null
-              }
-            : table
-        )
-      );
-      if (!wasLocked) {
-        setAxisItems((current) => applyBoardTableSettingsToAxisItems(current, tableId, input));
-      }
-      setEditingTable(null);
     });
   }
 
@@ -3565,20 +3571,7 @@ export function BoardTableSettingsModal({
   axisItems: BoardAxisItem[];
   onClose: () => void;
   onDelete: (tableId: string) => Promise<void>;
-  onSave: (
-    tableId: string,
-    input: {
-      name: string;
-      defaultRowHeight: number;
-      defaultColumnWidth: number;
-      displaySettings: BoardDisplaySettings | null;
-      eventOptions?: BoardEventOptions | null | undefined;
-      applyRowSize: boolean;
-      applyColumnSize: boolean;
-      locked: 0 | 1;
-      characterSeparator?: BoardAxisSeparator | null | undefined;
-    }
-  ) => Promise<void>;
+  onSave: (tableId: string, input: BoardTableSettingsSaveInput) => Promise<void>;
   onTranspose: (tableId: string) => Promise<void>;
   settings: BoardDisplaySettings;
   table: BoardTable;
@@ -3632,16 +3625,17 @@ export function BoardTableSettingsModal({
         defaultColumnWidth: normalizeBoundedIntegerDraft(columnWidth, { min: 16, max: 1024, fallback: table.default_column_width }),
         displaySettings: structureLocked ? parseBoardDisplaySettings(table.display_options_json) : displaySettings,
         eventOptions: isLostArkEventTable ? { rewardFilters: eventRewardFilters } : undefined,
-        applyRowSize,
-        applyColumnSize,
+        applyRowSize: structureLocked ? false : applyRowSize,
+        applyColumnSize: structureLocked ? false : applyColumnSize,
         locked: isBoardTableLocked(table) ? 1 : 0,
-        characterSeparator: applyCharacterSeparator
+        characterSeparator: !structureLocked && applyCharacterSeparator
           ? {
               widthPx: normalizeBoundedIntegerDraft(separatorWidthPx, { min: 1, max: 8, fallback: 2 }),
               style: separatorStyle,
               color: separatorColor
             }
-          : undefined
+          : undefined,
+        characterDisplaySettings: structureLocked ? undefined : displaySettings
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "표 설정을 저장하지 못했습니다.");
