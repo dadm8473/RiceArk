@@ -1636,7 +1636,7 @@ describe("board share routes", () => {
     expect(owner.status).toBe(200);
     expect(await owner.json()).toEqual({
       manifestVersion: 0,
-      sheets: [{ id: "sheet-1", version: 0 }],
+      sheets: [{ id: "sheet-1", name: "숙제", sort_order: 0, is_default: 1, version: 0 }],
       periodFingerprint: ""
     });
 
