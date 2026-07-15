@@ -12,6 +12,12 @@ import { createManualCharacter, saveSelectedCharacters, type CharacterSnapshot }
 import type { ChecklistOrientation } from "./settings";
 import { createUserTask } from "./tasks";
 import type { LostArkEventRewardFilter } from "../lostark/events";
+import {
+  bumpBoardManifestVersionStatement as bumpBoardManifestVersion,
+  bumpBoardSheetVersionForNoteStatement as bumpBoardSheetVersionForNote,
+  bumpBoardSheetVersionStatement as bumpBoardSheetVersion,
+  bumpBoardSheetVersionsForTablesStatement as bumpBoardSheetVersionsForTables
+} from "./boardVersions";
 
 export const DEFAULT_SHEET_NAME = "기본";
 export const DEFAULT_TABLE_NAME = "숙제";
@@ -1126,55 +1132,6 @@ export function generateBoardShareId(length = 22): string {
   const bytes = new Uint8Array(length);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (byte) => BOARD_SHARE_ID_ALPHABET[byte & 63]).join("");
-}
-
-function bumpBoardManifestVersion(env: Env, userId: string) {
-  return env.DB.prepare(
-    `INSERT INTO board_manifest_versions (user_id, version, updated_at)
-     VALUES (?, 1, CURRENT_TIMESTAMP)
-     ON CONFLICT(user_id) DO UPDATE
-     SET version = version + 1,
-         updated_at = CURRENT_TIMESTAMP`
-  ).bind(userId);
-}
-
-function bumpBoardSheetVersion(env: Env, userId: string, sheetId: string) {
-  return env.DB.prepare(
-    `UPDATE sheets
-     SET content_version = content_version + 1,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ?`
-  ).bind(sheetId, userId);
-}
-
-function bumpBoardSheetVersionsForTables(env: Env, userId: string, tableIds: string[]) {
-  const ids = unique(tableIds);
-  return env.DB.prepare(
-    `UPDATE sheets
-     SET content_version = content_version + 1,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE user_id = ?
-       AND id IN (
-         SELECT DISTINCT sheet_id
-         FROM board_tables
-         WHERE user_id = ?
-           AND id IN (${placeholders(ids)})
-      )`
-  ).bind(userId, userId, ...ids);
-}
-
-function bumpBoardSheetVersionForNote(env: Env, userId: string, noteId: string) {
-  return env.DB.prepare(
-    `UPDATE sheets
-     SET content_version = content_version + 1,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE user_id = ?
-       AND id IN (
-         SELECT sheet_id
-         FROM board_notes
-         WHERE id = ? AND user_id = ?
-       )`
-  ).bind(userId, noteId, userId);
 }
 
 export async function startBoardSheetShare(env: Env, userId: string, sheetId: string): Promise<BoardShareStartResult | "not_found"> {
