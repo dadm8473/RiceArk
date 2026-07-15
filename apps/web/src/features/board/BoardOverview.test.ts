@@ -31,6 +31,7 @@ import {
   getStoredBoardEventNotificationSettings,
   getRefreshableBoardCharacterIds,
   getBoardCellMarkTooltipContent,
+  isBoardInteractionLocked,
   normalizeBoardEventNotificationMinutes,
   parseBoardEventOptions,
   normalizeBoardZoom,
@@ -398,6 +399,20 @@ describe("BoardOverview", () => {
     expect(html).not.toContain("탭 설정");
     expect(html).not.toContain("캐릭터 추가");
     expect(html).not.toContain("숙제 추가");
+  });
+
+  it("visibly locks owner board editing while logout is pending", () => {
+    expect(isBoardInteractionLocked({ readOnly: false, boardReadOnly: false, writeLocked: true })).toBe(true);
+
+    const html = renderToStaticMarkup(createElement(BoardOverview, { board, writeLocked: true }));
+
+    expect(html).toContain('aria-disabled="true"');
+    expect(html).toContain('role="status"');
+    expect(html).toContain("로그아웃 중에는 보드를 편집할 수 없습니다.");
+    expect(html).not.toContain("표 추가");
+    expect(html).not.toContain("메모 추가");
+    expect(html).not.toContain("탭 설정");
+    expect(html).toMatch(/aria-label="쿠르잔 전선 \/ 냠수나이스1" class="board-check" disabled=""/);
   });
 
   it("disables grid checkboxes in read-only board grids", () => {

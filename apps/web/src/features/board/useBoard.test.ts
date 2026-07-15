@@ -9,6 +9,7 @@ import {
   buildBoardVersionKey,
   canClaimBoardPollingLeadership,
   createBoardInvalidationPublisher,
+  createBoardReadGate,
   createBoardReloadGate,
   createBoardWriteCoordinator,
   formatBoardError,
@@ -185,6 +186,60 @@ describe("formatBoardError", () => {
   });
 });
 
+describe("board read generation isolation", () => {
+  it("ignores an older success after a newer same-user load applies", async () => {
+    const first = deferred<BoardPayload>();
+    const second = deferred<BoardPayload>();
+    const applied: BoardPayload[] = [];
+    const failures: unknown[] = [];
+    const read = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const gate = createBoardReadGate({
+      read,
+      onApplied: (payload) => applied.push(payload),
+      onFailure: (error) => failures.push(error)
+    });
+    const older = gate.load(undefined);
+    const newer = gate.load(undefined);
+    const newerBoard = { ...emptyBoard, userId: "user-1-new" };
+
+    second.resolve(newerBoard);
+    await expect(newer).resolves.toMatchObject({ type: "applied", payload: newerBoard });
+    first.resolve(emptyBoard);
+    await expect(older).resolves.toEqual({ type: "stale" });
+
+    expect(applied).toEqual([newerBoard]);
+    expect(failures).toEqual([]);
+    gate.dispose();
+  });
+
+  it("ignores an older failure after a newer same-user load applies", async () => {
+    const first = deferred<BoardPayload>();
+    const second = deferred<BoardPayload>();
+    const applied = vi.fn();
+    const onFailure = vi.fn();
+    const gate = createBoardReadGate({
+      read: vi.fn()
+        .mockImplementationOnce(() => first.promise)
+        .mockImplementationOnce(() => second.promise),
+      onApplied: applied,
+      onFailure
+    });
+    const older = gate.load(undefined);
+    const newer = gate.load(undefined);
+
+    second.resolve(emptyBoard);
+    await newer;
+    first.reject(new Error("stale failure"));
+    await expect(older).resolves.toEqual({ type: "stale" });
+
+    expect(applied).toHaveBeenCalledTimes(1);
+    expect(onFailure).not.toHaveBeenCalled();
+    gate.dispose();
+  });
+});
+
 describe("BoardWriteCoordinator", () => {
   it("reapplies pending completion and cell-state intent over a reloaded authoritative board", () => {
     const coordinator = createBoardWriteCoordinator("user-1", { attachLifecycle: false });
@@ -256,7 +311,7 @@ describe("BoardWriteCoordinator", () => {
       completed: true
     });
 
-    await coordinator.flushPendingWrites();
+    await expect(coordinator.flushPendingWrites()).rejects.toMatchObject({ reason: "rejected" });
 
     expect(coordinator.getVisibleData()?.completions).toEqual([]);
     expect(coordinator.getAuthoritativeBase()?.completions).toEqual([]);
@@ -280,7 +335,7 @@ describe("BoardWriteCoordinator", () => {
       periodKey: "daily:2026-07-15",
       completed: true
     });
-    await coordinator.flushPendingWrites();
+    await expect(coordinator.flushPendingWrites()).rejects.toMatchObject({ reason: "rejected" });
     coordinator.enqueueCellState({
       tableId: "table-1",
       rowItemId: "row-1",
@@ -290,13 +345,13 @@ describe("BoardWriteCoordinator", () => {
       memo: "saved"
     });
 
-    await coordinator.flushPendingWrites();
+    await expect(coordinator.flushPendingWrites()).rejects.toMatchObject({ reason: "rejected" });
 
     expect(coordinator.getSnapshot().pendingWriteError).toBe("Completion locked");
     coordinator.discardAndDispose();
   });
 
-  it("derives a stable error from both queues and clears only the acknowledged queue", async () => {
+  it("keeps both permanent queue errors until explicit retry even when one queue later succeeds", async () => {
     let completionFails = true;
     const patch = vi.fn(async (path: string) => {
       if (path === "/api/board/completions" && completionFails) {
@@ -323,7 +378,7 @@ describe("BoardWriteCoordinator", () => {
       markIcon: "pin",
       memo: "failed"
     });
-    await coordinator.flushPendingWrites();
+    await expect(coordinator.flushPendingWrites()).rejects.toMatchObject({ reason: "rejected" });
 
     expect(coordinator.getSnapshot().pendingWriteError).toContain("Completion failed");
     expect(coordinator.getSnapshot().pendingWriteError).toContain("Cell state failed");
@@ -336,9 +391,53 @@ describe("BoardWriteCoordinator", () => {
       periodKey: "daily:2026-07-15",
       completed: true
     });
-    await coordinator.flushPendingWrites();
+    await expect(coordinator.flushPendingWrites()).rejects.toMatchObject({ reason: "rejected" });
 
-    expect(coordinator.getSnapshot().pendingWriteError).toBe("Cell state failed");
+    expect(coordinator.getSnapshot().pendingWriteError).toContain("Completion failed");
+    expect(coordinator.getSnapshot().pendingWriteError).toContain("Cell state failed");
+    coordinator.retryPendingWrites();
+    expect(coordinator.getSnapshot().pendingWriteError).toBeNull();
+    coordinator.discardAndDispose();
+  });
+
+  it("keeps a partial permanent rejection visible after the same queue accepts its remainder", async () => {
+    const rejectedPatch = {
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      periodKey: "daily:2026-07-15",
+      completed: true
+    };
+    const acceptedPatch = { ...rejectedPatch, rowItemId: "row-2" };
+    const patch = vi.fn()
+      .mockRejectedValueOnce(new ApiClientError(422, "invalid_completion", "Locked row", null, {
+        rejectedKeys: [{
+          tableId: rejectedPatch.tableId,
+          rowItemId: rejectedPatch.rowItemId,
+          columnItemId: rejectedPatch.columnItemId,
+          periodKey: rejectedPatch.periodKey
+        }]
+      }))
+      .mockResolvedValueOnce({ ok: true as const, versions: { sheets: [] } });
+    const coordinator = createBoardWriteCoordinator("user-1", { attachLifecycle: false, patch });
+    coordinator.setAuthoritativeBase(emptyBoard);
+    coordinator.enqueueCompletion(rejectedPatch);
+    coordinator.enqueueCompletion(acceptedPatch);
+
+    await expect(coordinator.flushPendingWrites()).rejects.toMatchObject({ reason: "rejected" });
+
+    expect(patch).toHaveBeenCalledTimes(2);
+    expect(coordinator.getSnapshot()).toMatchObject({
+      hasPendingWrites: false,
+      pendingWriteError: "Locked row"
+    });
+    expect(coordinator.getAuthoritativeBase()?.completions).toEqual([
+      expect.objectContaining({ row_item_id: "row-2", completed: 1 })
+    ]);
+
+    coordinator.retryPendingWrites();
+    await expect(coordinator.flushPendingWrites()).resolves.toBeUndefined();
+    expect(coordinator.getSnapshot().pendingWriteError).toBeNull();
     coordinator.discardAndDispose();
   });
 
@@ -536,6 +635,46 @@ describe("board cross-tab invalidation", () => {
     await Promise.resolve();
     gate.receive(message);
 
+    expect(reload).toHaveBeenCalledTimes(2);
+    gate.dispose();
+  });
+
+  it("keeps a failed version-key catch-up unapplied, retries it, then deduplicates it", async () => {
+    let appliedVersionKey = "v1";
+    const reload = vi.fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(undefined);
+    const gate = createBoardReloadGate({
+      userId: "user-1",
+      reload,
+      onApplied: (message) => {
+        appliedVersionKey = message.versionKey;
+      }
+    });
+    const announcement = {
+      sourceId: "tab-a",
+      userId: "user-1",
+      type: "board-version-key" as const,
+      summary: { manifestVersion: 2, sheets: [], periodFingerprint: "" },
+      versionKey: "v2"
+    };
+    const receive = () => {
+      if (shouldReloadForBoardBroadcast(announcement.type, appliedVersionKey, announcement.versionKey, true)) {
+        gate.receive({ ...announcement, type: "board-reload" });
+      }
+    };
+
+    receive();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(appliedVersionKey).toBe("v1");
+
+    receive();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(appliedVersionKey).toBe("v2");
+
+    receive();
     expect(reload).toHaveBeenCalledTimes(2);
     gate.dispose();
   });

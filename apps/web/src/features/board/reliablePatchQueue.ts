@@ -21,6 +21,7 @@ export type ReliablePatchQueueFlushErrorReason =
   | "retry"
   | "auth"
   | "timeout"
+  | "rejected"
   | "non-progress"
   | "disposed";
 

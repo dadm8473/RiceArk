@@ -69,6 +69,19 @@ interface Props {
   enqueueCompletion?: ((patch: BoardCompletionPatch) => void) | undefined;
   onBoardChanged?: () => Promise<BoardPayload | null> | void;
   readOnly?: boolean | undefined;
+  writeLocked?: boolean | undefined;
+}
+
+export function isBoardInteractionLocked({
+  readOnly,
+  boardReadOnly,
+  writeLocked
+}: {
+  readOnly: boolean;
+  boardReadOnly: boolean;
+  writeLocked: boolean;
+}): boolean {
+  return readOnly || boardReadOnly || writeLocked;
 }
 
 type BoardDisplaySettings = BoardPayload["settings"];
@@ -1079,9 +1092,14 @@ export function BoardOverview({
   enqueueCellState,
   enqueueCompletion,
   onBoardChanged,
-  readOnly = false
+  readOnly = false,
+  writeLocked = false
 }: Props) {
-  const isReadOnly = readOnly || board.readOnly === true;
+  const isReadOnly = isBoardInteractionLocked({
+    readOnly,
+    boardReadOnly: board.readOnly === true,
+    writeLocked
+  });
   const [completions, setCompletions] = useState(board.completions);
   const [cellStates, setCellStates] = useState(board.cellStates);
   const [axisItems, setAxisItems] = useState(board.axisItems);
@@ -1131,6 +1149,28 @@ export function BoardOverview({
   const tableMoveSessionRef = useRef<TableMoveSession | null>(null);
   const noteMoveSessionRef = useRef<NoteMoveSession | null>(null);
   const noteResizeSessionRef = useRef<NoteResizeSession | null>(null);
+  useEffect(() => {
+    if (!writeLocked) return;
+    tableMoveSessionRef.current = null;
+    noteMoveSessionRef.current = null;
+    noteResizeSessionRef.current = null;
+    setMovingTableId(null);
+    setMovingNoteId(null);
+    setResizingNoteId(null);
+    setActiveSortableId(null);
+    setReorderTableId(null);
+    setMarkEditTableId(null);
+    setMarkBrushNotice(null);
+    setIsSheetSettingsOpen(false);
+    setIsCreateTableOpen(false);
+    setIsCreateNoteOpen(false);
+    setEditingAxisItem(null);
+    setEditingNote(null);
+    setEditingTable(null);
+    setActiveTableTool(null);
+    setOpenNoteMenuId(null);
+    setOpenTableMenuId(null);
+  }, [writeLocked]);
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -1843,7 +1883,7 @@ export function BoardOverview({
   }
 
   function toggleTableReorderMode(table: BoardTable) {
-    if (isBoardTableLocked(table)) return;
+    if (isReadOnly || isBoardTableLocked(table)) return;
     setActiveSortableId(null);
     setMarkEditTableId(null);
     setMarkBrushNotice(null);
@@ -1851,7 +1891,7 @@ export function BoardOverview({
   }
 
   function toggleTableMarkEditMode(table: BoardTable) {
-    if (isBoardTableLocked(table)) return;
+    if (isReadOnly || isBoardTableLocked(table)) return;
     setReorderTableId(null);
     setActiveSortableId(null);
     setMarkBrushNotice(null);
@@ -1872,6 +1912,7 @@ export function BoardOverview({
 
   function handleBoardAxisDragEnd(event: DragEndEvent) {
     setActiveSortableId(null);
+    if (isReadOnly) return;
     const active = parseBoardAxisSortableId(String(event.active.id));
     const over = event.over ? parseBoardAxisSortableId(String(event.over.id)) : null;
     if (!active || !over || active.tableId !== over.tableId || active.axis !== over.axis || active.axisItemId === over.axisItemId) return;
@@ -1897,7 +1938,7 @@ export function BoardOverview({
   }
 
   function handleTableMoveStart(table: BoardTable, event: PointerEvent<HTMLButtonElement>) {
-    if (isBoardTableLocked(table)) return;
+    if (isReadOnly || isBoardTableLocked(table)) return;
     if (event.button !== 0) return;
 
     event.preventDefault();
@@ -1958,7 +1999,7 @@ export function BoardOverview({
     tableMoveSessionRef.current = null;
     setMovingTableId(null);
 
-    if (session.patch) {
+    if (!isReadOnly && session.patch) {
       void persistTableLayout(tableId, session.patch);
     }
   }
@@ -1973,7 +2014,7 @@ export function BoardOverview({
   }
 
   function handleNoteMoveStart(note: BoardNote, event: PointerEvent<HTMLElement>) {
-    if (note.locked === 1) return;
+    if (isReadOnly || note.locked === 1) return;
     if (event.button !== 0) return;
 
     event.preventDefault();
@@ -2016,7 +2057,7 @@ export function BoardOverview({
     noteMoveSessionRef.current = null;
     setMovingNoteId(null);
 
-    if (session.patch) {
+    if (!isReadOnly && session.patch) {
       void persistNoteLayout(noteId, session.patch);
     }
   }
@@ -2031,7 +2072,7 @@ export function BoardOverview({
   }
 
   function handleNoteResizeStart(note: BoardNote, event: PointerEvent<HTMLButtonElement>) {
-    if (note.locked === 1) return;
+    if (isReadOnly || note.locked === 1) return;
     if (event.button !== 0) return;
 
     event.preventDefault();
@@ -2074,7 +2115,7 @@ export function BoardOverview({
     noteResizeSessionRef.current = null;
     setResizingNoteId(null);
 
-    if (session.patch) {
+    if (!isReadOnly && session.patch) {
       void persistNoteLayout(noteId, session.patch);
     }
   }
@@ -2577,7 +2618,12 @@ export function BoardOverview({
   );
 
   return (
-    <section className="board-overview" aria-label="보드">
+    <section
+      aria-disabled={writeLocked || undefined}
+      className="board-overview"
+      aria-label="보드"
+    >
+      {writeLocked ? <p role="status">로그아웃 중에는 보드를 편집할 수 없습니다.</p> : null}
       <div className="sheet-tab-bar" aria-label="탭 선택">
         <div className="sheet-tab-list">
           {sortedSheets.map((sheet) => (

@@ -6,6 +6,7 @@ import { applyBoardCellStatePatch, type BoardCellStatePatch } from "./cellStates
 import type { BoardMutationVersions, BoardPayload } from "./types";
 import { attachBoardQueueLifecycle, createBoardCompletionQueue, type BoardPatchApi } from "./useBoardCompletionQueue";
 import { createBoardCellStateQueue } from "./useBoardCellStateQueue";
+import { ReliablePatchQueueFlushError } from "./reliablePatchQueue";
 
 export const BOARD_VERSION_CHECK_INTERVAL_MS = 120_000;
 export const BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS = BOARD_VERSION_CHECK_INTERVAL_MS;
@@ -45,6 +46,49 @@ export function mergeBoardVersionSummary(
       incoming.periodFingerprint !== undefined
         ? incoming.periodFingerprint
         : (current?.periodFingerprint ?? "")
+  };
+}
+
+export type BoardReadGateResult =
+  | { type: "applied"; payload: BoardPayload }
+  | { type: "failed"; error: unknown }
+  | { type: "stale" };
+
+export interface BoardReadGate<Context = void> {
+  load: (context: Context) => Promise<BoardReadGateResult>;
+  invalidate: () => void;
+  dispose: () => void;
+}
+
+export function createBoardReadGate<Context = void>(options: {
+  read: () => Promise<BoardPayload>;
+  onApplied: (payload: BoardPayload, context: Context) => void;
+  onFailure: (error: unknown, context: Context) => void;
+}): BoardReadGate<Context> {
+  let generation = 0;
+  let disposed = false;
+
+  return {
+    load: async (context) => {
+      const requestGeneration = ++generation;
+      try {
+        const payload = await options.read();
+        if (disposed || requestGeneration !== generation) return { type: "stale" };
+        options.onApplied(payload, context);
+        return { type: "applied", payload };
+      } catch (error) {
+        if (disposed || requestGeneration !== generation) return { type: "stale" };
+        options.onFailure(error, context);
+        return { type: "failed", error };
+      }
+    },
+    invalidate: () => {
+      generation += 1;
+    },
+    dispose: () => {
+      disposed = true;
+      generation += 1;
+    }
   };
 }
 
@@ -119,12 +163,19 @@ export function createBoardWriteCoordinator(
   let pendingCompletions: BoardCompletionPatch[] = [];
   let pendingCellStates: BoardCellStatePatch[] = [];
   let completionWriteError: string | null = null;
+  let completionPermanentWriteError: string | null = null;
   let cellStateWriteError: string | null = null;
+  let cellStatePermanentWriteError: string | null = null;
   let disposed = false;
 
   const getVisibleData = () => applyBoardWriteOverlays(authoritativeBase, pendingCompletions, pendingCellStates);
   const getPendingWriteError = () => {
-    const errors = [completionWriteError, cellStateWriteError].filter(
+    const errors = [
+      completionPermanentWriteError,
+      completionWriteError,
+      cellStatePermanentWriteError,
+      cellStateWriteError
+    ].filter(
       (error): error is string => error !== null
     );
     return [...new Set(errors)].join(" ") || null;
@@ -145,6 +196,16 @@ export function createBoardWriteCoordinator(
   const reportCellStateFailure = (message: string) => {
     if (disposed) return;
     cellStateWriteError = message;
+    emit();
+  };
+  const reportCompletionPermanentFailure = (message: string) => {
+    if (disposed) return;
+    completionPermanentWriteError = message;
+    emit();
+  };
+  const reportCellStatePermanentFailure = (message: string) => {
+    if (disposed) return;
+    cellStatePermanentWriteError = message;
     emit();
   };
 
@@ -168,7 +229,7 @@ export function createBoardWriteCoordinator(
       completionWriteError = null;
       emit();
     },
-    onPermanentFailure: (outcome) => reportCompletionFailure(outcome.message),
+    onPermanentFailure: (outcome) => reportCompletionPermanentFailure(outcome.message),
     onAuthPause: (error) => reportCompletionFailure(error.message),
     ...(options.onVersions ? { onVersions: options.onVersions } : {})
   });
@@ -192,7 +253,7 @@ export function createBoardWriteCoordinator(
       cellStateWriteError = null;
       emit();
     },
-    onPermanentFailure: (outcome) => reportCellStateFailure(outcome.message),
+    onPermanentFailure: (outcome) => reportCellStatePermanentFailure(outcome.message),
     onAuthPause: (error) => reportCellStateFailure(error.message),
     ...(options.onVersions ? { onVersions: options.onVersions } : {})
   });
@@ -208,7 +269,9 @@ export function createBoardWriteCoordinator(
     pendingCompletions = [];
     pendingCellStates = [];
     completionWriteError = null;
+    completionPermanentWriteError = null;
     cellStateWriteError = null;
+    cellStatePermanentWriteError = null;
     emit();
   };
 
@@ -237,10 +300,20 @@ export function createBoardWriteCoordinator(
         emit();
         throw failure.reason;
       }
+      const permanentWriteError = getPendingWriteError();
+      if (completionPermanentWriteError || cellStatePermanentWriteError) {
+        emit();
+        throw new ReliablePatchQueueFlushError(
+          "rejected",
+          permanentWriteError ? new Error(permanentWriteError) : undefined
+        );
+      }
     },
     retryPendingWrites: () => {
       completionWriteError = null;
+      completionPermanentWriteError = null;
       cellStateWriteError = null;
+      cellStatePermanentWriteError = null;
       completionQueue.retry();
       cellStateQueue.retry();
       emit();
@@ -258,7 +331,9 @@ export function createBoardWriteCoordinator(
       pendingCompletions = [];
       pendingCellStates = [];
       completionWriteError = null;
+      completionPermanentWriteError = null;
       cellStateWriteError = null;
+      cellStatePermanentWriteError = null;
     }
   };
 }
@@ -359,6 +434,7 @@ function mergeBoardInvalidations(
 export function createBoardReloadGate(options: {
   userId: string;
   reload: (message: BoardPollingBroadcastMessage) => Promise<unknown>;
+  onApplied?: ((message: BoardPollingBroadcastMessage) => void) | undefined;
 }): { receive: (message: BoardPollingBroadcastMessage) => void; dispose: () => void } {
   let active: BoardPollingBroadcastMessage | null = null;
   let trailing: BoardPollingBroadcastMessage | null = null;
@@ -382,7 +458,14 @@ export function createBoardReloadGate(options: {
 
   const finish = (message: BoardPollingBroadcastMessage, succeeded: boolean) => {
     if (disposed || active !== message) return;
-    if (succeeded) completed = completed ? mergeBoardInvalidations(completed, message) : message;
+    if (succeeded) {
+      try {
+        options.onApplied?.(message);
+      } catch {
+        // Applied-state observers must not turn a completed reload into another request.
+      }
+      completed = completed ? mergeBoardInvalidations(completed, message) : message;
+    }
     active = null;
     const next = trailing;
     trailing = null;
@@ -612,6 +695,16 @@ export function buildBoardVersionKey(
   });
 }
 
+interface BoardReadContext {
+  refreshVersion: boolean;
+}
+
+interface BoardReadScope {
+  userId: string;
+  coordinator: BoardWriteCoordinator;
+  gate: BoardReadGate<BoardReadContext>;
+}
+
 export function useBoard({
   enabled = true,
   pollingEnabled = enabled,
@@ -624,6 +717,7 @@ export function useBoard({
   const dataRef = useRef<BoardPayload | null>(null);
   const enabledRef = useRef(enabled);
   const coordinatorRef = useRef<BoardWriteCoordinator | null>(null);
+  const boardReadScopeRef = useRef<BoardReadScope | null>(null);
   const versionKeyRef = useRef<string | null>(null);
   const lastVersionSummaryRef = useRef<BoardVersionSummary | null>(null);
   const lastActivityAtRef = useRef(Date.now());
@@ -658,6 +752,8 @@ export function useBoard({
   }, []);
 
   useEffect(() => {
+    boardReadScopeRef.current?.gate.dispose();
+    boardReadScopeRef.current = null;
     const previous = coordinatorRef.current;
     if (previous) {
       previous.discardAndDispose();
@@ -690,7 +786,23 @@ export function useBoard({
       onVersions: handleMutationVersions
     });
     coordinatorRef.current = coordinator;
+    const readGate = createBoardReadGate<BoardReadContext>({
+      read: () => apiGet<BoardPayload>("/api/board"),
+      onApplied: (payload, context) => {
+        coordinator.setAuthoritativeBase(payload);
+        if (context.refreshVersion) void refreshVersionKey(payload, coordinator).catch(() => {
+          // Version checks are an optimization; the loaded board can still be used.
+        });
+      },
+      onFailure: (readError) => {
+        setError(formatBoardError(readError));
+      }
+    });
+    const readScope = { userId, coordinator, gate: readGate };
+    boardReadScopeRef.current = readScope;
     return () => {
+      if (boardReadScopeRef.current === readScope) boardReadScopeRef.current = null;
+      readGate.dispose();
       if (coordinatorRef.current === coordinator) coordinatorRef.current = null;
       if (invalidationPublisherRef.current === invalidationPublisher) {
         invalidationPublisherRef.current = null;
@@ -700,54 +812,58 @@ export function useBoard({
     };
   }, [handleMutationVersions, userId]);
 
-  const reload = useCallback(async (options: { refreshVersion?: boolean } = {}) => {
+  const reload = useCallback(async (options: {
+    refreshVersion?: boolean;
+    onApplied?: (() => void) | undefined;
+  } = {}) => {
     const coordinator = coordinatorRef.current;
-    if (!enabled || !coordinator || coordinator.userId !== userId) return dataRef.current;
+    const readScope = boardReadScopeRef.current;
+    if (
+      !enabled ||
+      !coordinator ||
+      coordinator.userId !== userId ||
+      !readScope ||
+      readScope.userId !== userId ||
+      readScope.coordinator !== coordinator
+    ) return dataRef.current;
     setError(null);
-    try {
-      const payload = await apiGet<BoardPayload>("/api/board");
-      if (coordinatorRef.current !== coordinator) return dataRef.current;
-      coordinator.setAuthoritativeBase(payload);
-      const shouldRefreshVersion = options.refreshVersion ?? pollingEnabled;
-      if (shouldRefreshVersion) void refreshVersionKey(payload).catch(() => {
-        // Version checks are an optimization; the full board payload remains authoritative.
-      });
-      return coordinator.getVisibleData();
-    } catch (err) {
-      if (!reportBoardReloadErrorIfCurrent(coordinatorRef.current, coordinator, err, setError)) {
-        return dataRef.current;
-      }
-      throw err;
-    }
+    const result = await readScope.gate.load({ refreshVersion: options.refreshVersion ?? pollingEnabled });
+    if (result.type === "failed") throw result.error;
+    if (result.type === "applied") options.onApplied?.();
+    return coordinator.getVisibleData();
   }, [enabled, pollingEnabled, userId]);
 
+  const reloadBoardForInvalidation = useCallback(async () => {
+    let applied = false;
+    await reload({
+      refreshVersion: false,
+      onApplied: () => {
+        applied = true;
+      }
+    });
+    if (!applied) throw new Error("Board reload was superseded before it could apply");
+  }, [reload]);
+
   useEffect(() => {
-    let active = true;
     setError(null);
     const coordinator = coordinatorRef.current;
-    if (!enabled || !userId || !coordinator || coordinator.userId !== userId) {
+    const readScope = boardReadScopeRef.current;
+    if (
+      !enabled ||
+      !userId ||
+      !coordinator ||
+      coordinator.userId !== userId ||
+      !readScope ||
+      readScope.userId !== userId ||
+      readScope.coordinator !== coordinator
+    ) {
+      readScope?.gate.invalidate();
       setBoardData(null);
-      return () => {
-        active = false;
-      };
+      return;
     }
     setBoardData(coordinator.getVisibleData());
-    apiGet<BoardPayload>("/api/board")
-      .then((payload) => {
-        if (active && coordinatorRef.current === coordinator) {
-          coordinator.setAuthoritativeBase(payload);
-          if (pollingEnabled) void refreshVersionKey(payload).catch(() => {
-            // Version checks are an optimization; the loaded board can still be used.
-          });
-        }
-      })
-      .catch((err: unknown) => {
-        if (active) setError(formatBoardError(err));
-      });
-    return () => {
-      active = false;
-    };
-  }, [enabled, userId]);
+    void readScope.gate.load({ refreshVersion: pollingEnabled });
+  }, [enabled, pollingEnabled, userId]);
 
   useEffect(() => {
     if (!enabled || !pollingEnabled || !userId) return;
@@ -783,13 +899,12 @@ export function useBoard({
         const summary = mergeBoardVersionSummary(lastVersionSummaryRef.current, responseSummary);
         const nextVersionKey = buildBoardVersionKey(summary, dataRef.current);
         lastVersionSummaryRef.current = summary;
-        if (versionKeyRef.current && versionKeyRef.current !== nextVersionKey) {
-          versionKeyRef.current = nextVersionKey;
+        if (dataRef.current && versionKeyRef.current !== nextVersionKey) {
           postBoardPollingMessage({ type: "board-reload", summary, versionKey: nextVersionKey });
-          await reload({ refreshVersion: false });
+          await reloadBoardForInvalidation();
+          versionKeyRef.current = nextVersionKey;
           return;
         }
-        versionKeyRef.current = nextVersionKey;
         postBoardPollingMessage({ type: "board-version-key", summary, versionKey: nextVersionKey });
       } catch {
         // Keep the current board visible; manual refresh/login handling remains available.
@@ -849,7 +964,7 @@ export function useBoard({
       window.removeEventListener("touchstart", handleUserActivity);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [enabled, pollingEnabled, reload, userId]);
+  }, [enabled, pollingEnabled, reloadBoardForInvalidation, userId]);
 
   useEffect(() => {
     if (!userId) return;
@@ -859,8 +974,9 @@ export function useBoard({
     const channel = new BroadcastChannel(BOARD_VERSION_BROADCAST_CHANNEL);
     const reloadGate = createBoardReloadGate({
       userId,
-      reload: async () => {
-        await reload({ refreshVersion: false });
+      reload: reloadBoardForInvalidation,
+      onApplied: (message) => {
+        versionKeyRef.current = message.versionKey;
       }
     });
     broadcastChannelRef.current = channel;
@@ -872,7 +988,6 @@ export function useBoard({
       const summary = mergeBoardVersionSummary(lastVersionSummaryRef.current, message.summary);
       const nextVersionKey = buildBoardVersionKey(summary, dataRef.current);
       lastVersionSummaryRef.current = summary;
-      versionKeyRef.current = nextVersionKey;
       if (shouldReloadForBoardBroadcast(message.type, previousVersionKey, nextVersionKey, hasLoadedBoard)) {
         reloadGate.receive({ ...message, type: "board-reload", summary, versionKey: nextVersionKey });
       }
@@ -882,7 +997,7 @@ export function useBoard({
       reloadGate.dispose();
       channel.close();
     };
-  }, [reload, userId]);
+  }, [reloadBoardForInvalidation, userId]);
 
   useEffect(() => {
     if (!enabled || !pollingEnabled) return;

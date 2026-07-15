@@ -69,6 +69,21 @@ export async function runDurableLogout({
   }
 }
 
+export function getOwnerBoardInteractionProps(
+  logoutPending: boolean,
+  board: Pick<
+    ReturnType<typeof useBoard>,
+    "enqueueCellState" | "enqueueCompletion" | "reload"
+  >
+) {
+  return {
+    enqueueCellState: board.enqueueCellState,
+    enqueueCompletion: board.enqueueCompletion,
+    onBoardChanged: board.reload,
+    writeLocked: logoutPending
+  };
+}
+
 export function getAuthErrorMessage(search: string): string | null {
   const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
   if (params.get("authError") !== "oauth_unavailable") return null;
@@ -394,9 +409,7 @@ export function App() {
               {board.data ? (
                 <BoardOverview
                   board={board.data}
-                  enqueueCellState={board.enqueueCellState}
-                  enqueueCompletion={board.enqueueCompletion}
-                  onBoardChanged={board.reload}
+                  {...getOwnerBoardInteractionProps(logoutPending, board)}
                 />
               ) : null}
             </>

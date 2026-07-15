@@ -10,9 +10,11 @@ import {
   getAuthErrorMessage,
   getDurableLogoutFailureState,
   getDirectSharedRiceBinHistoryUrls,
+  getOwnerBoardInteractionProps,
   getUrlWithoutSharedRiceBinId,
   runDurableLogout
 } from "./App";
+import { ReliablePatchQueueFlushError } from "./features/board/reliablePatchQueue";
 
 const hooks = vi.hoisted(() => ({
   effects: [] as Array<{
@@ -222,6 +224,24 @@ describe("runDurableLogout", () => {
     expect(logout).not.toHaveBeenCalled();
   });
 
+  it("blocks logout when flushing reports a permanent rejection", async () => {
+    const logout = vi.fn(async () => undefined);
+
+    await expect(runDurableLogout({
+      mode: "normal",
+      flushPendingWrites: async () => {
+        throw new ReliablePatchQueueFlushError("rejected", new Error("Locked row"));
+      },
+      retryPendingWrites: vi.fn(),
+      discardPendingWrites: vi.fn(),
+      logout
+    })).rejects.toMatchObject({
+      stage: "flush",
+      cause: expect.objectContaining({ reason: "rejected" })
+    });
+    expect(logout).not.toHaveBeenCalled();
+  });
+
   it("resumes queues before retrying the flush and logout", async () => {
     const order: string[] = [];
 
@@ -335,8 +355,21 @@ describe("App", () => {
     renderToStaticMarkup(createElement(App));
 
     expect(hooks.BoardOverview).toHaveBeenCalledWith(
-      expect.objectContaining({ enqueueCompletion, enqueueCellState })
+      expect.objectContaining({ enqueueCompletion, enqueueCellState, writeLocked: false })
     );
+  });
+
+  it("derives a real owner-board interaction lock while logout is pending", () => {
+    const enqueueCompletion = vi.fn();
+    const enqueueCellState = vi.fn();
+    const reload = vi.fn();
+
+    expect(getOwnerBoardInteractionProps(true, { enqueueCompletion, enqueueCellState, reload })).toEqual({
+      enqueueCompletion,
+      enqueueCellState,
+      onBoardChanged: reload,
+      writeLocked: true
+    });
   });
 
   it("does not load the legacy dashboard payload for the board-only main screen", () => {
