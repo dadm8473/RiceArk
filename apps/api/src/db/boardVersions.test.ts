@@ -6,6 +6,7 @@ import {
   bumpBoardManifestVersionForOwnedSheetStatement,
   bumpBoardManifestVersionStatement,
   bumpBoardSheetVersionForNoteStatement,
+  bumpBoardSheetVersionForAxisItemStatement,
   bumpBoardSheetVersionStatement,
   bumpBoardSheetVersionsForCharacterStatement,
   bumpBoardSheetVersionsForTablesStatement
@@ -53,7 +54,8 @@ function createVersionDatabase(): DatabaseSync {
     CREATE TABLE board_tables (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
-      sheet_id TEXT NOT NULL
+      sheet_id TEXT NOT NULL,
+      locked INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE board_notes (
       id TEXT PRIMARY KEY,
@@ -68,7 +70,8 @@ function createVersionDatabase(): DatabaseSync {
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       table_id TEXT NOT NULL,
-      character_id TEXT
+      character_id TEXT,
+      visible INTEGER NOT NULL DEFAULT 1
     );
   `);
   return database;
@@ -184,6 +187,19 @@ describe("board mutation versions", () => {
     expect(statements[0]?.sql).toContain("RETURNING id, content_version AS version");
   });
 
+  it("finds an owned sheet through an axis item with full ownership guards", () => {
+    const { env, statements } = createEnv();
+
+    bumpBoardSheetVersionForAxisItemStatement(env, "user-1", "axis-1");
+
+    expect(statements[0]).toMatchObject({ values: ["user-1", "axis-1", "user-1", "user-1"] });
+    expect(statements[0]?.sql).toContain("JOIN board_tables");
+    expect(statements[0]?.sql).toContain("board_axis_items.table_id = board_tables.id");
+    expect(statements[0]?.sql).toContain("board_axis_items.user_id = board_tables.user_id");
+    expect(statements[0]?.sql.match(/user_id = \?/g)).toHaveLength(3);
+    expect(statements[0]?.sql).toContain("RETURNING id, content_version AS version");
+  });
+
   it("finds distinct owned sheets through character axis items and returns their versions", () => {
     const { env, statements } = createEnv();
 
@@ -265,6 +281,31 @@ describe("board mutation versions", () => {
 
         expect(executeStatement(database, ownedNote)).toEqual([{ id: "sheet-1", version: 1 }]);
         expect(executeStatement(database, foreignNote)).toEqual([]);
+        expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("sheet-2")).toEqual({ content_version: 0 });
+      });
+    });
+
+    it("updates the owning sheet for an axis item without crossing user ownership", () => {
+      withVersionDatabase((database) => {
+        database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?), (?, ?)")
+          .run("sheet-1", "user-1", "sheet-2", "user-2");
+        database.prepare("INSERT INTO board_tables (id, user_id, sheet_id) VALUES (?, ?, ?), (?, ?, ?)")
+          .run("table-1", "user-1", "sheet-1", "table-2", "user-2", "sheet-2");
+        database.prepare("INSERT INTO board_axis_items (id, user_id, table_id) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)")
+          .run(
+            "axis-1", "user-1", "table-1",
+            "axis-2", "user-2", "table-2",
+            "axis-malformed", "user-1", "table-2"
+          );
+        const ownedAxis = captureStatement((env) => bumpBoardSheetVersionForAxisItemStatement(env, "user-1", "axis-1"));
+        const foreignAxis = captureStatement((env) => bumpBoardSheetVersionForAxisItemStatement(env, "user-1", "axis-2"));
+        const malformedAxis = captureStatement((env) =>
+          bumpBoardSheetVersionForAxisItemStatement(env, "user-1", "axis-malformed")
+        );
+
+        expect(executeStatement(database, ownedAxis)).toEqual([{ id: "sheet-1", version: 1 }]);
+        expect(executeStatement(database, foreignAxis)).toEqual([]);
+        expect(executeStatement(database, malformedAxis)).toEqual([]);
         expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("sheet-2")).toEqual({ content_version: 0 });
       });
     });

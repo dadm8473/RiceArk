@@ -102,6 +102,28 @@ export function bumpBoardSheetVersionForNoteStatement(env: Env, userId: string, 
   ).bind(userId, noteId, userId);
 }
 
+export function bumpBoardSheetVersionForAxisItemStatement(env: Env, userId: string, axisItemId: string) {
+  return env.DB.prepare(
+    `UPDATE sheets
+     SET content_version = content_version + 1,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE sheets.user_id = ?
+       AND sheets.id IN (
+         SELECT board_tables.sheet_id
+         FROM board_axis_items
+         JOIN board_tables
+           ON board_axis_items.table_id = board_tables.id
+          AND board_axis_items.user_id = board_tables.user_id
+         WHERE board_axis_items.id = ?
+           AND board_axis_items.user_id = ?
+           AND board_axis_items.visible = 1
+           AND board_tables.user_id = ?
+           AND board_tables.locked = 0
+       )
+     RETURNING id, content_version AS version`
+  ).bind(userId, axisItemId, userId, userId);
+}
+
 export function bumpBoardSheetVersionsForCharacterStatement(env: Env, userId: string, characterId: string) {
   return env.DB.prepare(
     `UPDATE sheets

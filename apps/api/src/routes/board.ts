@@ -469,7 +469,7 @@ boardRoutes.patch(
     if (updated === "not_found") {
       throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
     }
-    return c.json({ ok: true });
+    return c.json(updated);
   }
 );
 
@@ -480,7 +480,7 @@ boardRoutes.delete("/board/tables/:id", zValidator("param", boardTableIdParamSch
   if (!deleted) {
     throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
   }
-  return c.body(null, 204);
+  return c.json(deleted);
 });
 
 boardRoutes.post(
@@ -500,7 +500,7 @@ boardRoutes.post(
     if (!imported) {
       throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
     }
-    return c.json({ ok: true });
+    return c.json(imported);
   }
 );
 
@@ -566,7 +566,7 @@ boardRoutes.patch("/board/axis-items/order", zValidator("json", boardAxisOrderSc
   if (!updated) {
     throw new ApiError(400, "invalid_board_axis_order", "행 또는 열 순서에 사용할 수 없는 항목이 있습니다.");
   }
-  return c.json({ ok: true });
+  return c.json(updated);
 });
 
 boardRoutes.patch(
@@ -581,7 +581,7 @@ boardRoutes.patch(
     if (!updated) {
       throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
     }
-    return c.json({ ok: true });
+    return c.json(updated);
   }
 );
 
@@ -608,7 +608,7 @@ boardRoutes.post("/board/tables/:id/transpose", zValidator("param", boardTableId
   if (!updated) {
     throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
   }
-  return c.json({ ok: true });
+  return c.json(updated);
 });
 
 boardRoutes.patch(
@@ -626,7 +626,7 @@ boardRoutes.patch(
     if (!updated) {
       throw new ApiError(404, "board_axis_item_not_found", "행 또는 열 항목을 찾을 수 없습니다.");
     }
-    return c.json({ ok: true });
+    return c.json(updated);
   }
 );
 
@@ -637,7 +637,7 @@ boardRoutes.delete("/board/axis-items/:id", zValidator("param", boardAxisItemIdP
   if (!deleted) {
     throw new ApiError(404, "board_axis_item_not_found", "행 또는 열 항목을 찾을 수 없습니다.");
   }
-  return c.body(null, 204);
+  return c.json(deleted);
 });
 
 boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchSchema), async (c) => {
@@ -647,7 +647,7 @@ boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchS
   if (!saved) {
     throw new ApiError(400, "invalid_board_completion_target", "Board completion target is not available");
   }
-  return c.json({ ok: true });
+  return c.json(saved);
 });
 
 boardRoutes.patch("/board/cell-states", zValidator("json", boardCellStatePatchBatchSchema), async (c) => {
@@ -657,7 +657,7 @@ boardRoutes.patch("/board/cell-states", zValidator("json", boardCellStatePatchBa
   if (!saved) {
     throw new ApiError(400, "invalid_board_cell_state_target", "셀 표시 상태를 바꿀 수 없는 항목입니다.");
   }
-  return c.json({ ok: true });
+  return c.json(saved);
 });
 
 boardRoutes.patch(
@@ -672,6 +672,6 @@ boardRoutes.patch(
     if (!updated) {
       throw new ApiError(404, "board_axis_item_not_found", "Board axis item not found");
     }
-    return c.json({ ok: true });
+    return c.json(updated);
   }
 );

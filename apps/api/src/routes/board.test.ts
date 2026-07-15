@@ -717,6 +717,138 @@ describe("board mutation routes", () => {
     return { env, batches };
   }
 
+  function createRemainingMutationRouteEnv() {
+    const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
+
+    const execute = (statement: { sql: string; values: unknown[] }) => {
+      const sql = statement.sql.replace(/\s+/g, " ").trim();
+      if (sql.startsWith("UPDATE sheets") && sql.includes("content_version = content_version + 1")) {
+        const tableIds = statement.values
+          .filter((value): value is string => typeof value === "string" && value.startsWith("["))
+          .flatMap((value) => JSON.parse(value) as string[]);
+        return {
+          success: true,
+          meta: { changes: tableIds.includes("table-2") ? 2 : 1 },
+          results: tableIds.includes("table-2")
+            ? [{ id: "sheet-1", version: 4 }, { id: "sheet-2", version: 8 }]
+            : [{ id: "sheet-1", version: 4 }]
+        };
+      }
+      if (sql.startsWith("UPDATE board_tables") && sql.includes("json_each")) {
+        const ids = JSON.parse(String(statement.values[1])) as string[];
+        return { success: true, meta: { changes: ids.length }, results: ids.map((id) => ({ id })) };
+      }
+      if (sql.startsWith("UPDATE board_axis_items") && sql.includes("json_each")) {
+        const ids = JSON.parse(String(statement.values[0])) as string[];
+        return { success: true, meta: { changes: ids.length }, results: ids.map((id) => ({ id })) };
+      }
+      if (sql.includes("RETURNING table_id AS id")) {
+        const id = statement.values.includes("table-2") ? "table-2" : "table-1";
+        return { success: true, meta: { changes: 1 }, results: [{ id }] };
+      }
+      if (/\bRETURNING id\b/.test(sql)) {
+        const id = sql.startsWith("INSERT INTO")
+          ? String(statement.values[0])
+          : sql.includes("board_axis_items")
+            ? "axis-1"
+            : "table-1";
+        return { success: true, meta: { changes: 1 }, results: [{ id }] };
+      }
+      return { success: true, meta: { changes: 1 }, results: [] };
+    };
+
+    const env = {
+      ...routeEnv,
+      DB: {
+        prepare(sql: string) {
+          return {
+            sql,
+            values: [] as unknown[],
+            bind(...values: unknown[]) {
+              return { ...this, values };
+            },
+            async first() {
+              const normalizedSql = sql.replace(/\s+/g, " ");
+              if (sql.includes("FROM sessions")) return { id: "user-1", display_name: "Tester", avatar_url: null };
+              if (sql.includes("SELECT id FROM board_tables WHERE user_id = ? LIMIT 1")) return { id: "table-1" };
+              if (sql.includes("SELECT name, default_row_height")) {
+                return {
+                  name: "Table",
+                  default_row_height: 40,
+                  default_column_width: 132,
+                  display_options_json: null,
+                  event_options_json: null,
+                  template_type: "custom",
+                  locked: 0
+                };
+              }
+              if (sql.includes("row_role, column_role, task_axis")) {
+                return { id: "table-1", row_role: "task", column_role: "character", task_axis: "rows", locked: 0 };
+              }
+              if (sql.includes("row_role, column_role, locked")) {
+                return { id: "table-1", row_role: "task", column_role: "character", locked: 0 };
+              }
+              if (sql.includes("SELECT id, locked FROM board_tables") || sql.includes("SELECT locked FROM board_tables")) {
+                return { id: "table-1", locked: 0 };
+              }
+              if (normalizedSql.includes("SELECT id FROM characters") && sql.includes("name = ?")) return { id: "character-1" };
+              if (sql.includes("SELECT id, name") && sql.includes("FROM characters")) {
+                return { id: "character-1", name: "캐릭터" };
+              }
+              if (sql.includes("SELECT id") && sql.includes("FROM board_axis_items")) return null;
+              if (sql.includes("SELECT size_px, cross_size_px")) return { size_px: 40, cross_size_px: 132 };
+              if (sql.includes("MAX(sort_order)") && sql.includes("board_axis_items")) {
+                return { maxSortOrder: 10, taskCount: 1 };
+              }
+              if (sql.includes("MAX(sort_order)") && sql.includes("FROM characters")) return { max_sort: 0 };
+              if (sql.includes("MAX(sort_order)") && sql.includes("FROM tasks")) return { max_sort: 0 };
+              return null;
+            },
+            async all() {
+              if (sql.includes("SELECT id, visible") && sql.includes("FROM board_axis_items")) {
+                return { results: [{ id: "axis-1", visible: 1 }, { id: "axis-2", visible: 1 }] };
+              }
+              if (sql.includes("JOIN board_axis_items row_items")) {
+                return {
+                  results: [
+                    {
+                      tableId: "table-1",
+                      rowItemId: "row-1",
+                      columnItemId: "column-1",
+                      rowKind: "task",
+                      columnKind: "character",
+                      rowTaskResetRuleJson: '{"type":"none"}',
+                      columnTaskResetRuleJson: null
+                    },
+                    {
+                      tableId: "table-2",
+                      rowItemId: "row-2",
+                      columnItemId: "column-2",
+                      rowKind: "task",
+                      columnKind: "character",
+                      rowTaskResetRuleJson: '{"type":"none"}',
+                      columnTaskResetRuleJson: null
+                    }
+                  ]
+                };
+              }
+              return { results: [] };
+            },
+            async run() {
+              return execute(this);
+            }
+          };
+        },
+        async batch(statements: Array<{ sql: string; values: unknown[] }>) {
+          batches.push(statements);
+          return statements.map(execute);
+        }
+      }
+    };
+
+    return { env, batches };
+  }
+
   it.each([
     {
       name: "create sheet",
@@ -798,6 +930,193 @@ describe("board mutation routes", () => {
     expect(response.status).toBe(status);
     expect(await response.json()).toEqual(expected);
   });
+
+  it.each([
+    {
+      name: "table settings",
+      method: "PATCH",
+      path: "/api/board/tables/table-1",
+      body: { name: "Table", defaultRowHeight: 40, defaultColumnWidth: 132 },
+      status: 200,
+      domain: { ok: true },
+      sheetCount: 1
+    },
+    {
+      name: "table delete",
+      method: "DELETE",
+      path: "/api/board/tables/table-1",
+      status: 200,
+      domain: { ok: true },
+      sheetCount: 1
+    },
+    {
+      name: "table layout",
+      method: "PATCH",
+      path: "/api/board/tables/table-1/layout",
+      body: { x: 10, y: 20, width: 320, height: 180 },
+      status: 200,
+      domain: { ok: true },
+      sheetCount: 1
+    },
+    {
+      name: "table transpose",
+      method: "POST",
+      path: "/api/board/tables/table-1/transpose",
+      status: 200,
+      domain: { ok: true },
+      sheetCount: 1
+    },
+    {
+      name: "table character import",
+      method: "POST",
+      path: "/api/board/tables/table-1/characters/import",
+      body: { characters: [{ name: "캐릭터", serverName: "아만", className: "바드", itemLevel: "1700", combatPower: null }] },
+      status: 200,
+      domain: { ok: true },
+      sheetCount: 1
+    },
+    {
+      name: "table manual character creation",
+      method: "POST",
+      path: "/api/board/tables/table-1/characters/manual",
+      body: { name: "수동캐릭터" },
+      status: 201,
+      domain: { id: expect.any(String) },
+      sheetCount: 1
+    },
+    {
+      name: "table task creation",
+      method: "POST",
+      path: "/api/board/tables/table-1/tasks",
+      body: { name: "새 숙제", resetType: "none" },
+      status: 201,
+      domain: { id: expect.any(String) },
+      sheetCount: 1
+    },
+    {
+      name: "axis create",
+      method: "POST",
+      path: "/api/board/axis-items",
+      body: { tableId: "table-1", axis: "row", label: "새 행" },
+      status: 201,
+      domain: { id: expect.any(String) },
+      sheetCount: 1
+    },
+    {
+      name: "axis order",
+      method: "PATCH",
+      path: "/api/board/axis-items/order",
+      body: { tableId: "table-1", axis: "row", axisItemIds: ["axis-2", "axis-1"] },
+      status: 200,
+      domain: { ok: true },
+      sheetCount: 1
+    },
+    {
+      name: "axis update",
+      method: "PATCH",
+      path: "/api/board/axis-items/axis-1",
+      body: { label: "바뀐 행" },
+      status: 200,
+      domain: { ok: true },
+      sheetCount: 1
+    },
+    {
+      name: "axis size",
+      method: "PATCH",
+      path: "/api/board/axis-items/axis-1/size",
+      body: { sizePx: 44 },
+      status: 200,
+      domain: { ok: true },
+      sheetCount: 1
+    },
+    {
+      name: "axis hide",
+      method: "DELETE",
+      path: "/api/board/axis-items/axis-1",
+      status: 200,
+      domain: { ok: true },
+      sheetCount: 1
+    },
+    {
+      name: "completion batch",
+      method: "PATCH",
+      path: "/api/board/completions",
+      body: {
+        patches: [
+          { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1", periodKey: "none:permanent", completed: true },
+          { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1", periodKey: "none:permanent", completed: false },
+          { tableId: "table-2", rowItemId: "row-2", columnItemId: "column-2", periodKey: "none:permanent", completed: true }
+        ]
+      },
+      status: 200,
+      domain: { ok: true },
+      sheetCount: 2
+    },
+    {
+      name: "cell-state batch",
+      method: "PATCH",
+      path: "/api/board/cell-states",
+      body: {
+        patches: [
+          { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1", markType: "fixed", memo: "one" },
+          { tableId: "table-1", rowItemId: "row-1", columnItemId: "column-1", markType: "fixed", memo: "latest" },
+          { tableId: "table-2", rowItemId: "row-2", columnItemId: "column-2", markType: "disabled", memo: null }
+        ]
+      },
+      status: 200,
+      domain: { ok: true },
+      sheetCount: 2
+    }
+  ])("returns additive versions and one increment per distinct sheet for $name", async ({ method, path, body, status, domain, sheetCount }) => {
+    const { env, batches } = createRemainingMutationRouteEnv();
+    const response = await app.request(
+      path,
+      {
+        method,
+        headers: {
+          Cookie: "riceark_session=test-token",
+          ...(body ? { "Content-Type": "application/json" } : {})
+        },
+        ...(body ? { body: JSON.stringify(body) } : {})
+      },
+      env
+    );
+
+    expect(response.status).toBe(status);
+    const payload = await response.json();
+    expect(payload).toEqual({
+      ...domain,
+      versions: {
+        sheets: sheetCount === 2
+          ? [{ id: "sheet-1", version: 4 }, { id: "sheet-2", version: 8 }]
+          : [{ id: "sheet-1", version: 4 }]
+      }
+    });
+    const versionStatements = batches.flat().filter((statement) =>
+      statement.sql.includes("content_version = content_version + 1")
+    );
+    expect(versionStatements).toHaveLength(1);
+  });
+
+  it.each(["/api/board/completions", "/api/board/cell-states"])(
+    "returns empty versions without a write for an accepted empty batch at %s",
+    async (path) => {
+      const { env, batches } = createRemainingMutationRouteEnv();
+      const response = await app.request(
+        path,
+        {
+          method: "PATCH",
+          headers: { Cookie: "riceark_session=test-token", "Content-Type": "application/json" },
+          body: JSON.stringify({ patches: [] })
+        },
+        env
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ ok: true, versions: { sheets: [] } });
+      expect(batches).toEqual([]);
+    }
+  );
 
   it.each([
     {
@@ -983,7 +1302,13 @@ describe("board share routes", () => {
         },
         async batch(statements: Array<{ sql: string; values: unknown[] }>) {
           batches.push(statements);
-          return statements.map(() => ({ success: true, meta: { changes: 1 } }));
+          return statements.map((statement) => ({
+            success: true,
+            meta: { changes: 1 },
+            results: statement.sql.includes("RETURNING")
+              ? [{ id: statement.values[0], share_id: statement.values.at(-1) }]
+              : []
+          }));
         }
       }
     };
@@ -1001,6 +1326,8 @@ describe("board share routes", () => {
     expect(start.status).toBe(201);
     expect(await start.json()).toEqual({ shareId: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/) });
     expect(batches[0]?.some((statement) => statement.sql.includes("INSERT INTO board_shares"))).toBe(true);
+    expect(batches[0]?.some((statement) => statement.sql.includes("board_manifest_versions"))).toBe(false);
+    expect(batches[0]?.some((statement) => statement.sql.includes("content_version"))).toBe(false);
 
     const stop = await app.request(
       "/api/board/sheets/sheet-1/share",
@@ -1009,6 +1336,8 @@ describe("board share routes", () => {
     );
     expect(stop.status).toBe(204);
     expect(batches.at(-1)?.some((statement) => statement.sql.includes("DELETE FROM board_shares"))).toBe(true);
+    expect(batches.at(-1)?.some((statement) => statement.sql.includes("board_manifest_versions"))).toBe(false);
+    expect(batches.at(-1)?.some((statement) => statement.sql.includes("content_version"))).toBe(false);
   });
 
   it("serves shared rice bins without login and blocks public mutation methods", async () => {

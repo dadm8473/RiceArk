@@ -19,6 +19,7 @@ import {
   createBoardTaskForTable,
   defaultBoardRolesForOrientation,
   defaultOrientationForTableRoles,
+  deleteBoardTable,
   deleteBoardNote,
   deleteBoardSheet,
   deleteBoardShareFavorite,
@@ -35,6 +36,7 @@ import {
   loadBoardVersionSummary,
   loadSharedBoard,
   loadSharedBoardVersionSummary,
+  hideBoardAxisItem,
   startBoardSheetShare,
   stopBoardSheetShare,
   mergeBoardCellStatePatches,
@@ -43,6 +45,7 @@ import {
   saveBoardCellStatePatches,
   saveBoardCompletionPatches,
   transposeBoardRoles,
+  updateBoardTableLayout,
   updateBoardNote,
   updateBoardNoteLayout,
   updateBoardSheet
@@ -51,6 +54,25 @@ import {
 interface MutationStatement {
   sql: string;
   values: unknown[];
+}
+
+function successfulVersionedMutationBatch(
+  statements: MutationStatement[],
+  captured: MutationStatement[] = []
+): Array<{ success: true; results: Array<{ id: string; version?: number }> }> {
+  captured.push(...statements);
+  return statements.map((statement) => {
+    if (statement.sql.includes("UPDATE sheets")) {
+      return { success: true, results: [{ id: "sheet-1", version: 4 }] };
+    }
+    if (statement.sql.includes("UPDATE board_tables")) {
+      return { success: true, results: [{ id: "table-1" }] };
+    }
+    if (statement.sql.includes("RETURNING id")) {
+      return { success: true, results: [{ id: String(statement.values[0]) }] };
+    }
+    return { success: true, results: [] };
+  });
 }
 
 interface MutationState {
@@ -448,7 +470,7 @@ describe("board db defaults", () => {
     expect(DEFAULT_TABLE_NAME).toBe("숙제");
   });
 
-  it("starts sheet sharing with a fresh unguessable share id and bumps versions", async () => {
+  it("starts sheet sharing with a fresh unguessable share id without board version bumps", async () => {
     const runs: Array<{ sql: string; values: unknown[] }> = [];
     const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
     const env = {
@@ -472,7 +494,11 @@ describe("board db defaults", () => {
         },
         async batch(statements: Array<{ sql: string; values: unknown[] }>) {
           batches.push(statements);
-          return statements.map(() => ({ success: true, meta: { changes: 1 } }));
+          return statements.map((statement) => ({
+            success: true,
+            meta: { changes: 1 },
+            results: statement.sql.includes("RETURNING id") ? [{ id: statement.values[0] }] : []
+          }));
         }
       }
     } as unknown as Parameters<typeof startBoardSheetShare>[0];
@@ -486,11 +512,11 @@ describe("board db defaults", () => {
     expect(runs).toHaveLength(0);
     expect(batches[0]?.some((statement) => statement.sql.includes("DELETE FROM board_shares"))).toBe(true);
     expect(batches[0]?.some((statement) => statement.sql.includes("INSERT INTO board_shares"))).toBe(true);
-    expect(batches[0]?.some((statement) => statement.sql.includes("content_version = content_version + 1"))).toBe(true);
-    expect(batches[0]?.some((statement) => statement.sql.includes("board_manifest_versions"))).toBe(true);
+    expect(batches[0]?.some((statement) => statement.sql.includes("content_version = content_version + 1"))).toBe(false);
+    expect(batches[0]?.some((statement) => statement.sql.includes("board_manifest_versions"))).toBe(false);
   });
 
-  it("stops sheet sharing by deleting the active share and bumping versions", async () => {
+  it("stops sheet sharing with an ownership-guarded delete and no board version bumps", async () => {
     const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
     const env = {
       DB: {
@@ -509,14 +535,15 @@ describe("board db defaults", () => {
         },
         async batch(statements: Array<{ sql: string; values: unknown[] }>) {
           batches.push(statements);
-          return statements.map(() => ({ success: true, meta: { changes: 1 } }));
+          return statements.map(() => ({ success: true, meta: { changes: 1 }, results: [{ id: "sheet-1" }] }));
         }
       }
     } as unknown as Parameters<typeof stopBoardSheetShare>[0];
 
     await expect(stopBoardSheetShare(env, "user-1", "sheet-1")).resolves.toBe(true);
     expect(batches[0]?.some((statement) => statement.sql.includes("DELETE FROM board_shares"))).toBe(true);
-    expect(batches[0]?.some((statement) => statement.sql.includes("content_version = content_version + 1"))).toBe(true);
+    expect(batches[0]?.some((statement) => statement.sql.includes("content_version = content_version + 1"))).toBe(false);
+    expect(batches[0]?.some((statement) => statement.sql.includes("board_manifest_versions"))).toBe(false);
   });
 
   it.each(["create sheet", "rename sheet", "delete sheet", "create table"] as const)(
@@ -1130,7 +1157,13 @@ describe("board db defaults", () => {
         },
         async batch(statements: Array<{ sql: string; values: unknown[] }>) {
           batches.push(statements);
-          return statements.map(() => ({ success: true, meta: { changes: 1 } }));
+          return statements.map((statement) => ({
+            success: true,
+            meta: { changes: 1 },
+            results: statement.sql.includes("UPDATE sheets")
+              ? [{ id: "sheet-1", version: 4 }]
+              : [{ id: "table-1" }]
+          }));
         }
       }
     } as unknown as Parameters<typeof saveBoardCompletionPatches>[0];
@@ -1145,7 +1178,7 @@ describe("board db defaults", () => {
           completed: true
         }
       ])
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ ok: true, versions: { sheets: [{ id: "sheet-1", version: 4 }] } });
     await expect(
       saveBoardCellStatePatches(env, "user-1", [
         {
@@ -1156,7 +1189,7 @@ describe("board db defaults", () => {
           memo: null
         }
       ])
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ ok: true, versions: { sheets: [{ id: "sheet-1", version: 4 }] } });
 
     expect(batches).toHaveLength(2);
     expect(batches[0]?.some((statement) => statement.sql.includes("content_version = content_version + 1"))).toBe(true);
@@ -1773,7 +1806,12 @@ describe("board db defaults", () => {
         },
         async batch(statements: Array<{ sql: string; values: unknown[] }>) {
           batches.push(statements);
-          return statements.map(() => ({ success: true }));
+          return statements.map((statement) => ({
+            success: true,
+            results: statement.sql.includes("UPDATE sheets")
+              ? [{ id: "sheet-1", version: 4 }]
+              : axisItems.map((item) => ({ id: item.id }))
+          }));
         }
       }
     } as unknown as Parameters<typeof reorderBoardAxisItems>[0];
@@ -1784,8 +1822,10 @@ describe("board db defaults", () => {
         axis: "row",
         axisItemIds: ["row-b", "row-a"]
       })
-    ).resolves.toBe(true);
-    expect(batches[0]?.map((statement) => statement.values[1])).toEqual(["row-b", "row-a", "row-hidden", "row-b", "row-a", "row-hidden"]);
+    ).resolves.toEqual({ ok: true, versions: { sheets: [{ id: "sheet-1", version: 4 }] } });
+    expect(batches[0]).toHaveLength(3);
+    expect(batches[0]?.[0]?.values[0]).toBe(JSON.stringify(["row-b", "row-a", "row-hidden"]));
+    expect(batches[0]?.[1]?.values[0]).toBe(JSON.stringify(["row-b", "row-a", "row-hidden"]));
   });
 
   it("moves hidden axis items out of the way before reordering visible items", async () => {
@@ -1812,17 +1852,19 @@ describe("board db defaults", () => {
             }
           };
         },
-        async batch(statements: Array<{ values: unknown[] }>) {
-          for (const statement of statements) {
-            const nextSortOrder = Number(statement.values[0]);
-            const id = String(statement.values[1]);
+        async batch(statements: Array<{ sql: string; values: unknown[] }>) {
+          const orderedIds = JSON.parse(String(statements[0]?.values[0])) as string[];
+          for (const [index, id] of orderedIds.entries()) {
             const item = axisItems.find((axisItem) => axisItem.id === id);
             if (!item) throw new Error("missing axis item");
-            const collision = axisItems.some((axisItem) => axisItem.id !== id && axisItem.sortOrder === nextSortOrder);
-            if (collision) throw new Error("UNIQUE constraint failed: board_axis_items.table_id, board_axis_items.axis, board_axis_items.sort_order");
-            item.sortOrder = nextSortOrder;
+            item.sortOrder = index * 10;
           }
-          return statements.map(() => ({ success: true }));
+          return statements.map((statement) => ({
+            success: true,
+            results: statement.sql.includes("UPDATE sheets")
+              ? [{ id: "sheet-1", version: 4 }]
+              : orderedIds.map((id) => ({ id }))
+          }));
         }
       }
     } as unknown as Parameters<typeof reorderBoardAxisItems>[0];
@@ -1833,7 +1875,7 @@ describe("board db defaults", () => {
         axis: "row",
         axisItemIds: ["row-b", "row-a"]
       })
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ ok: true, versions: { sheets: [{ id: "sheet-1", version: 4 }] } });
     expect(axisItems).toMatchObject([
       { id: "row-a", sortOrder: 10 },
       { id: "row-hidden", sortOrder: 20 },
@@ -1880,18 +1922,23 @@ describe("board db defaults", () => {
               return { success: true };
             }
           };
+        },
+        async batch(statements: MutationStatement[]) {
+          inserts.push(...statements.filter((statement) => statement.sql.includes("INSERT INTO board_axis_items")));
+          return successfulVersionedMutationBatch(statements);
         }
       }
     } as unknown as Parameters<typeof createBoardAxisItem>[0];
 
     await expect(createBoardAxisItem(env, "user-1", { tableId: "table-1", axis: "row", label: "새 숙제" })).resolves.toEqual({
-      id: expect.any(String)
+      id: expect.any(String),
+      versions: { sheets: [{ id: "sheet-1", version: 4 }] }
     });
 
     const inserted = inserts.at(-1);
     expect(inserted?.sql).toContain("size_px");
     expect(inserted?.sql).toContain("cross_size_px");
-    expect(inserted?.values.slice(-3)).toEqual([20, 44, 180]);
+    expect(inserted?.values.slice(11, 14)).toEqual([20, 44, 180]);
   });
 
   it("creates a manual character and attaches it to the table character axis", async () => {
@@ -1932,6 +1979,9 @@ describe("board db defaults", () => {
               return { success: true };
             }
           };
+        },
+        async batch(statements: MutationStatement[]) {
+          return successfulVersionedMutationBatch(statements, runs);
         }
       }
     } as unknown as Parameters<typeof createManualBoardCharacterForTable>[0];
@@ -1944,13 +1994,15 @@ describe("board db defaults", () => {
         itemLevel: "",
         combatPower: null
       })
-    ).resolves.toEqual({ id: expect.any(String) });
+    ).resolves.toEqual({ id: expect.any(String), versions: { sheets: [{ id: "sheet-1", version: 4 }] } });
 
     const characterInsert = runs.find((statement) => statement.sql.includes("INSERT INTO characters"));
     const axisInsert = runs.find((statement) => statement.sql.includes("INSERT INTO board_axis_items"));
     expect(characterInsert?.sql).toContain("'manual'");
     expect(characterInsert?.values.slice(2, 7)).toEqual(["임의캐릭터", "", "", "", null]);
-    expect(axisInsert?.values.slice(4, 7)).toEqual(["임의캐릭터", expect.any(String), 20]);
+    expect(axisInsert?.values[3]).toBe("임의캐릭터");
+    expect(axisInsert?.values[4]).toBe(20);
+    expect(axisInsert?.values[7]).toEqual(expect.any(String));
   });
 
   it("uses the existing character axis when table roles are stale after a transpose", async () => {
@@ -1998,6 +2050,9 @@ describe("board db defaults", () => {
               return { success: true };
             }
           };
+        },
+        async batch(statements: MutationStatement[]) {
+          return successfulVersionedMutationBatch(statements, runs);
         }
       }
     } as unknown as Parameters<typeof createManualBoardCharacterForTable>[0];
@@ -2010,13 +2065,13 @@ describe("board db defaults", () => {
         itemLevel: "",
         combatPower: null
       })
-    ).resolves.toEqual({ id: expect.any(String) });
+    ).resolves.toEqual({ id: expect.any(String), versions: { sheets: [{ id: "sheet-1", version: 4 }] } });
 
     const axisInsert = runs.find((statement) => statement.sql.includes("INSERT INTO board_axis_items"));
     const roleRepair = runs.find((statement) => statement.sql.includes("UPDATE board_tables"));
     expect(roleRepair?.values.slice(0, 3)).toEqual(["character", "task", "columns"]);
-    expect(axisInsert?.values[3]).toBe("row");
-    expect(axisInsert?.values.slice(-3)).toEqual([90, 48, 132]);
+    expect(axisInsert?.values[2]).toBe("row");
+    expect(axisInsert?.values.slice(4, 7)).toEqual([90, 48, 132]);
   });
 
   it("inherits visible axis item dimensions when adding a task row", async () => {
@@ -2059,6 +2114,10 @@ describe("board db defaults", () => {
               return { success: true };
             }
           };
+        },
+        async batch(statements: MutationStatement[]) {
+          inserts.push(...statements.filter((statement) => statement.sql.includes("INSERT INTO board_axis_items")));
+          return successfulVersionedMutationBatch(statements);
         }
       }
     } as unknown as Parameters<typeof createBoardTaskForTable>[0];
@@ -2070,12 +2129,12 @@ describe("board db defaults", () => {
         resetRule: { type: "daily", hour: 6, timezone: "Asia/Seoul" },
         taskColor: "#be123c"
       })
-    ).resolves.toEqual({ id: expect.any(String) });
+    ).resolves.toEqual({ id: expect.any(String), versions: { sheets: [{ id: "sheet-1", version: 4 }] } });
 
     const inserted = inserts.at(-1);
     expect(inserted?.sql).toContain("size_px");
     expect(inserted?.sql).toContain("cross_size_px");
-    expect(inserted?.values.slice(-5)).toEqual(["#be123c", 20, 44, 180, null]);
+    expect(inserted?.values.slice(7, 12)).toEqual(["#be123c", 20, 44, 180, null]);
   });
 
   it("adds new board tasks to the task column after a table transpose", async () => {
@@ -2121,6 +2180,10 @@ describe("board db defaults", () => {
               return { success: true };
             }
           };
+        },
+        async batch(statements: MutationStatement[]) {
+          inserts.push(...statements.filter((statement) => statement.sql.includes("INSERT INTO board_axis_items")));
+          return successfulVersionedMutationBatch(statements);
         }
       }
     } as unknown as Parameters<typeof createBoardTaskForTable>[0];
@@ -2132,13 +2195,13 @@ describe("board db defaults", () => {
         resetRule: { type: "weekly", weekday: 3, hour: 6, timezone: "Asia/Seoul" },
         taskColor: "#7c3aed"
       })
-    ).resolves.toEqual({ id: expect.any(String) });
+    ).resolves.toEqual({ id: expect.any(String), versions: { sheets: [{ id: "sheet-1", version: 4 }] } });
 
     const inserted = inserts.at(-1);
-    expect(inserted?.values[3]).toBe("column");
-    expect(inserted?.values[4]).toBe("전환 후 숙제");
-    expect(inserted?.values[7]).toBe("weekly");
-    expect(inserted?.values.slice(-5)).toEqual(["#7c3aed", 40, 132, 48, null]);
+    expect(inserted?.values[2]).toBe("column");
+    expect(inserted?.values[3]).toBe("전환 후 숙제");
+    expect(inserted?.values[5]).toBe("weekly");
+    expect(inserted?.values.slice(7, 12)).toEqual(["#7c3aed", 40, 132, 48, null]);
   });
 
   it("uses the existing task axis when table roles are stale after a transpose", async () => {
@@ -2186,6 +2249,11 @@ describe("board db defaults", () => {
               return { success: true };
             }
           };
+        },
+        async batch(statements: MutationStatement[]) {
+          roleRepairs.push(...statements.filter((statement) => statement.sql.includes("UPDATE board_tables")));
+          inserts.push(...statements.filter((statement) => statement.sql.includes("INSERT INTO board_axis_items")));
+          return successfulVersionedMutationBatch(statements);
         }
       }
     } as unknown as Parameters<typeof createBoardTaskForTable>[0];
@@ -2196,10 +2264,10 @@ describe("board db defaults", () => {
         scope: "character",
         resetRule: { type: "daily", hour: 6, timezone: "Asia/Seoul" }
       })
-    ).resolves.toEqual({ id: expect.any(String) });
+    ).resolves.toEqual({ id: expect.any(String), versions: { sheets: [{ id: "sheet-1", version: 4 }] } });
 
     expect(roleRepairs.at(-1)?.values.slice(0, 3)).toEqual(["character", "task", "columns"]);
-    expect(inserts.at(-1)?.values[3]).toBe("column");
+    expect(inserts.at(-1)?.values[2]).toBe("column");
   });
 
   it("reuses an existing board task created by the same request id", async () => {
@@ -2244,7 +2312,7 @@ describe("board db defaults", () => {
         resetRule: { type: "daily", hour: 6, timezone: "Asia/Seoul" },
         createRequestId: "task-create-1"
       })
-    ).resolves.toEqual({ id: "axis-existing" });
+    ).resolves.toEqual({ id: "axis-existing", versions: { sheets: [] } });
     expect(runs.some((statement) => statement.sql.includes("INSERT INTO board_axis_items"))).toBe(false);
   });
 
@@ -2602,5 +2670,223 @@ describe("board db defaults", () => {
       { ...base, mark_type: "fixed", mark_period_key: null },
       { ...base, mark_type: "disabled", mark_period_key: null }
     ]);
+  });
+
+  it("batches a table layout write with its owning-sheet version and validates both returned rows", async () => {
+    const batches: MutationStatement[][] = [];
+    const env = {
+      DB: {
+        prepare(sql: string) {
+          return {
+            sql,
+            values: [] as unknown[],
+            bind(...values: unknown[]) {
+              return { ...this, values };
+            },
+            async run() {
+              return { success: true, meta: { changes: 1 } };
+            }
+          };
+        },
+        async batch(statements: MutationStatement[]) {
+          batches.push(statements);
+          return statements.map((statement) =>
+            statement.sql.includes("UPDATE sheets")
+              ? { success: true, results: [{ id: "sheet-1", version: 4 }] }
+              : { success: true, results: [{ id: "table-1" }] }
+          );
+        }
+      }
+    } as unknown as Parameters<typeof updateBoardTableLayout>[0];
+
+    await expect(
+      updateBoardTableLayout(env, "user-1", "table-1", { x: 10, y: 20, width: 320, height: 180 })
+    ).resolves.toEqual({ ok: true, versions: { sheets: [{ id: "sheet-1", version: 4 }] } });
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(2);
+    expect(batches[0]?.[0]?.sql).toContain("UPDATE board_tables");
+    expect(batches[0]?.[0]?.sql).toContain("RETURNING id");
+    expect(batches[0]?.[1]?.sql).toContain("UPDATE sheets");
+
+    const partialEnv = {
+      DB: {
+        prepare: env.DB.prepare,
+        async batch(statements: MutationStatement[]) {
+          return statements.map((statement) =>
+            statement.sql.includes("UPDATE sheets")
+              ? { success: true, results: [{ id: "sheet-1", version: 5 }] }
+              : { success: true, results: [] }
+          );
+        }
+      }
+    } as unknown as Parameters<typeof updateBoardTableLayout>[0];
+    await expect(
+      updateBoardTableLayout(partialEnv, "user-1", "table-1", { x: 1, y: 2, width: null, height: null })
+    ).rejects.toThrow("did not return every required row");
+  });
+
+  it("bumps the owning sheet before deleting a table and validates the table delete row", async () => {
+    const batches: MutationStatement[][] = [];
+    const env = {
+      DB: {
+        prepare(sql: string) {
+          return {
+            sql,
+            values: [] as unknown[],
+            bind(...values: unknown[]) {
+              return { ...this, values };
+            },
+            async first() {
+              return { id: "table-1", locked: 0 };
+            }
+          };
+        },
+        async batch(statements: MutationStatement[]) {
+          batches.push(statements);
+          return statements.map((statement) => {
+            if (statement.sql.includes("UPDATE sheets")) {
+              return { success: true, results: [{ id: "sheet-1", version: 6 }] };
+            }
+            if (statement.sql.includes("DELETE FROM board_tables")) {
+              return { success: true, results: [{ id: "table-1" }] };
+            }
+            return { success: true, results: [] };
+          });
+        }
+      }
+    } as unknown as Parameters<typeof deleteBoardTable>[0];
+
+    await expect(deleteBoardTable(env, "user-1", "table-1")).resolves.toEqual({
+      ok: true,
+      versions: { sheets: [{ id: "sheet-1", version: 6 }] }
+    });
+    expect(batches[0]?.[0]?.sql).toContain("UPDATE sheets");
+    expect(batches[0]?.at(-1)?.sql).toContain("DELETE FROM board_tables");
+    expect(batches[0]?.at(-1)?.sql).toContain("RETURNING id");
+  });
+
+  it("resolves an axis sheet before hiding the item and fails closed on partial success", async () => {
+    const batches: MutationStatement[][] = [];
+    const env = {
+      DB: {
+        prepare(sql: string) {
+          return {
+            sql,
+            values: [] as unknown[],
+            bind(...values: unknown[]) {
+              return { ...this, values };
+            }
+          };
+        },
+        async batch(statements: MutationStatement[]) {
+          batches.push(statements);
+          return statements.map((statement) =>
+            statement.sql.includes("UPDATE sheets")
+              ? { success: true, results: [{ id: "sheet-1", version: 9 }] }
+              : { success: true, results: [{ id: "axis-1" }] }
+          );
+        }
+      }
+    } as unknown as Parameters<typeof hideBoardAxisItem>[0];
+
+    await expect(hideBoardAxisItem(env, "user-1", "axis-1")).resolves.toEqual({
+      ok: true,
+      versions: { sheets: [{ id: "sheet-1", version: 9 }] }
+    });
+    expect(batches[0]?.[0]?.sql).toContain("UPDATE sheets");
+    expect(batches[0]?.[1]?.sql).toContain("SET visible = 0");
+    expect(batches[0]?.[1]?.sql).toContain("RETURNING id");
+
+    const partialEnv = {
+      DB: {
+        prepare: env.DB.prepare,
+        async batch(statements: MutationStatement[]) {
+          return statements.map((statement) =>
+            statement.sql.includes("UPDATE sheets")
+              ? { success: true, results: [] }
+              : { success: true, results: [{ id: "axis-1" }] }
+          );
+        }
+      }
+    } as unknown as Parameters<typeof hideBoardAxisItem>[0];
+    await expect(hideBoardAxisItem(partialEnv, "user-1", "axis-1")).rejects.toThrow(
+      "did not return every required row"
+    );
+  });
+
+  it("returns empty version metadata for accepted empty completion and cell-state batches without writing", async () => {
+    let batchCalls = 0;
+    const env = {
+      DB: {
+        prepare() {
+          throw new Error("empty batches must not prepare SQL");
+        },
+        async batch() {
+          batchCalls += 1;
+          return [];
+        }
+      }
+    } as unknown as Parameters<typeof saveBoardCompletionPatches>[0];
+
+    await expect(saveBoardCompletionPatches(env, "user-1", [])).resolves.toEqual({
+      ok: true,
+      versions: { sheets: [] }
+    });
+    await expect(saveBoardCellStatePatches(env, "user-1", [])).resolves.toEqual({
+      ok: true,
+      versions: { sheets: [] }
+    });
+    expect(batchCalls).toBe(0);
+  });
+
+  it("keeps share start and stop ownership-guarded without board version statements", async () => {
+    const batches: MutationStatement[][] = [];
+    const env = {
+      DB: {
+        prepare(sql: string) {
+          return {
+            sql,
+            values: [] as unknown[],
+            bind(...values: unknown[]) {
+              return { ...this, values };
+            },
+            async first() {
+              if (sql.includes("FROM sheets")) return { id: "sheet-1" };
+              if (sql.includes("FROM board_shares")) return { share_id: "share-old" };
+              return null;
+            }
+          };
+        },
+        async batch(statements: MutationStatement[]) {
+          batches.push(statements);
+          return statements.map((statement) => ({
+            success: true,
+            results: statement.sql.includes("RETURNING")
+              ? [{ id: statement.sql.includes("DELETE FROM board_shares") ? "sheet-1" : String(statement.values[0] ?? "share-row") }]
+              : []
+          }));
+        }
+      }
+    } as unknown as Parameters<typeof startBoardSheetShare>[0];
+
+    await expect(startBoardSheetShare(env, "user-1", "sheet-1")).resolves.toEqual({
+      shareId: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/)
+    });
+    await expect(stopBoardSheetShare(env, "user-1", "sheet-1")).resolves.toBe(true);
+
+    const statements = batches.flat();
+    expect(statements.some((statement) => statement.sql.includes("board_manifest_versions"))).toBe(false);
+    expect(statements.some((statement) => statement.sql.includes("content_version"))).toBe(false);
+    const shareInsert = statements.find((statement) => statement.sql.includes("INSERT INTO board_shares"));
+    const shareDelete = statements.find(
+      (statement) => statement.sql.includes("DELETE FROM board_shares") && statement.sql.includes("RETURNING")
+    );
+    expect(shareInsert?.sql).toContain("SELECT");
+    expect(shareInsert?.sql).toContain("FROM sheets");
+    expect(shareInsert?.sql).toContain("sheets.user_id =");
+    expect(shareInsert?.sql).toContain("RETURNING");
+    expect(shareDelete?.sql).toContain("EXISTS");
+    expect(shareDelete?.sql).toContain("FROM sheets");
+    expect(shareDelete?.sql).toContain("RETURNING");
   });
 });
