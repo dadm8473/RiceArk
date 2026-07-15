@@ -2365,6 +2365,104 @@ describe("board db defaults", () => {
     expect(runs.some((statement) => statement.sql.includes("INSERT INTO board_axis_items"))).toBe(false);
   });
 
+  function createTaskCreateRequestRaceEnv(error: Error, winnerId: string | null) {
+    const preparedSql: string[] = [];
+    let axisRequestReads = 0;
+    let batchCalls = 0;
+    const env = {
+      DB: {
+        prepare(sql: string) {
+          preparedSql.push(sql);
+          return {
+            sql,
+            values: [] as unknown[],
+            bind(...values: unknown[]) {
+              return { ...this, values };
+            },
+            async first() {
+              if (sql.includes("SELECT id, row_role, column_role, locked FROM board_tables")) {
+                return { id: "table-1", row_role: "task", column_role: "character", locked: 0 };
+              }
+              if (sql.includes("FROM board_axis_items") && sql.includes("create_request_id = ?")) {
+                axisRequestReads += 1;
+                return axisRequestReads === 1 || winnerId === null ? null : { id: winnerId };
+              }
+              if (sql.includes("SELECT id FROM tasks") && sql.includes("create_request_id = ?")) return null;
+              if (sql.includes("SELECT COALESCE(MAX(sort_order), 0) AS max_sort FROM tasks")) return { max_sort: 0 };
+              if (sql.includes("SELECT size_px, cross_size_px")) return null;
+              if (sql.includes("SUM(CASE WHEN kind = 'task'")) return { maxSortOrder: -10, taskCount: 0 };
+              return null;
+            },
+            async all() {
+              return { results: [] };
+            }
+          };
+        },
+        async batch() {
+          batchCalls += 1;
+          throw error;
+        }
+      }
+    } as unknown as Parameters<typeof createBoardTaskForTable>[0];
+
+    return {
+      env,
+      preparedSql,
+      axisRequestReads: () => axisRequestReads,
+      batchCalls: () => batchCalls
+    };
+  }
+
+  it.each([
+    ["task", "D1_ERROR: UNIQUE constraint failed: tasks.user_id, tasks.create_request_id"],
+    ["axis item", "D1_ERROR: UNIQUE constraint failed: board_axis_items.table_id, board_axis_items.create_request_id"]
+  ])("recovers the winning axis after a concurrent %s create-request conflict", async (_constraint, errorMessage) => {
+    const race = createTaskCreateRequestRaceEnv(new Error(errorMessage), "axis-winner");
+
+    await expect(
+      createBoardTaskForTable(race.env, "user-1", "table-1", {
+        name: "동시 생성 숙제",
+        scope: "character",
+        resetRule: { type: "daily", hour: 6, timezone: "Asia/Seoul" },
+        createRequestId: "task-create-race"
+      })
+    ).resolves.toEqual({ id: "axis-winner", versions: { sheets: [] } });
+
+    expect(race.batchCalls()).toBe(1);
+    expect(race.axisRequestReads()).toBe(2);
+    expect(race.preparedSql.some((sql) => sql.startsWith("SELECT") && sql.includes("content_version"))).toBe(false);
+  });
+
+  it("rethrows an expected create-request conflict when no winning axis exists", async () => {
+    const error = new Error("D1_ERROR: UNIQUE constraint failed: tasks.user_id, tasks.create_request_id");
+    const race = createTaskCreateRequestRaceEnv(error, null);
+
+    await expect(
+      createBoardTaskForTable(race.env, "user-1", "table-1", {
+        name: "승자 없는 충돌",
+        scope: "character",
+        resetRule: { type: "daily", hour: 6, timezone: "Asia/Seoul" },
+        createRequestId: "task-create-no-winner"
+      })
+    ).rejects.toBe(error);
+    expect(race.axisRequestReads()).toBe(2);
+  });
+
+  it("rethrows unrelated batch errors without a conflict-recovery read", async () => {
+    const error = new Error("D1_ERROR: database unavailable");
+    const race = createTaskCreateRequestRaceEnv(error, "axis-winner");
+
+    await expect(
+      createBoardTaskForTable(race.env, "user-1", "table-1", {
+        name: "무관한 오류",
+        scope: "character",
+        resetRule: { type: "daily", hour: 6, timezone: "Asia/Seoul" },
+        createRequestId: "task-create-unrelated-error"
+      })
+    ).rejects.toBe(error);
+    expect(race.axisRequestReads()).toBe(1);
+  });
+
   it("maps legacy task-character completions to board row and column item ids", () => {
     expect(
       buildBoardCompletionPatchesFromLegacy({

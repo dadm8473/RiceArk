@@ -85,6 +85,14 @@ function isSheetNameConflictError(error: unknown): boolean {
   return /UNIQUE constraint failed:\s*sheets\.user_id,\s*sheets\.name/i.test(String(error));
 }
 
+function isBoardTaskCreateRequestConflictError(error: unknown): boolean {
+  const message = String(error);
+  if (!/UNIQUE constraint/i.test(message)) return false;
+  return /(?:tasks\.user_id,\s*tasks\.create_request_id|board_axis_items\.table_id,\s*board_axis_items\.create_request_id|idx_tasks_user_create_request|idx_board_axis_items_table_create_request)/i.test(
+    message
+  );
+}
+
 function incompleteBoardMutation(): never {
   throw new Error("Board mutation batch did not return every required row");
 }
@@ -2340,7 +2348,15 @@ export async function createBoardTaskForTable(
     )
   );
 
-  const results = await env.DB.batch([...statements, bumpBoardSheetVersionsForTables(env, userId, [tableId])]);
+  let results: Awaited<ReturnType<Env["DB"]["batch"]>>;
+  try {
+    results = await env.DB.batch([...statements, bumpBoardSheetVersionsForTables(env, userId, [tableId])]);
+  } catch (error) {
+    if (!createRequestId || !isBoardTaskCreateRequestConflictError(error)) throw error;
+    const existing = await readBoardAxisItemByCreateRequestId(env, userId, tableId, createRequestId);
+    if (!existing) throw error;
+    return { ...existing, versions: buildBoardMutationVersions([]) };
+  }
   let resultIndex = 0;
   const roleResultId = roleRepair.statement ? returnedMutationId(results[resultIndex++], tableId) : null;
   const taskResultId = !existingTask ? returnedMutationId(results[resultIndex++], taskId) : null;
