@@ -1136,19 +1136,19 @@ describe("board db defaults", () => {
               return { ...this, values };
             },
             async first() {
-              if (sql.includes("FROM board_manifest_versions")) return { version: 3 };
-              return null;
+              throw new Error("owner version summary should use one all() statement");
             },
             async all() {
-              if (sql.includes("FROM sheets")) {
+              if (sql.includes("WITH manifest AS")) {
                 return {
                   results: [
                     {
+                      manifest_version: 3,
                       id: "sheet-1",
                       name: "숙제",
                       sort_order: 10,
                       is_default: 1,
-                      content_version: 5
+                      version: 5
                     }
                   ]
                 };
@@ -1166,11 +1166,13 @@ describe("board db defaults", () => {
       sheets: [{ id: "sheet-1", name: "숙제", sort_order: 10, is_default: 1, version: 5 }],
       periodFingerprint: ""
     });
-    const sheetQuery = preparedSql.find((sql) => sql.includes("FROM sheets"));
+    const sheetQuery = preparedSql[0];
     expect(sheetQuery).toContain("name");
     expect(sheetQuery).toContain("sort_order");
     expect(sheetQuery).toContain("is_default");
-    expect(sheetQuery).toContain("content_version");
+    expect(sheetQuery).toContain("content_version AS version");
+    expect(preparedSql).toHaveLength(1);
+    expect(preparedSql[0]).toContain("WITH manifest AS");
     expect(preparedSql.some((sql) => sql.includes("FROM board_axis_items"))).toBe(false);
   });
 

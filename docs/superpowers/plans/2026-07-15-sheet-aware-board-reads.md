@@ -19,7 +19,7 @@
 - Create: `apps/api/src/db/boardReads.test.ts`
 - Modify: `apps/api/src/db/board.ts`
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 Test that a manifest item carries navigation metadata plus content version, a sheet payload exposes one active-sheet envelope with no top-level all-sheet collection, and the bootstrap manifest version/sheets fields are type-identical to the version summary manifestVersion/sheets fields.
 
@@ -27,13 +27,13 @@ Value-level cross-sheet isolation for tables, notes, axis items, cell states, an
 
 Value-level snapshot consistency also belongs to the Task 2 loader tests. Task 1 establishes the public type relationship only.
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run: `pnpm test apps/api/src/db/boardReads.test.ts`
 
 Expected: FAIL because `boardReads.ts` does not exist.
 
-- [ ] **Step 3: Add exact public types**
+- [x] **Step 3: Add exact public types**
 
 ```ts
 export interface BoardSheetManifestItem {
@@ -85,7 +85,7 @@ Move only new read-path code into `boardReads.ts`; keep the legacy `BoardPayload
 
 Treat `BoardVersionSummary` in `boardReads.ts` as canonical. Import and re-export it from `board.ts` so existing type imports remain compatible, and update the existing two-statement `loadBoardVersionSummary()` query and mapping to include all manifest item metadata. Task 2 retains responsibility for collapsing that loader to one statement.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 Run: `pnpm test apps/api/src/db/boardReads.test.ts && pnpm --filter @riceark/api check`
 
@@ -100,17 +100,17 @@ git commit -m "Define sheet-aware board read contracts"
 - Modify: `apps/api/src/db/boardReads.ts`
 - Modify: `apps/api/src/db/boardReads.test.ts`
 
-- [ ] **Step 1: Add failing ownership, fallback, and query-budget tests**
+- [x] **Step 1: Add failing ownership, fallback, and query-budget tests**
 
 Cover requested owned sheet, foreign/missing requested sheet fallback to default then first sorted, no sheet initialization fallback, period fingerprint, expired reserved marks, explicit-column SQL, and value-level bootstrap/version-summary snapshot mapping. Prove value-level cross-sheet isolation across tables, notes, axis items, cell states, and completions, including rows reachable only through a foreign table. Count D1 statements and require at most nine read-path statements excluding session/auth for an established board, so the route stays at or below 10 including `requireUser`; require at most 30 statements for first-ever default-board initialization.
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run: `pnpm test apps/api/src/db/boardReads.test.ts`
 
 Expected: FAIL because only the legacy full-board loader exists.
 
-- [ ] **Step 3: Implement the one-query manifest**
+- [x] **Step 3: Implement the one-query manifest**
 
 Use one CTE statement so manifest version and sheet navigation rows arrive together:
 
@@ -135,13 +135,13 @@ ORDER BY sheets.sort_order, sheets.name
 
 Map the sentinel row with `id === null` to an empty `sheets` array.
 
-- [ ] **Step 4: Implement `loadBoardSheet` with sheet-scoped predicates**
+- [x] **Step 4: Implement `loadBoardSheet` with sheet-scoped predicates**
 
 Query the selected sheet first, then tables, notes, joined axis items, and cell states concurrently. Every content query filters through the owned `sheetId`; do not rely on client ids alone. After axis rows are known, derive sorted unique current period keys and issue one completion query only when keys exist. Settings belong only to bootstrap and are loaded once by `loadBoardDisplaySettings`.
 
 All selects list the columns currently consumed by `apps/web/src/features/board/types.ts`; no new `SELECT *` is allowed.
 
-- [ ] **Step 5: Implement bootstrap fallback without `hasAnyBoardTable`**
+- [x] **Step 5: Implement bootstrap fallback without `hasAnyBoardTable`**
 
 ```ts
 export async function loadBoardBootstrap(env: Env, userId: string, requestedSheetId?: string): Promise<BoardBootstrapPayload> {
@@ -162,11 +162,11 @@ export async function loadBoardBootstrap(env: Env, userId: string, requestedShee
 
 Remove the unconditional `hasAnyBoardTable()` call from this path. The legacy loader may retain its behavior until its endpoint is retired.
 
-- [ ] **Step 6: Collapse version summary into one statement**
+- [x] **Step 6: Collapse version summary into one statement**
 
 Reuse the manifest CTE and map it to `{ manifestVersion, sheets, periodFingerprint: "" }`. Test one D1 statement regardless of sheet count.
 
-- [ ] **Step 7: Run tests and commit**
+- [x] **Step 7: Run tests and commit**
 
 Run: `pnpm test apps/api/src/db/boardReads.test.ts apps/api/src/db/board.test.ts`
 

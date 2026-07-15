@@ -1067,14 +1067,16 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
       .all<{ axis: BoardAxis; kind: "character" | "task" | "custom"; task_id: string | null; character_id: string | null; sort_order: number }>()
   ]);
 
-  const statements = buildMissingDefaultAxisItemSeeds({
+  const seeds = buildMissingDefaultAxisItemSeeds({
     orientation: table.orientation,
     defaultTableCreated: table.created,
     existingAxisItems: existingAxisItems.results,
     tasks,
     characters
-  }).map((seed) =>
-    env.DB.prepare(
+  }).map((seed) => ({ id: crypto.randomUUID(), ...seed }));
+
+  if (seeds.length > 0) {
+    await env.DB.prepare(
       `INSERT INTO board_axis_items (
          id,
          user_id,
@@ -1090,26 +1092,23 @@ export async function ensureDefaultBoard(env: Env, userId: string): Promise<void
          task_color,
          sort_order
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      crypto.randomUUID(),
-      userId,
-      table.id,
-      seed.axis,
-      seed.kind,
-      seed.label,
-      seed.characterId,
-      seed.taskId,
-      seed.taskScope,
-      seed.taskResetType,
-      seed.taskResetRuleJson,
-      seed.taskColor,
-      seed.sortOrder
+       SELECT json_extract(value, '$.id'),
+              ?1,
+              ?2,
+              json_extract(value, '$.axis'),
+              json_extract(value, '$.kind'),
+              json_extract(value, '$.label'),
+              json_extract(value, '$.characterId'),
+              json_extract(value, '$.taskId'),
+              json_extract(value, '$.taskScope'),
+              json_extract(value, '$.taskResetType'),
+              json_extract(value, '$.taskResetRuleJson'),
+              json_extract(value, '$.taskColor'),
+              json_extract(value, '$.sortOrder')
+       FROM json_each(?3)`
     )
-  );
-
-  if (statements.length > 0) {
-    await env.DB.batch(statements);
+      .bind(userId, table.id, JSON.stringify(seeds))
+      .run();
   }
 
   await syncLegacyCompletionsToBoard(env, userId, table.id);
@@ -1459,26 +1458,55 @@ export async function loadBoardVersionSummary(
   userId: string,
   _now = new Date()
 ): Promise<CanonicalBoardVersionSummary> {
-  const [manifest, sheets] = await Promise.all([
-    env.DB.prepare("SELECT version FROM board_manifest_versions WHERE user_id = ?")
-      .bind(userId)
-      .first<{ version: number }>(),
-    env.DB.prepare(
-      "SELECT id, name, sort_order, is_default, content_version FROM sheets WHERE user_id = ? ORDER BY sort_order, name"
-    )
-      .bind(userId)
-      .all<{ id: string; name: string; sort_order: number; is_default: number; content_version: number }>()
-  ]);
+  const rows = await env.DB.prepare(
+    `WITH manifest AS (
+       SELECT COALESCE(
+         (SELECT version FROM board_manifest_versions WHERE user_id = ?1),
+         0
+       ) AS manifest_version
+     )
+     SELECT manifest.manifest_version,
+            sheets.id,
+            sheets.name,
+            sheets.sort_order,
+            sheets.is_default,
+            sheets.content_version AS version
+     FROM manifest
+     LEFT JOIN sheets ON sheets.user_id = ?1
+     ORDER BY sheets.sort_order, sheets.name`
+  )
+    .bind(userId)
+    .all<{
+      manifest_version: number;
+      id: string | null;
+      name: string | null;
+      sort_order: number | null;
+      is_default: number | null;
+      version: number | null;
+    }>();
 
   return {
-    manifestVersion: manifest?.version ?? 0,
-    sheets: sheets.results.map((sheet) => ({
-      id: sheet.id,
-      name: sheet.name,
-      sort_order: sheet.sort_order,
-      is_default: sheet.is_default,
-      version: sheet.content_version
-    })),
+    manifestVersion: rows.results[0]?.manifest_version ?? 0,
+    sheets: rows.results.flatMap((sheet) => {
+      if (sheet.id === null) return [];
+      if (
+        sheet.name === null ||
+        sheet.sort_order === null ||
+        sheet.is_default === null ||
+        sheet.version === null
+      ) {
+        throw new Error("Board version summary returned an incomplete sheet row");
+      }
+      return [
+        {
+          id: sheet.id,
+          name: sheet.name,
+          sort_order: sheet.sort_order,
+          is_default: sheet.is_default,
+          version: sheet.version
+        }
+      ];
+    }),
     periodFingerprint: ""
   };
 }
