@@ -41,11 +41,15 @@ export function classifyRouteGroup(path: string): string {
   return ROUTE_GROUPS[first] ?? "other";
 }
 
+export function shouldRecordApiError(input: { status: number; code: string; path: string }): boolean {
+  return input.status >= 400 && !(input.status === 401 && input.code === "unauthorized" && input.path === "/api/session");
+}
+
 export async function recordApiError(
   env: Env,
   input: { status: number; code: string; path: string }
 ): Promise<void> {
-  if (input.status < 400 || !env.DB) return;
+  if (!shouldRecordApiError(input) || !env.DB) return;
   await env.DB.prepare(
     `INSERT INTO admin_error_counters (day, status, code, route_group, count)
      VALUES (date('now'), ?1, ?2, ?3, 1)

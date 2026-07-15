@@ -119,9 +119,10 @@ export function App() {
   const [routeShareId, setRouteShareId] = useState<string | null>(() => initialRouteRef.current.shareId);
   const [activeView, setActiveView] = useState<AppView>(() => initialRouteRef.current.activeView);
   const [sharedRiceBinLookupResetKey, setSharedRiceBinLookupResetKey] = useState(0);
-  const isAdmin = session.status === "authenticated" && session.user.isAdmin === true;
-  const isBoardEnabled = activeView === "board" || (activeView === "shared" && session.status === "authenticated");
-  const isBoardPollingEnabled = activeView === "board";
+  const isAuthenticated = session.status === "authenticated";
+  const isAdmin = isAuthenticated && session.user.isAdmin === true;
+  const isBoardEnabled = isAuthenticated && (activeView === "board" || activeView === "shared");
+  const isBoardPollingEnabled = isAuthenticated && activeView === "board";
   const board = useBoard({ enabled: isBoardEnabled, pollingEnabled: isBoardPollingEnabled });
   const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [calculatorOpen, setCalculatorOpen] = useState(false);
@@ -178,8 +179,9 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (activeView === "admin" && !isAdmin) applyAppRoute({ activeView: "board", shareId: null, sheetId: null }, "replace");
-  }, [activeView, isAdmin]);
+    if (activeView !== "admin" || session.status === "checking") return;
+    if (!isAdmin) applyAppRoute({ activeView: "board", shareId: null, sheetId: null }, "replace");
+  }, [activeView, isAdmin, session.status]);
 
   const handleLogout = async () => {
     setLogoutPending(true);
@@ -283,14 +285,26 @@ export function App() {
       <section className="workspace">
         {authErrorMessage ? <p className="error-text">{authErrorMessage}</p> : null}
         {session.status === "error" ? <p className="error-text">{session.error}</p> : null}
-        {activeView === "admin" && isAdmin ? (
-          <AdminDashboard />
+        {activeView === "admin" ? (
+          session.status === "checking" ? (
+            <p>로그인 상태를 확인하는 중입니다.</p>
+          ) : isAdmin ? (
+            <AdminDashboard />
+          ) : (
+            <p>내 쌀통으로 이동하는 중입니다.</p>
+          )
         ) : activeView === "board" ? (
-          <>
-            {board.error ? <p className="error-text">{board.error}</p> : null}
-            {!board.data && !board.error ? <p>로스트아크 숙제 체크리스트를 불러오는 중입니다.</p> : null}
-            {board.data ? <BoardOverview board={board.data} onBoardChanged={board.reload} /> : null}
-          </>
+          session.status === "checking" ? (
+            <p>로그인 상태를 확인하는 중입니다.</p>
+          ) : session.status === "anonymous" ? (
+            <p>로그인이 필요합니다. Discord 또는 Google로 로그인해주세요.</p>
+          ) : session.status === "authenticated" ? (
+            <>
+              {board.error ? <p className="error-text">{board.error}</p> : null}
+              {!board.data && !board.error ? <p>로스트아크 숙제 체크리스트를 불러오는 중입니다.</p> : null}
+              {board.data ? <BoardOverview board={board.data} onBoardChanged={board.reload} /> : null}
+            </>
+          ) : null
         ) : (
           <SharedRiceBinPanel
             initialShareId={routeShareId}

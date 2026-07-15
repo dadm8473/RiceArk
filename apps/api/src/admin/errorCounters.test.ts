@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Env } from "../env";
 import {
   classifyRouteGroup,
   cleanupErrorCounters,
   recordApiError,
+  shouldRecordApiError,
   summarizeErrorCounters,
   utcDayKey
 } from "./errorCounters";
@@ -54,6 +55,19 @@ describe("classifyRouteGroup", () => {
 });
 
 describe("recordApiError", () => {
+  it("does not prepare a D1 statement for the expected anonymous session response", async () => {
+    const prepare = vi.fn(() => ({
+      bind: () => ({
+        run: async () => ({ success: true })
+      })
+    }));
+    const env = { DB: { prepare } } as unknown as Env;
+
+    await recordApiError(env, { status: 401, code: "unauthorized", path: "/api/session" });
+
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
   it("upserts one counter row keyed by day, status, code and route group", async () => {
     const captured: CapturedStatement[] = [];
     const env = { DB: createCapturingDb(captured) } as unknown as Env;
@@ -65,6 +79,19 @@ describe("recordApiError", () => {
     expect(captured[0]?.sql).toContain("ON CONFLICT (day, status, code, route_group)");
     expect(captured[0]?.sql).toContain("count = count + 1");
     expect(captured[0]?.binds).toEqual([401, "unauthorized", "board"]);
+  });
+
+  it.each([
+    ["another session 4xx", { status: 400, code: "bad_request", path: "/api/session" }],
+    ["the lower 5xx boundary", { status: 500, code: "unauthorized", path: "/api/session" }],
+    ["the upper 5xx boundary", { status: 599, code: "internal_error", path: "/api/session" }]
+  ])("records %s", async (_label, input) => {
+    const captured: CapturedStatement[] = [];
+    const env = { DB: createCapturingDb(captured) } as unknown as Env;
+
+    await recordApiError(env, input);
+
+    expect(captured).toHaveLength(1);
   });
 
   it("never stores the request path itself", async () => {
@@ -90,6 +117,20 @@ describe("recordApiError", () => {
     const env = {} as unknown as Env;
 
     await expect(recordApiError(env, { status: 500, code: "internal_error", path: "/api/board" })).resolves.toBeUndefined();
+  });
+});
+
+describe("shouldRecordApiError", () => {
+  it("excludes exactly the anonymous session 401 while retaining nearby 4xx and every 5xx boundary", () => {
+    expect([
+      shouldRecordApiError({ status: 401, code: "unauthorized", path: "/api/session" }),
+      shouldRecordApiError({ status: 401, code: "unauthorized", path: "/api/board" }),
+      shouldRecordApiError({ status: 400, code: "bad_request", path: "/api/session" }),
+      shouldRecordApiError({ status: 401, code: "forbidden", path: "/api/session" }),
+      shouldRecordApiError({ status: 401, code: "unauthorized", path: "/api/session?fresh=1" }),
+      shouldRecordApiError({ status: 500, code: "unauthorized", path: "/api/session" }),
+      shouldRecordApiError({ status: 599, code: "internal_error", path: "/api/session" })
+    ]).toEqual([false, true, true, true, true, true, true]);
   });
 });
 

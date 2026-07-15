@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   App,
   getAppRouteState,
@@ -12,9 +12,23 @@ import {
 } from "./App";
 
 const hooks = vi.hoisted(() => ({
+  effects: [] as Array<{
+    callback: () => void | (() => void);
+    dependencies: readonly unknown[] | undefined;
+  }>,
   useBoard: vi.fn(),
   useSession: vi.fn()
 }));
+
+vi.mock("react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react")>();
+  return {
+    ...actual,
+    useEffect: (callback: () => void | (() => void), dependencies?: readonly unknown[]) => {
+      hooks.effects.push({ callback, dependencies });
+    }
+  };
+});
 
 vi.mock("./features/board/BoardOverview", () => ({
   BoardOverview: () => "board overview"
@@ -57,6 +71,39 @@ const board = {
   cellStates: [],
   completions: []
 };
+
+function installBrowserWindow(href: string) {
+  const url = new URL(href);
+  const replaceState = vi.fn();
+  vi.stubGlobal("window", {
+    addEventListener: vi.fn(),
+    history: {
+      pushState: vi.fn(),
+      replaceState,
+      state: null
+    },
+    localStorage: {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn()
+    },
+    location: {
+      assign: vi.fn(),
+      hash: url.hash,
+      href: url.href,
+      pathname: url.pathname,
+      search: url.search
+    },
+    removeEventListener: vi.fn()
+  });
+  return { replaceState };
+}
+
+function runLatestEffect() {
+  const effect = hooks.effects.at(-1);
+  expect(effect).toBeDefined();
+  effect?.callback();
+  return effect;
+}
 
 describe("getAuthErrorMessage", () => {
   it("wraps login start errors in a Korean app message", () => {
@@ -123,11 +170,24 @@ describe("app route helpers", () => {
 
 describe("App", () => {
   beforeEach(() => {
+    hooks.effects.length = 0;
+    hooks.useBoard.mockClear();
+    hooks.useSession.mockClear();
     hooks.useBoard.mockReturnValue({ data: board, error: null, reload: vi.fn() });
     hooks.useSession.mockReturnValue({ status: "anonymous", user: null, error: null });
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("uses the board builder as the only checklist surface on the main screen", () => {
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-1", displayName: "RiceArk", avatarUrl: null, isAdmin: false },
+      error: null
+    });
+
     const html = renderToStaticMarkup(createElement(App));
 
     expect(html).toContain("board overview");
@@ -200,12 +260,121 @@ describe("App", () => {
     expect(html.indexOf("문의하기")).toBeLessThan(html.indexOf("Discord로 로그인"));
   });
 
-  it("passes separate load and polling flags to the board hook so shared lookup does not keep polling", () => {
-    const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf-8");
+  it("disables the owner board read and polling while the session is checking", () => {
+    hooks.useSession.mockReturnValue({ status: "checking", user: null, error: null });
 
-    expect(source).toContain("const isBoardEnabled =");
-    expect(source).toContain("const isBoardPollingEnabled = activeView === \"board\"");
-    expect(source).toContain("useBoard({ enabled: isBoardEnabled, pollingEnabled: isBoardPollingEnabled })");
+    renderToStaticMarkup(createElement(App));
+
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: false, pollingEnabled: false });
+  });
+
+  it("disables the owner board read and polling for anonymous sessions", () => {
+    renderToStaticMarkup(createElement(App));
+
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: false, pollingEnabled: false });
+  });
+
+  it("renders a neutral session state instead of board loading while checking", () => {
+    hooks.useBoard.mockReturnValue({ data: null, error: null, reload: vi.fn() });
+    hooks.useSession.mockReturnValue({ status: "checking", user: null, error: null });
+
+    const html = renderToStaticMarkup(createElement(App));
+
+    expect(html).toContain("로그인 상태를 확인하는 중입니다.");
+    expect(html).not.toContain("로스트아크 숙제 체크리스트를 불러오는 중입니다.");
+  });
+
+  it("renders authentication required instead of board loading for anonymous sessions", () => {
+    hooks.useBoard.mockReturnValue({ data: null, error: null, reload: vi.fn() });
+
+    const html = renderToStaticMarkup(createElement(App));
+
+    expect(html).toContain("로그인이 필요합니다. Discord 또는 Google로 로그인해주세요.");
+    expect(html).not.toContain("로스트아크 숙제 체크리스트를 불러오는 중입니다.");
+  });
+
+  it("renders the session error without a false board-loading state", () => {
+    hooks.useBoard.mockReturnValue({ data: null, error: null, reload: vi.fn() });
+    hooks.useSession.mockReturnValue({
+      status: "error",
+      user: null,
+      error: "로그인 상태를 확인하지 못했습니다."
+    });
+
+    const html = renderToStaticMarkup(createElement(App));
+
+    expect(html).toContain("로그인 상태를 확인하지 못했습니다.");
+    expect(html).not.toContain("로스트아크 숙제 체크리스트를 불러오는 중입니다.");
+  });
+
+  it("enables the owner board read and polling for an authenticated own-board view", () => {
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-1", displayName: "RiceArk", avatarUrl: null, isAdmin: false },
+      error: null
+    });
+
+    renderToStaticMarkup(createElement(App));
+
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: true, pollingEnabled: true });
+  });
+
+  it("retains the authenticated owner read without polling on the shared view", () => {
+    installBrowserWindow("https://riceark.pages.dev/?view=shared");
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-1", displayName: "RiceArk", avatarUrl: null, isAdmin: false },
+      error: null
+    });
+
+    renderToStaticMarkup(createElement(App));
+
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: true, pollingEnabled: false });
+  });
+
+  it("waits for session resolution before redirecting a non-admin direct admin route", () => {
+    const checkingBrowser = installBrowserWindow("https://riceark.pages.dev/?view=admin");
+    hooks.useSession.mockReturnValue({ status: "checking", user: null, error: null });
+
+    const checkingHtml = renderToStaticMarkup(createElement(App));
+    const checkingEffect = runLatestEffect();
+
+    expect(checkingEffect?.dependencies).toEqual(["admin", false, "checking"]);
+    expect(checkingBrowser.replaceState).not.toHaveBeenCalled();
+    expect(checkingHtml).toContain("로그인 상태를 확인하는 중입니다.");
+    expect(checkingHtml).not.toContain("shared rice bin panel");
+
+    hooks.effects.length = 0;
+    const resolvedBrowser = installBrowserWindow("https://riceark.pages.dev/?view=admin");
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-1", displayName: "RiceArk", avatarUrl: null, isAdmin: false },
+      error: null
+    });
+
+    renderToStaticMarkup(createElement(App));
+    const resolvedEffect = runLatestEffect();
+
+    expect(resolvedEffect?.dependencies).toEqual(["admin", false, "authenticated"]);
+    expect(resolvedEffect?.dependencies).not.toEqual(checkingEffect?.dependencies);
+    expect(resolvedBrowser.replaceState).toHaveBeenCalledWith(expect.any(Object), "", "/");
+  });
+
+  it("keeps owner board work disabled on an authenticated admin direct route", () => {
+    const browser = installBrowserWindow("https://riceark.pages.dev/?view=admin");
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+      error: null
+    });
+
+    const html = renderToStaticMarkup(createElement(App));
+    runLatestEffect();
+
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: false, pollingEnabled: false });
+    expect(browser.replaceState).not.toHaveBeenCalled();
+    expect(html).toContain("admin dashboard");
+    expect(html).not.toContain("shared rice bin panel");
   });
 
   it("clears shared rice bin link state when the user switches back to their own rice bin", () => {
