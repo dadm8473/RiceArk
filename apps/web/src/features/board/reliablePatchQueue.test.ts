@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClientError } from "../../api/client";
+import type { BoardMutationVersions } from "./types";
 import {
   PATCH_QUEUE_DEBOUNCE_MS,
   PATCH_QUEUE_MAX_BODY_BYTES,
@@ -7,6 +8,7 @@ import {
   PATCH_QUEUE_REQUEST_TIMEOUT_MS,
   PATCH_QUEUE_RETRY_MS,
   ReliablePatchQueue,
+  ReliablePatchQueueFlushError,
   classifyQueueError,
   type ReliablePatchQueueOptions,
   type SendOutcome
@@ -38,12 +40,21 @@ function abortableDeferred<T>(signal: AbortSignal) {
   return result;
 }
 
+function mockAbortSignalTimeout() {
+  return vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), milliseconds);
+    return controller.signal;
+  });
+}
+
 function makeQueue(
   overrides: Partial<ReliablePatchQueueOptions<Patch, string>> = {}
 ) {
   const pendingChanges: Patch[][] = [];
   const permanentFailures: Array<Extract<SendOutcome<string>, { type: "rejected" }>> = [];
   const authPauses: ApiClientError[] = [];
+  const versionChanges: BoardMutationVersions[] = [];
   const options: ReliablePatchQueueOptions<Patch, string> = {
     keyOf: (patch) => patch.key,
     serializeBody: (patches) => JSON.stringify({ patches }),
@@ -51,6 +62,7 @@ function makeQueue(
     onPendingChange: (patches) => pendingChanges.push(patches),
     onPermanentFailure: (outcome) => permanentFailures.push(outcome),
     onAuthPause: (error) => authPauses.push(error),
+    onVersions: (versions) => versionChanges.push(versions),
     ...overrides
   };
 
@@ -58,7 +70,8 @@ function makeQueue(
     queue: new ReliablePatchQueue(options),
     pendingChanges,
     permanentFailures,
-    authPauses
+    authPauses,
+    versionChanges
   };
 }
 
@@ -226,11 +239,7 @@ describe("ReliablePatchQueue", () => {
   });
 
   it("aborts at the 10 second deadline before scheduling a retry", async () => {
-    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), milliseconds);
-      return controller.signal;
-    });
+    const timeoutSpy = mockAbortSignalTimeout();
     const signals: AbortSignal[] = [];
     const send = vi.fn(async (patches: Patch[], context) => {
       signals.push(context!.signal);
@@ -251,6 +260,75 @@ describe("ReliablePatchQueue", () => {
     expect(send).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects flush with the retry cause while pending work remains", async () => {
+    const retryError = new Error("offline");
+    const { queue } = makeQueue({
+      send: async () => ({ type: "retry", error: retryError, retryAfterMs: null })
+    });
+    queue.enqueue({ key: "a", value: true });
+
+    await expect(queue.flush()).rejects.toEqual(
+      expect.objectContaining<Partial<ReliablePatchQueueFlushError>>({
+        name: "ReliablePatchQueueFlushError",
+        reason: "retry",
+        cause: retryError
+      })
+    );
+    expect(queue.getPendingSnapshot()).toEqual([{ key: "a", value: true }]);
+  });
+
+  it("rejects flush with the auth cause while preserving the overlay", async () => {
+    const authError = new ApiClientError(401, "unauthorized", "Login required");
+    const { queue } = makeQueue({
+      send: async () => ({ type: "auth", error: authError })
+    });
+    queue.enqueue({ key: "a", value: true });
+
+    await expect(queue.flush()).rejects.toEqual(
+      expect.objectContaining<Partial<ReliablePatchQueueFlushError>>({
+        name: "ReliablePatchQueueFlushError",
+        reason: "auth",
+        cause: authError
+      })
+    );
+    expect(queue.getPendingSnapshot()).toEqual([{ key: "a", value: true }]);
+  });
+
+  it("bounds flush when send ignores abort and waits for that stale transport before retrying", async () => {
+    mockAbortSignalTimeout();
+    const first = deferred<SendOutcome<string>>();
+    const signals: AbortSignal[] = [];
+    const send = vi.fn(async (patches: Patch[], context) => {
+      signals.push(context!.signal);
+      return send.mock.calls.length === 1 ? first.promise : accepted(patches);
+    });
+    const { queue } = makeQueue({ send });
+    queue.enqueue({ key: "a", value: true });
+
+    const flushResult = queue.flush().catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(PATCH_QUEUE_REQUEST_TIMEOUT_MS);
+
+    expect(await flushResult).toEqual(
+      expect.objectContaining<Partial<ReliablePatchQueueFlushError>>({
+        name: "ReliablePatchQueueFlushError",
+        reason: "timeout",
+        cause: expect.objectContaining({ name: "TimeoutError" })
+      })
+    );
+    expect(signals[0]?.aborted).toBe(true);
+    eventTarget.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    first.resolve(accepted([{ key: "a", value: true }]));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(send).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(queue.getPendingSnapshot()).toEqual([]);
   });
 
   it("uses the 1/2/5/10/30 second retry sequence and caps there", async () => {
@@ -310,6 +388,120 @@ describe("ReliablePatchQueue", () => {
     expect(send).toHaveBeenCalledTimes(3);
     await vi.advanceTimersByTimeAsync(1);
     expect(send).toHaveBeenCalledTimes(4);
+  });
+
+  it("delivers accepted versions only after a known acknowledgment", async () => {
+    const versions: BoardMutationVersions = {
+      sheets: [{ id: "sheet-1", version: 7 }],
+      manifestVersion: 3
+    };
+    const send = vi
+      .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()
+      .mockResolvedValueOnce({ type: "accepted", acknowledgedKeys: ["unknown"], versions })
+      .mockResolvedValueOnce({ type: "accepted", acknowledgedKeys: ["a"], versions });
+    const { queue, versionChanges } = makeQueue({ send });
+    queue.enqueue({ key: "a", value: true });
+
+    const firstFlush = queue.flush().catch((error: unknown) => error);
+    expect(await firstFlush).toMatchObject({ reason: "non-progress" });
+    expect(versionChanges).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(versionChanges).toEqual([versions]);
+  });
+
+  it("advances backoff for unknown and empty acknowledgments without resetting it", async () => {
+    const send = vi
+      .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()
+      .mockResolvedValueOnce({ type: "retry", error: new Error("offline"), retryAfterMs: null })
+      .mockResolvedValueOnce({ type: "accepted", acknowledgedKeys: ["unknown"] })
+      .mockResolvedValueOnce({ type: "accepted", acknowledgedKeys: [] })
+      .mockImplementation(async (patches) => accepted(patches));
+    const { queue } = makeQueue({ send });
+    queue.enqueue({ key: "a", value: true });
+    await vi.advanceTimersByTimeAsync(800 + 1_000);
+
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(send).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(send).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(4);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+  });
+
+  it("backs off for empty and unknown rejected keys without reporting permanent failure", async () => {
+    const send = vi
+      .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()
+      .mockResolvedValueOnce({ type: "rejected", rejectedKeys: [], message: "No key" })
+      .mockResolvedValueOnce({ type: "rejected", rejectedKeys: ["unknown"], message: "Wrong key" })
+      .mockImplementation(async (patches) => accepted(patches));
+    const { queue, permanentFailures } = makeQueue({ send });
+    queue.enqueue({ key: "a", value: true });
+    await vi.advanceTimersByTimeAsync(800);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(permanentFailures).toEqual([]);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(send).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1 + 1_999);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(permanentFailures).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+  });
+
+  it("reports only rejected keys that match the sent chunk", async () => {
+    const send = vi.fn(async () => ({
+      type: "rejected" as const,
+      rejectedKeys: ["a", "unknown"],
+      message: "Invalid cell"
+    }));
+    const { queue, permanentFailures } = makeQueue({ send });
+    queue.enqueue({ key: "a", value: true });
+    await vi.advanceTimersByTimeAsync(800);
+
+    expect(permanentFailures).toEqual([
+      { type: "rejected", rejectedKeys: ["a"], message: "Invalid cell" }
+    ]);
+  });
+
+  it("does not let enqueue bypass an in-flight request's Retry-After backoff", async () => {
+    const first = deferred<SendOutcome<string>>();
+    const send = vi.fn(async (patches: Patch[]) =>
+      send.mock.calls.length === 1 ? first.promise : accepted(patches)
+    );
+    const { queue } = makeQueue({ send });
+    queue.enqueue({ key: "a", value: true });
+    await vi.advanceTimersByTimeAsync(800);
+
+    queue.enqueue({ key: "b", value: false });
+    await vi.advanceTimersByTimeAsync(100);
+    first.resolve({ type: "retry", error: new Error("busy"), retryAfterMs: 10_000 });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(send).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves Retry-After when enqueue happens as the first debounce fires", async () => {
+    const send = vi.fn(async (patches: Patch[]) =>
+      send.mock.calls.length === 1
+        ? ({ type: "retry", error: new Error("busy"), retryAfterMs: 10_000 } as const)
+        : accepted(patches)
+    );
+    const { queue } = makeQueue({ send });
+    queue.enqueue({ key: "a", value: true });
+    await vi.advanceTimersByTimeAsync(800);
+    queue.enqueue({ key: "b", value: false });
+
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(send).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(2);
   });
 
   it("retries immediately on focus or online without duplicate in-flight work", async () => {
@@ -478,6 +670,107 @@ describe("ReliablePatchQueue", () => {
     ]);
   });
 
+  it("coalesces structural object keys and reconciles deserialized acknowledgments", async () => {
+    type ObjectKey = { tableId: string; rowItemId: string };
+    interface ObjectPatch {
+      key: ObjectKey;
+      value: boolean;
+    }
+    const sent: ObjectPatch[][] = [];
+    const queue = new ReliablePatchQueue<ObjectPatch, ObjectKey>({
+      keyOf: (patch) => patch.key,
+      serializeBody: (patches) => JSON.stringify({ patches }),
+      send: async (patches) => {
+        sent.push(patches);
+        return {
+          type: "accepted",
+          acknowledgedKeys: JSON.parse(JSON.stringify(patches.map(({ key }) => key))) as ObjectKey[]
+        };
+      },
+      onPendingChange: () => undefined,
+      onPermanentFailure: () => undefined,
+      onAuthPause: () => undefined
+    });
+
+    queue.enqueue({ key: { tableId: "table-1", rowItemId: "row-1" }, value: true });
+    queue.enqueue({ key: { tableId: "table-2", rowItemId: "row-2" }, value: true });
+    queue.enqueue({ key: { rowItemId: "row-1", tableId: "table-1" }, value: false });
+
+    expect(queue.getPendingSnapshot()).toEqual([
+      { key: { rowItemId: "row-1", tableId: "table-1" }, value: false },
+      { key: { tableId: "table-2", rowItemId: "row-2" }, value: true }
+    ]);
+    await expect(queue.flush()).resolves.toBeUndefined();
+    expect(sent).toEqual([
+      [
+        { key: { rowItemId: "row-1", tableId: "table-1" }, value: false },
+        { key: { tableId: "table-2", rowItemId: "row-2" }, value: true }
+      ]
+    ]);
+  });
+
+  it("reconciles a structural tuple key returned in a rejected outcome", async () => {
+    type TupleKey = readonly [string, string, string];
+    interface TuplePatch {
+      key: TupleKey;
+      value: boolean;
+    }
+    const permanentFailures: Array<Extract<SendOutcome<TupleKey>, { type: "rejected" }>> = [];
+    const queue = new ReliablePatchQueue<TuplePatch, TupleKey>({
+      keyOf: (patch) => patch.key,
+      serializeBody: (patches) => JSON.stringify({ patches }),
+      send: async () => ({
+        type: "rejected",
+        rejectedKeys: [JSON.parse('["table-1","row-1","column-1"]') as TupleKey],
+        message: "Locked"
+      }),
+      onPendingChange: () => undefined,
+      onPermanentFailure: (outcome) => permanentFailures.push(outcome),
+      onAuthPause: () => undefined
+    });
+    const key = ["table-1", "row-1", "column-1"] as const;
+    queue.enqueue({ key, value: true });
+
+    await expect(queue.flush()).resolves.toBeUndefined();
+    expect(queue.getPendingSnapshot()).toEqual([]);
+    expect(permanentFailures).toEqual([
+      { type: "rejected", rejectedKeys: [key], message: "Locked" }
+    ]);
+  });
+
+  it("rejects unsupported structural keys atomically", () => {
+    interface UnknownKeyPatch {
+      key: unknown;
+      value: boolean;
+    }
+    const circularKey: Record<string, unknown> = {};
+    circularKey.self = circularKey;
+    const queue = new ReliablePatchQueue<UnknownKeyPatch, unknown>({
+      keyOf: (patch) => patch.key,
+      serializeBody: (patches) => JSON.stringify({ patches }),
+      send: async () => ({ type: "accepted", acknowledgedKeys: [] }),
+      onPendingChange: () => undefined,
+      onPermanentFailure: () => undefined,
+      onAuthPause: () => undefined
+    });
+
+    expect(() =>
+      queue.enqueueMany([
+        { key: { tableId: "valid" }, value: true },
+        { key: circularKey, value: false }
+      ])
+    ).toThrowError(/reliable patch queue key/i);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+    expect(() => queue.enqueue({ key: () => "unsupported", value: true })).toThrowError(
+      /reliable patch queue key/i
+    );
+    const sparseKey: unknown[] = [];
+    sparseKey.length = 1;
+    expect(() => queue.enqueue({ key: sparseKey, value: true })).toThrowError(
+      /reliable patch queue key/i
+    );
+  });
+
   it("returns the latest pending snapshot on dispose, clears work, and aborts safely", async () => {
     const removeSpy = vi.spyOn(eventTarget, "removeEventListener");
     let activeSignal: AbortSignal | undefined;
@@ -513,6 +806,70 @@ describe("ReliablePatchQueue", () => {
     expect(queue.dispose()).toEqual([{ key: "a", value: true }]);
     await vi.advanceTimersByTimeAsync(800);
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each(["auth", "rejected"] as const)(
+    "invalidates a late %s outcome after discard while keeping new work usable",
+    async (lateOutcome) => {
+      const first = deferred<SendOutcome<string>>();
+      let activeSignal: AbortSignal | undefined;
+      const send = vi.fn(async (patches: Patch[], context) => {
+        activeSignal = context!.signal;
+        return send.mock.calls.length === 1 ? first.promise : accepted(patches);
+      });
+      const { queue, authPauses, permanentFailures } = makeQueue({ send });
+      queue.enqueue({ key: "a", value: true });
+      await vi.advanceTimersByTimeAsync(800);
+
+      expect(queue.discard()).toEqual([{ key: "a", value: true }]);
+      expect(activeSignal?.aborted).toBe(true);
+      queue.enqueue({ key: "b", value: false });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(send).toHaveBeenCalledTimes(1);
+
+      first.resolve(
+        lateOutcome === "auth"
+          ? {
+              type: "auth",
+              error: new ApiClientError(401, "unauthorized", "Old session")
+            }
+          : { type: "rejected", rejectedKeys: ["a"], message: "Old patch" }
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(authPauses).toEqual([]);
+      expect(permanentFailures).toEqual([]);
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(queue.getPendingSnapshot()).toEqual([]);
+    }
+  );
+
+  it("isolates a serializeBody exception as a permanent entry failure", async () => {
+    const serializationError = new Error("Cannot serialize bad patch");
+    const send = vi.fn(async (patches: Patch[]) => accepted(patches));
+    const { queue, permanentFailures } = makeQueue({
+      serializeBody: (patches) => {
+        if (patches.some(({ key }) => key === "bad")) throw serializationError;
+        return JSON.stringify({ patches });
+      },
+      send
+    });
+    queue.enqueueMany([
+      { key: "bad", value: true },
+      { key: "good", value: false }
+    ]);
+
+    await expect(queue.flush()).resolves.toBeUndefined();
+    expect(permanentFailures).toEqual([
+      {
+        type: "rejected",
+        rejectedKeys: ["bad"],
+        message: "Cannot serialize bad patch"
+      }
+    ]);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0]).toEqual([{ key: "good", value: false }]);
+    expect(queue.getPendingSnapshot()).toEqual([]);
   });
 
   it("discards pending values only through the explicit discard method", async () => {
