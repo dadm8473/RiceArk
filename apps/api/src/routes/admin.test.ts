@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetAdminSummaryMetricsCacheForTests } from "../admin/summary";
 import app from "../index";
 import type { Env } from "../env";
 
@@ -97,8 +98,13 @@ function envWithCloudflare(providerUserId: string): Env {
 }
 
 describe("admin routes", () => {
+  beforeEach(() => {
+    resetAdminSummaryMetricsCacheForTests();
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
+    resetAdminSummaryMetricsCacheForTests();
   });
 
   it("marks the session as admin when the Discord provider id is allowlisted", async () => {
@@ -122,6 +128,8 @@ describe("admin routes", () => {
     );
 
     expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expect(res.headers.get("vary")?.split(/,\s*/)).toContain("Cookie");
     await expect(res.json()).resolves.toMatchObject({
       users: {
         total: 8,
@@ -231,13 +239,114 @@ describe("admin routes", () => {
         },
         capacity: {
           activeUsers24h: 2,
-          estimatedDauByD1Reads: 131,
-          estimatedDauByD1Writes: 766,
-          estimatedDauByWorkerRequests: 1000,
-          bottleneck: "D1 rows read"
+          activeUserSampleSize: 2,
+          sampleLimited: true,
+          fixedAdminReads: 1559,
+          observedEndUserReads: 74403,
+          observedEndUserWrites: 261,
+          estimatedDauByD1Reads: null,
+          estimatedDauByD1Writes: null,
+          estimatedDauByWorkerRequests: null,
+          bottleneck: null,
+          guaranteedMultiplier: null,
+          uncertaintyReasons: expect.any(Array)
         }
       }
     });
+  });
+
+  it("authorizes every cached summary request while keeping each admin identity isolated", async () => {
+    const admins = [
+      { id: "admin-a", display_name: "Admin A", avatar_url: null, provider_user_id: "provider-a" },
+      { id: "admin-b", display_name: "Admin B", avatar_url: null, provider_user_id: "provider-b" }
+    ];
+    let sessionReads = 0;
+    let authorizationReads = 0;
+    let metricsDbReads = 0;
+
+    const db = {
+      prepare(sql: string) {
+        let boundValues: unknown[] = [];
+        const statement = {
+          bind(...values: unknown[]) {
+            boundValues = values;
+            return statement;
+          },
+          async first() {
+            if (sql.includes("total_users")) {
+              metricsDbReads += 1;
+              return {
+                total_users: 8,
+                active_logged_in_users: 7,
+                active_sessions: 25,
+                users_created_24h: 0,
+                users_created_7d: 5,
+                completion_users_24h: 2,
+                completion_users_7d: 4,
+                completion_updates_24h: 42,
+                completion_updates_7d: 360
+              };
+            }
+            if (sql.includes("board_tables")) {
+              return {
+                sheets: 10,
+                board_tables: 20,
+                board_axis_items: 279,
+                board_cell_states: 44,
+                board_cell_completions: 425,
+                board_notes: 3,
+                board_shares: 2,
+                board_share_favorites: 2,
+                characters: 197,
+                tasks: 119
+              };
+            }
+            if (sql.includes("FROM sessions")) {
+              const admin = admins[sessionReads];
+              sessionReads += 1;
+              return admin;
+            }
+            return null;
+          },
+          async all() {
+            if (sql.includes("FROM oauth_accounts")) {
+              authorizationReads += 1;
+              const admin = admins.find((candidate) => candidate.id === boundValues[0]);
+              return { results: admin ? [{ provider: "discord", provider_user_id: admin.provider_user_id }] : [] };
+            }
+            return { results: [] };
+          },
+          async run() {
+            return { success: true };
+          }
+        };
+        return statement;
+      }
+    } as unknown as D1Database;
+    const env = {
+      ...envBase,
+      ADMIN_OAUTH_ALLOWLIST: "discord:provider-a,discord:provider-b",
+      DB: db
+    } as unknown as Env;
+
+    const firstResponse = await app.request(
+      "/api/admin/summary",
+      { headers: { cookie: "riceark_session=admin-a-session" } },
+      env
+    );
+    const secondResponse = await app.request(
+      "/api/admin/summary",
+      { headers: { cookie: "riceark_session=admin-b-session" } },
+      env
+    );
+    const first = (await firstResponse.json()) as { admin: { id: string; displayName: string } };
+    const second = (await secondResponse.json()) as { admin: { id: string; displayName: string } };
+
+    expect(first.admin).toEqual({ id: "admin-a", displayName: "Admin A" });
+    expect(second.admin).toEqual({ id: "admin-b", displayName: "Admin B" });
+    expect(metricsDbReads).toBe(1);
+    expect(sessionReads).toBe(2);
+    expect(authorizationReads).toBe(2);
   });
 
   it("rejects the admin summary when the Discord provider id is not allowlisted", async () => {
@@ -271,6 +380,8 @@ describe("admin routes", () => {
     const res = await app.request("/api/admin/health", { headers: { cookie: "riceark_session=test-session" } }, env);
 
     expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expect(res.headers.get("vary")?.split(/,\s*/)).toContain("Cookie");
     const body = await res.json();
     expect(body).toMatchObject({
       checks: {
