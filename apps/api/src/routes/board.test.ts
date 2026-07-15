@@ -754,7 +754,14 @@ describe("board mutation routes", () => {
   }
 
   function createRemainingMutationRouteEnv(
-    options: { invalidTargets?: boolean; lockedTable?: boolean; missingTable?: boolean; rejectBatch?: boolean } = {}
+    options: {
+      invalidTargets?: boolean;
+      axisItemKind?: "task" | "character" | "custom";
+      lockedTable?: boolean;
+      missingTable?: boolean;
+      rejectBatch?: boolean;
+      tableSettingsRace?: "deleted" | "locked" | "unlocked";
+    } = {}
   ) {
     const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
     const prepared: Array<{ sql: string }> = [];
@@ -890,6 +897,10 @@ describe("board mutation routes", () => {
                   ? null
                   : { id: "table-1", row_role: "task", column_role: "character", locked: options.lockedTable ? 1 : 0 };
               }
+              if (sql.includes("SELECT locked FROM board_tables") && options.tableSettingsRace) {
+                if (options.tableSettingsRace === "deleted") return null;
+                return { locked: options.tableSettingsRace === "locked" ? 1 : 0 };
+              }
               if (sql.includes("SELECT id, locked FROM board_tables") || sql.includes("SELECT locked FROM board_tables")) {
                 return options.missingTable ? null : { id: "table-1", locked: options.lockedTable ? 1 : 0 };
               }
@@ -933,6 +944,16 @@ describe("board mutation routes", () => {
         },
         async batch(statements: Array<{ sql: string; values: unknown[] }>) {
           batches.push(statements);
+          if (options.tableSettingsRace) {
+            throw new Error("NOT NULL constraint failed: board_cell_completions.table_id");
+          }
+          if (
+            options.axisItemKind !== undefined &&
+            options.axisItemKind !== "task" &&
+            statements.some((statement) => statement.sql.includes("board-axis-item-task-kind-guard"))
+          ) {
+            throw new Error("NOT NULL constraint failed: board_cell_completions.row_item_id");
+          }
           if (options.rejectBatch) {
             return statements.map(() => ({ success: true, meta: { changes: 0 }, results: [] }));
           }
@@ -983,7 +1004,7 @@ describe("board mutation routes", () => {
     });
     expect(batches).toHaveLength(1);
     expect(batches[0]).toHaveLength(7);
-    expect(prepared.length).toBeLessThanOrEqual(10);
+    expect(prepared).toHaveLength(9);
     expect(batches[0]?.filter((statement) => statement.sql.includes("UPDATE sheets"))).toHaveLength(1);
     expect(batches[0]?.filter((statement) => statement.sql.includes("UPDATE board_axis_items"))).toHaveLength(1);
   });
@@ -1015,8 +1036,8 @@ describe("board mutation routes", () => {
       versions: { sheets: [{ id: "sheet-1", version: 4 }] }
     });
     expect(batches).toHaveLength(1);
-    expect(batches[0]).toHaveLength(7);
-    expect(prepared.length).toBeLessThanOrEqual(10);
+    expect(batches[0]).toHaveLength(8);
+    expect(prepared).toHaveLength(9);
     expect(batches[0]?.filter((statement) => statement.sql.includes("UPDATE sheets"))).toHaveLength(1);
     expect(batches[0]?.filter((statement) => statement.sql.includes("UPDATE board_axis_items"))).toHaveLength(2);
   });
@@ -1306,6 +1327,33 @@ describe("board mutation routes", () => {
       code: "board_table_locked"
     },
     {
+      name: "table deleted after settings pre-read",
+      options: { tableSettingsRace: "deleted" as const },
+      method: "PATCH",
+      path: "/api/board/tables/table-1",
+      body: { name: "Changed", defaultRowHeight: 52, defaultColumnWidth: 148 },
+      status: 404,
+      code: "board_table_not_found"
+    },
+    {
+      name: "table locked after settings pre-read",
+      options: { tableSettingsRace: "locked" as const },
+      method: "PATCH",
+      path: "/api/board/tables/table-1",
+      body: { name: "Changed", defaultRowHeight: 52, defaultColumnWidth: 148 },
+      status: 423,
+      code: "board_table_locked"
+    },
+    {
+      name: "table unlocked after locked settings pre-read",
+      options: { lockedTable: true, tableSettingsRace: "unlocked" as const },
+      method: "PATCH",
+      path: "/api/board/tables/table-1",
+      body: { name: "Table", defaultRowHeight: 40, defaultColumnWidth: 132, locked: 0 },
+      status: 409,
+      code: "board_table_settings_conflict"
+    },
+    {
       name: "locked table delete",
       options: { lockedTable: true },
       method: "DELETE",
@@ -1330,6 +1378,15 @@ describe("board mutation routes", () => {
       body: { label: "Changed" },
       status: 404,
       code: "board_axis_item_not_found"
+    },
+    {
+      name: "task fields on a non-task axis item",
+      options: { axisItemKind: "character" as const },
+      method: "PATCH",
+      path: "/api/board/axis-items/axis-1",
+      body: { taskColor: "#334455", taskResetType: "weekly" },
+      status: 400,
+      code: "board_axis_item_task_fields_invalid"
     },
     {
       name: "missing axis size",

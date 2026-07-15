@@ -3882,7 +3882,35 @@ describe("board db defaults", () => {
     }
   });
 
-  it("fails an incomplete table settings race without changing content or version", async () => {
+  it("returns not_found when a table is deleted after the settings pre-read", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      let raced = false;
+      const { env } = createSqliteD1Env(database, {
+        beforeBatch(_statements, currentDatabase) {
+          if (raced) return;
+          raced = true;
+          currentDatabase.prepare("DELETE FROM board_tables WHERE id = 'table-A'").run();
+        }
+      });
+
+      await expect(updateBoardTableSettings(env, "user-1", "table-A", {
+        name: "Changed",
+        defaultRowHeight: 52,
+        defaultColumnWidth: 148,
+        locked: 0,
+        applyRowSize: true,
+        applyColumnSize: true
+      })).resolves.toBe("not_found");
+      expect(database.prepare("SELECT id FROM board_tables WHERE id = 'table-A'").get()).toBeUndefined();
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = 'A'").get()).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("returns locked when an unlocked table locks after the settings pre-read", async () => {
     const database = createBoardMutationDatabase();
     try {
       seedSqliteBoard(database, ["A"]);
@@ -3903,7 +3931,7 @@ describe("board db defaults", () => {
         locked: 0,
         applyRowSize: true,
         applyColumnSize: true
-      })).rejects.toThrow("did not return every required row");
+      })).resolves.toBe("locked");
       expect(database.prepare(
         "SELECT name, default_row_height, default_column_width, locked FROM board_tables WHERE id = 'table-A'"
       ).get()).toEqual({ name: "Table", default_row_height: 40, default_column_width: 132, locked: 1 });
@@ -3914,16 +3942,94 @@ describe("board db defaults", () => {
     }
   });
 
-  it("rolls back table settings when one set update is only partially accepted", async () => {
+  it("returns conflict when a locked table unlocks after the settings pre-read", async () => {
     const database = createBoardMutationDatabase();
     try {
       seedSqliteBoard(database, ["A"]);
-      database.prepare("UPDATE board_axis_items SET size_px = 31 WHERE id = 'axis-row'").run();
+      database.prepare("UPDATE board_tables SET locked = 1 WHERE id = 'table-A'").run();
+      let raced = false;
       const { env } = createSqliteD1Env(database, {
-        skipStatement(statement) {
-          return statement.sql.includes("axis = 'row'") && statement.sql.includes("SET size_px");
+        beforeBatch(_statements, currentDatabase) {
+          if (raced) return;
+          raced = true;
+          currentDatabase.prepare("UPDATE board_tables SET locked = 0 WHERE id = 'table-A'").run();
         }
       });
+
+      await expect(updateBoardTableSettings(env, "user-1", "table-A", {
+        name: "Table",
+        defaultRowHeight: 40,
+        defaultColumnWidth: 132,
+        locked: 0,
+        applyRowSize: false,
+        applyColumnSize: false
+      })).resolves.toBe("conflict");
+      expect(database.prepare(
+        "SELECT name, default_row_height, default_column_width, locked FROM board_tables WHERE id = 'table-A'"
+      ).get()).toEqual({ name: "Table", default_row_height: 40, default_column_width: 132, locked: 0 });
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = 'A'").get()).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rethrows unrelated table settings batch errors without race remapping", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      const { env } = createSqliteD1Env(database, {
+        beforeBatch() {
+          throw new Error("D1 unavailable");
+        }
+      });
+
+      await expect(updateBoardTableSettings(env, "user-1", "table-A", {
+        name: "Changed",
+        defaultRowHeight: 52,
+        defaultColumnWidth: 148,
+        locked: 0,
+        applyRowSize: true,
+        applyColumnSize: true
+      })).rejects.toThrow("D1 unavailable");
+      expect(database.prepare(
+        "SELECT name, default_row_height, default_column_width FROM board_tables WHERE id = 'table-A'"
+      ).get()).toEqual({ name: "Table", default_row_height: 40, default_column_width: 132 });
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = 'A'").get()).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rolls back a partially applied multi-row table propagation", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      database.prepare(
+        `INSERT INTO board_axis_items (id, user_id, table_id, axis, kind, label, sort_order, size_px)
+         VALUES ('axis-row-peer', 'user-1', 'table-A', 'row', 'custom', 'Peer', 20, 31),
+                ('axis-row-ignored', 'user-1', 'table-A', 'row', 'custom', 'Ignored', 30, 31)`
+      ).run();
+      database.prepare("UPDATE board_axis_items SET size_px = 31 WHERE id = 'axis-row'").run();
+      const attemptedAxisUpdates: string[] = [];
+      database.function("record_table_size_update", (id) => {
+        attemptedAxisUpdates.push(String(id));
+        return 0;
+      });
+      database.exec(`
+        CREATE TRIGGER record_table_size_update
+        AFTER UPDATE OF size_px ON board_axis_items
+        WHEN NEW.table_id = 'table-A' AND NEW.axis = 'row'
+        BEGIN
+          SELECT record_table_size_update(NEW.id);
+        END;
+        CREATE TEMP TRIGGER ignore_one_table_size_update
+        BEFORE UPDATE OF size_px ON board_axis_items
+        WHEN OLD.id = 'axis-row-ignored'
+        BEGIN
+          SELECT RAISE(IGNORE);
+        END;
+      `);
+      const { env } = createSqliteD1Env(database);
 
       await expect(updateBoardTableSettings(env, "user-1", "table-A", {
         name: "Changed",
@@ -3933,10 +4039,18 @@ describe("board db defaults", () => {
         applyRowSize: true,
         applyColumnSize: false
       })).rejects.toThrow("did not return every required row");
+      expect(attemptedAxisUpdates.sort()).toEqual(["axis-row", "axis-row-peer"]);
       expect(database.prepare(
         "SELECT name, default_row_height, default_column_width FROM board_tables WHERE id = 'table-A'"
       ).get()).toEqual({ name: "Table", default_row_height: 40, default_column_width: 132 });
-      expect(database.prepare("SELECT size_px FROM board_axis_items WHERE id = 'axis-row'").get()).toEqual({ size_px: 31 });
+      expect(database.prepare(
+        `SELECT id, size_px FROM board_axis_items
+         WHERE id IN ('axis-row', 'axis-row-peer', 'axis-row-ignored') ORDER BY id`
+      ).all()).toEqual([
+        { id: "axis-row", size_px: 31 },
+        { id: "axis-row-ignored", size_px: 31 },
+        { id: "axis-row-peer", size_px: 31 }
+      ]);
       expect(database.prepare("SELECT content_version FROM sheets WHERE id = 'A'").get()).toEqual({ content_version: 0 });
     } finally {
       database.close();
@@ -4056,10 +4170,10 @@ describe("board db defaults", () => {
         versions: { sheets: [{ id: "A", version: 1 }] }
       });
 
-      expect(preparedSql).toHaveLength(7);
+      expect(preparedSql).toHaveLength(8);
       expect(preparedSql.some((sql) => /^\s*SELECT\b/i.test(sql))).toBe(false);
       expect(batches).toHaveLength(1);
-      expect(batches[0]).toHaveLength(7);
+      expect(batches[0]).toHaveLength(8);
       expect(batches[0]?.every((statement) => statement.values.length < 100)).toBe(true);
       expect(batches[0]?.filter((statement) => statement.sql.includes("UPDATE board_axis_items"))).toHaveLength(2);
       expect(database.prepare(
@@ -4080,18 +4194,18 @@ describe("board db defaults", () => {
     }
   });
 
-  it("accepts a size-only axis patch without overwriting details", async () => {
+  it("accepts a size-only non-task axis patch without overwriting details", async () => {
     const database = createBoardMutationDatabase();
     try {
       seedSqliteBoard(database, ["A"]);
       database.prepare(
         `UPDATE board_axis_items
          SET label = 'Original', task_color = '#112233', size_px = 40, cross_size_px = 80
-         WHERE id = 'axis-row'`
+         WHERE id = 'axis-column'`
       ).run();
       const { env } = createSqliteD1Env(database);
 
-      await expect(updateBoardAxisItem(env, "user-1", "axis-row", {
+      await expect(updateBoardAxisItem(env, "user-1", "axis-column", {
         sizePx: 44,
         crossSizePx: 96
       })).resolves.toEqual({
@@ -4099,34 +4213,96 @@ describe("board db defaults", () => {
         versions: { sheets: [{ id: "A", version: 1 }] }
       });
       expect(database.prepare(
-        "SELECT label, task_color, size_px, cross_size_px FROM board_axis_items WHERE id = 'axis-row'"
+        "SELECT label, task_color, size_px, cross_size_px FROM board_axis_items WHERE id = 'axis-column'"
       ).get()).toEqual({ label: "Original", task_color: "#112233", size_px: 44, cross_size_px: 96 });
     } finally {
       database.close();
     }
   });
 
-  it("rolls back axis details and version when cross-size propagation is partially accepted", async () => {
+  it("rejects task-only fields on a visible non-task axis without bumping its sheet", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["A"]);
+      database.prepare(
+        `UPDATE board_axis_items
+         SET label = 'Character', task_color = NULL, task_reset_type = NULL, task_reset_rule_json = NULL
+         WHERE id = 'axis-column'`
+      ).run();
+      const { env } = createSqliteD1Env(database);
+
+      await expect(updateBoardAxisItem(env, "user-1", "axis-column", {
+        taskColor: "#334455"
+      })).resolves.toBe("invalid_task_fields");
+      await expect(updateBoardAxisItem(env, "user-1", "axis-column", {
+        taskResetRule: { type: "weekly", weekday: 3, hour: 6, timezone: "Asia/Seoul" }
+      })).resolves.toBe("invalid_task_fields");
+
+      expect(database.prepare(
+        `SELECT label, task_color, task_reset_type, task_reset_rule_json
+         FROM board_axis_items WHERE id = 'axis-column'`
+      ).get()).toEqual({
+        label: "Character",
+        task_color: null,
+        task_reset_type: null,
+        task_reset_rule_json: null
+      });
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = 'A'").get()).toEqual({ content_version: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rolls back axis details and version after a partially applied multi-row cross-size propagation", async () => {
     const database = createBoardMutationDatabase();
     try {
       seedSqliteBoard(database, ["A"]);
       database.prepare(
         "UPDATE board_axis_items SET label = 'Original', size_px = 40, cross_size_px = 80 WHERE id = 'axis-row'"
       ).run();
-      const { env } = createSqliteD1Env(database, {
-        skipStatement(statement) {
-          return statement.sql.includes("SET cross_size_px");
-        }
+      database.prepare(
+        `INSERT INTO board_axis_items (id, user_id, table_id, axis, kind, label, sort_order, cross_size_px)
+         VALUES ('cross-row-peer', 'user-1', 'table-A', 'row', 'custom', 'Peer', 20, 80),
+                ('cross-row-ignored', 'user-1', 'table-A', 'row', 'custom', 'Ignored', 30, 80)`
+      ).run();
+      const attemptedCrossUpdates: string[] = [];
+      database.function("record_cross_size_update", (id) => {
+        attemptedCrossUpdates.push(String(id));
+        return 0;
       });
+      database.exec(`
+        CREATE TRIGGER record_cross_size_update
+        AFTER UPDATE OF cross_size_px ON board_axis_items
+        WHEN NEW.table_id = 'table-A' AND NEW.axis = 'row'
+        BEGIN
+          SELECT record_cross_size_update(NEW.id);
+        END;
+        CREATE TEMP TRIGGER ignore_one_cross_size_update
+        BEFORE UPDATE OF cross_size_px ON board_axis_items
+        WHEN OLD.id = 'cross-row-ignored'
+        BEGIN
+          SELECT RAISE(IGNORE);
+        END;
+      `);
+      const { env } = createSqliteD1Env(database);
 
       await expect(updateBoardAxisItem(env, "user-1", "axis-row", {
         label: "Changed",
         sizePx: 44,
         crossSizePx: 96
       })).rejects.toThrow("did not return every required row");
+      expect(attemptedCrossUpdates.sort()).toEqual(["axis-row", "cross-row-peer"]);
       expect(database.prepare(
         "SELECT label, size_px, cross_size_px FROM board_axis_items WHERE id = 'axis-row'"
       ).get()).toEqual({ label: "Original", size_px: 40, cross_size_px: 80 });
+      expect(database.prepare(
+        `SELECT id, cross_size_px FROM board_axis_items
+         WHERE id IN ('axis-row', 'cross-row-peer', 'cross-row-ignored') ORDER BY id`
+      ).all()).toEqual([
+        { id: "axis-row", cross_size_px: 80 },
+        { id: "cross-row-ignored", cross_size_px: 80 },
+        { id: "cross-row-peer", cross_size_px: 80 }
+      ]);
       expect(database.prepare("SELECT content_version FROM sheets WHERE id = 'A'").get()).toEqual({ content_version: 0 });
     } finally {
       database.close();

@@ -477,6 +477,9 @@ boardRoutes.patch(
     if (updated === "not_found") {
       throw new ApiError(404, "board_table_not_found", "표를 찾을 수 없습니다.");
     }
+    if (updated === "conflict") {
+      throw new ApiError(409, "board_table_settings_conflict", "표 상태가 변경되었습니다. 다시 시도해 주세요.");
+    }
     return c.json(updated);
   }
 );
@@ -631,6 +634,9 @@ boardRoutes.patch(
       ? buildTaskDefinition({ name: input.label ?? "", scope: "character", resetType: input.taskResetType }).resetRule
       : undefined;
     const updated = await updateBoardAxisItem(c.env, user.id, id, { ...input, taskResetRule });
+    if (updated === "invalid_task_fields") {
+      throw new ApiError(400, "board_axis_item_task_fields_invalid", "작업 항목에만 작업 설정을 적용할 수 있습니다.");
+    }
     if (!updated) {
       throw new ApiError(404, "board_axis_item_not_found", "행 또는 열 항목을 찾을 수 없습니다.");
     }
