@@ -11,6 +11,14 @@ export interface BoardSheet {
   is_default: number;
 }
 
+export interface BoardSheetManifestItem extends BoardSheet {
+  version: number;
+}
+
+export interface BoardSheetPayloadItem extends BoardSheet {
+  content_version: number;
+}
+
 export interface BoardTable {
   id: string;
   sheet_id: string;
@@ -102,6 +110,33 @@ export interface BoardDisplaySettings {
   show_class_name: number;
   show_item_level: number;
   show_combat_power: number;
+}
+
+export interface BoardSheetPayload {
+  sheet: BoardSheetPayloadItem;
+  tables: BoardTable[];
+  notes: BoardNote[];
+  axisItems: BoardAxisItem[];
+  cellStates: BoardCellState[];
+  completions: BoardCellCompletion[];
+  periodFingerprint: string;
+}
+
+export interface BoardBootstrapPayload {
+  userId: string;
+  settings: BoardDisplaySettings;
+  manifest: {
+    version: number;
+    sheets: BoardSheetManifestItem[];
+  };
+  activeSheet: BoardSheetPayload;
+}
+
+export interface BoardVersionSummary {
+  manifestVersion: number;
+  sheets: BoardSheetManifestItem[];
+  periodFingerprint: string;
+  settings?: BoardDisplaySettings | undefined;
 }
 
 export interface BoardPayload {

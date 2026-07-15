@@ -3,10 +3,13 @@ import { getPeriodKey, type ResetRule } from "@riceark/core";
 import { ApiClientError, apiGet } from "../../api/client";
 import { applyBoardCompletionPatch, type BoardCompletionPatch } from "./completions";
 import { applyBoardCellStatePatch, type BoardCellStatePatch } from "./cellStates";
+import { buildLocalBoardPeriodFingerprint } from "./boardSheetCache";
 import type { BoardDisplaySettings, BoardMutationVersions, BoardPayload } from "./types";
 import { attachBoardQueueLifecycle, createBoardCompletionQueue, type BoardPatchApi } from "./useBoardCompletionQueue";
 import { createBoardCellStateQueue } from "./useBoardCellStateQueue";
 import { ReliablePatchQueueFlushError } from "./reliablePatchQueue";
+
+export { buildLocalBoardPeriodFingerprint };
 
 export const BOARD_VERSION_CHECK_INTERVAL_MS = 120_000;
 export const BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS = BOARD_VERSION_CHECK_INTERVAL_MS;
@@ -831,23 +834,6 @@ export function reportBoardReloadErrorIfCurrent(
   if (currentCoordinator !== expectedCoordinator) return false;
   report(formatBoardError(error));
   return true;
-}
-
-export function buildLocalBoardPeriodFingerprint(
-  board: BoardPeriodFingerprintSource | null | undefined,
-  now = new Date()
-): string {
-  if (!board) return "";
-  const periodKeys = new Set<string>();
-  for (const item of board.axisItems) {
-    if (item.kind !== "task" || !item.task_reset_rule_json) continue;
-    try {
-      periodKeys.add(getPeriodKey(JSON.parse(item.task_reset_rule_json) as ResetRule, now));
-    } catch {
-      // Invalid legacy reset rules should not make lightweight version checks fail.
-    }
-  }
-  return [...periodKeys].sort().join("|");
 }
 
 export function buildBoardVersionKey(
