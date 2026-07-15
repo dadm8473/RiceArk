@@ -135,6 +135,110 @@ describe("api client", () => {
     });
   });
 
+  it.each([
+    ["a day", "Friday, 16-Jul-76 00:00:00 GMT"],
+    ["a second", "Thursday, 15-Jul-76 00:00:01 GMT"]
+  ])("rolls an RFC850 date %s beyond the 50-year cutoff into the past", async (_offset, retryAfter) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(JSON.stringify({ error: { code: "rate_limited" } }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": retryAfter }
+        });
+      })
+    );
+
+    await expect(apiPatch("/api/board/completions", { patches: [] })).rejects.toMatchObject({
+      retryAfterMs: 0
+    });
+  });
+
+  it("validates the RFC850 weekday after resolving the two-digit year", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(JSON.stringify({ error: { code: "rate_limited" } }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": "Thursday, 16-Jul-76 00:00:00 GMT" }
+        });
+      })
+    );
+
+    await expect(apiPatch("/api/board/completions", { patches: [] })).rejects.toMatchObject({
+      retryAfterMs: null
+    });
+  });
+
+  it("keeps an RFC850 date exactly 50 years in the future", async () => {
+    const now = Date.parse("2026-07-15T00:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(JSON.stringify({ error: { code: "rate_limited" } }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": "Wednesday, 15-Jul-76 00:00:00 GMT" }
+        });
+      })
+    );
+
+    await expect(apiPatch("/api/board/completions", { patches: [] })).rejects.toMatchObject({
+      retryAfterMs: Date.parse("2076-07-15T00:00:00.000Z") - now
+    });
+  });
+
+  it.each([
+    ["IMF-fixdate", "Wed, 15 Jul 2026 00:00:60 GMT"],
+    ["RFC850", "Wednesday, 15-Jul-26 00:00:60 GMT"],
+    ["asctime", "Wed Jul 15 00:00:60 2026"]
+  ])("parses %s Retry-After leap seconds", async (_format, retryAfter) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(JSON.stringify({ error: { code: "rate_limited" } }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": retryAfter }
+        });
+      })
+    );
+
+    await expect(apiPatch("/api/board/completions", { patches: [] })).rejects.toMatchObject({
+      retryAfterMs: 60_000
+    });
+  });
+
+  it.each([
+    ["invalid hour", "Wed, 15 Jul 2026 24:00:60 GMT"],
+    ["invalid minute", "Wed, 15 Jul 2026 00:60:60 GMT"],
+    ["invalid second", "Wed, 15 Jul 2026 00:00:61 GMT"],
+    ["invalid calendar date", "Sun, 29 Feb 2026 23:59:60 GMT"],
+    ["mismatched weekday", "Thu, 15 Jul 2026 00:00:60 GMT"]
+  ])("rejects a leap second with an %s", async (_description, retryAfter) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(JSON.stringify({ error: { code: "rate_limited" } }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": retryAfter }
+        });
+      })
+    );
+
+    await expect(apiPatch("/api/board/completions", { patches: [] })).rejects.toMatchObject({
+      retryAfterMs: null
+    });
+  });
+
   it("clamps past Retry-After dates to zero", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));

@@ -37,22 +37,81 @@ const RFC850_WEEKDAYS: Record<string, string> = {
   Sunday: "Sun"
 };
 
+const HTTP_MONTHS: Record<string, number> = {
+  Jan: 0,
+  Feb: 1,
+  Mar: 2,
+  Apr: 3,
+  May: 4,
+  Jun: 5,
+  Jul: 6,
+  Aug: 7,
+  Sep: 8,
+  Oct: 9,
+  Nov: 10,
+  Dec: 11
+};
+
+const HTTP_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
 function capture(match: RegExpExecArray, index: number): string {
   return match[index] ?? "";
 }
 
-function parseCanonicalHttpDate(weekday: string, day: string, month: string, year: string, time: string): number | null {
-  const canonicalDate = `${weekday}, ${day} ${month} ${year} ${time} GMT`;
-  const timestamp = Date.parse(canonicalDate);
-  if (Number.isNaN(timestamp) || new Date(timestamp).toUTCString() !== canonicalDate) return null;
-  return timestamp;
+interface ParsedHttpDateParts {
+  timestamp: number;
+  weekday: string;
 }
 
-function expandRfc850Year(year: string): string {
-  const currentYear = new Date(Date.now()).getUTCFullYear();
-  let expandedYear = Math.floor(currentYear / 100) * 100 + Number(year);
+function parseHttpDateParts(day: string, month: string, year: string, time: string): ParsedHttpDateParts | null {
+  const timeMatch = /^([0-9]{2}):([0-9]{2}):([0-9]{2})$/.exec(time);
+  const monthIndex = HTTP_MONTHS[month];
+  if (!timeMatch || monthIndex === undefined) return null;
 
-  if (expandedYear - currentYear > 50) expandedYear -= 100;
+  const dayNumber = Number(day);
+  const yearNumber = Number(year);
+  const hour = Number(capture(timeMatch, 1));
+  const minute = Number(capture(timeMatch, 2));
+  const second = Number(capture(timeMatch, 3));
+  if (hour > 23 || minute > 59 || second > 60) return null;
+
+  const normalizedSecond = Math.min(second, 59);
+  const date = new Date(0);
+  date.setUTCFullYear(yearNumber, monthIndex, dayNumber);
+  date.setUTCHours(hour, minute, normalizedSecond, 0);
+
+  if (
+    date.getUTCFullYear() !== yearNumber ||
+    date.getUTCMonth() !== monthIndex ||
+    date.getUTCDate() !== dayNumber ||
+    date.getUTCHours() !== hour ||
+    date.getUTCMinutes() !== minute ||
+    date.getUTCSeconds() !== normalizedSecond
+  ) {
+    return null;
+  }
+
+  const weekday = HTTP_WEEKDAYS[date.getUTCDay()];
+  if (weekday === undefined) return null;
+  return { timestamp: date.getTime() + (second === 60 ? 1_000 : 0), weekday };
+}
+
+function parseCanonicalHttpDate(weekday: string, day: string, month: string, year: string, time: string): number | null {
+  const parsed = parseHttpDateParts(day, month, year, time);
+  return parsed?.weekday === weekday ? parsed.timestamp : null;
+}
+
+function expandRfc850Year(day: string, month: string, year: string, time: string): string | null {
+  const now = Date.now();
+  const currentYear = new Date(now).getUTCFullYear();
+  let expandedYear = Math.floor(currentYear / 100) * 100 + Number(year);
+  const candidate = parseHttpDateParts(day, month, String(expandedYear).padStart(4, "0"), time);
+  if (candidate === null) return null;
+
+  const fiftyYearsFromNow = new Date(now);
+  fiftyYearsFromNow.setUTCFullYear(currentYear + 50);
+
+  if (candidate.timestamp > fiftyYearsFromNow.getTime()) expandedYear -= 100;
   return String(expandedYear).padStart(4, "0");
 }
 
@@ -73,13 +132,13 @@ function parseHttpDate(value: string): number | null {
     const weekday = RFC850_WEEKDAYS[capture(rfc850Date, 1)];
     if (weekday === undefined) return null;
 
-    return parseCanonicalHttpDate(
-      weekday,
-      capture(rfc850Date, 2),
-      capture(rfc850Date, 3),
-      expandRfc850Year(capture(rfc850Date, 4)),
-      capture(rfc850Date, 5)
-    );
+    const day = capture(rfc850Date, 2);
+    const month = capture(rfc850Date, 3);
+    const time = capture(rfc850Date, 5);
+    const year = expandRfc850Year(day, month, capture(rfc850Date, 4), time);
+    if (year === null) return null;
+
+    return parseCanonicalHttpDate(weekday, day, month, year, time);
   }
 
   const asctimeDate = ASCTIME_DATE_PATTERN.exec(value);
