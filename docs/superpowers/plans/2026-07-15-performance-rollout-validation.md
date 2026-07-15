@@ -49,13 +49,23 @@ pnpm --filter @riceark/web build
 
 Record total test counts and copy the emitted bundle sizes into the baseline report, including the prior initial bundle reference of `421.46 kB` raw and `125.27 kB` gzip for comparison. If the build output format changes, record the emitted asset filename and measured gzip bytes instead of estimating. `test:d1-sql` and `measure:board-reads` do not exist before implementation; add their numeric results after the reliable-writes and sheet-aware-read phases create them.
 
-- [ ] **Step 3: Capture the current production aggregate**
+- [ ] **Step 3: Capture the current directional rolling reference**
 
-Open the authenticated admin summary before deployment and record the one-day Workers/Pages requests, CPU percentile when available, D1 rows read/written, DB size, completion activity, and every warning. Label fixed admin-query cost separately from end-user traffic and mark unavailable counters as unavailable.
+Issue authenticated `GET` requests to `/api/admin/summary` and
+`/api/admin/health` at the scheduled window end, and record each response's
+`generatedAt` plus its request timestamp. Preserve the raw JSON outside git and
+copy only aggregate fields into the report. The approved 2026-07-15 rolling
+aggregate has no exact start/end timestamps, so it is directional and not a
+fixed comparable window. Derive the first post-instrumentation window as
+`windowStart = windowEnd - 24h`; it becomes the comparable baseline. Mark
+unavailable counters as unavailable.
 
 - [ ] **Step 4: Document the repeat procedure and commit**
 
-Update `cloudflare-admin-usage.md` with the exact baseline and post-deploy comparison procedure, including the requirement to use comparable 24-hour windows.
+Update `cloudflare-admin-usage.md` with the exact response-timestamp collection
+procedure for the first post-instrumentation comparable baseline and each
+post-deploy comparison. Do not treat the rolling source snapshot as a fixed
+comparable window.
 
 ```bash
 git add docs/performance/2026-07-15-optimization-baseline.md docs/deployment/cloudflare-admin-usage.md

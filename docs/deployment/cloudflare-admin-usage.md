@@ -49,24 +49,31 @@ pnpm --filter @riceark/web run deploy
 
 ## Comparable 24-Hour Rollout Procedure
 
-Use this procedure for the baseline and every post-deployment comparison. Keep
-the record aggregate-only. Do not include names, email addresses, OAuth ids,
-session values, character names, note content, share ids, API tokens, or other
-secrets.
+Use this procedure for the first post-instrumentation comparable baseline and
+every post-deployment comparison. Keep the record aggregate-only. Do not include
+names, email addresses, OAuth ids, session values, character names, note content,
+share ids, API tokens, or other secrets.
 
 ### 1. Freeze The Deployment And Window
 
-1. Record the source commit SHA, Pages deployment id and URL, deployment
-   completion timestamp, and the timestamp at which metrics are collected.
-2. Record `windowStart` and `windowEnd` as ISO 8601 UTC timestamps, plus their
-   exact Asia/Seoul (KST, UTC+09:00) equivalents. Use
-   `windowStart <= event < windowEnd`, and make `windowEnd` exactly 24 hours
-   after `windowStart`.
-3. Record the operator timezone separately. Use the same weekday and UTC/KST
+1. Record the source commit SHA, Pages deployment id and URL, and deployment
+   completion timestamp.
+2. At the scheduled `windowEnd`, issue authenticated `GET` requests to
+   `/api/admin/summary` and `/api/admin/health`. Record each response's
+   `generatedAt` and the request timestamp. Use `generatedAt` as that response's
+   boundary when present; otherwise use its recorded request timestamp. If
+   the two responses do not provide matching boundaries, mark the window
+   `unavailable` or `qualified` rather than aligning them by inference.
+3. Derive `windowStart = windowEnd - 24h`, then record both as ISO 8601 UTC
+   timestamps and their exact Asia/Seoul (KST, UTC+09:00) equivalents. Use
+   `windowStart <= event < windowEnd`.
+4. Record the operator timezone separately. Use the same weekday and UTC/KST
    start time for the baseline and post-deployment windows where possible.
-4. Do not place a deployment or migration inside either comparison window. The
+5. Preserve the raw authenticated response JSON locally outside git for audit;
+   copy only sanitized aggregate fields into the report.
+6. Do not place a deployment or migration inside either comparison window. The
    post-deployment window starts only after the candidate deployment completes.
-5. Do not compare two rolling "last 24 hours" screenshots taken at unrelated
+7. Do not compare two rolling "last 24 hours" screenshots taken at unrelated
    times. Query or capture both windows with their fixed boundaries.
 
 Record these fields for each window:
@@ -77,7 +84,7 @@ Record these fields for each window:
 | Commit | Full source commit SHA |
 | Deployment | Pages deployment id and public deployment URL |
 | Deployment completed | ISO 8601 timestamp |
-| Window start/end | Exact 24-hour UTC boundaries |
+| Window start/end | Exact 24-hour UTC boundaries derived from the authenticated responses |
 | KST boundary equivalents | Exact Asia/Seoul boundaries for the same window |
 | Metrics collected | ISO 8601 timestamp and operator timezone |
 | Traffic note | Same-day comparison, known incident, promotion, or other aggregate traffic-mix difference |
@@ -87,31 +94,34 @@ for an unavailable value.
 
 ### 2. Hold Admin Scan Cost Constant
 
-For this rollout, make exactly four deliberate `/api/admin/summary` visits in
-each 24-hour window, at offsets `+00:05`, `+06:05`, `+12:05`, and `+18:05` from
-`windowStart`. Do not make additional deliberate admin-dashboard visits during
-the window. Record accidental or automated visits and flag the window as
-non-comparable if the visit pattern cannot be matched.
+For this rollout, make exactly four deliberate authenticated visits to each of
+`/api/admin/summary` and `/api/admin/health` in each 24-hour window, at offsets
+`+00:05`, `+06:05`, `+12:05`, and `+18:05` from `windowStart`. Do not make
+additional deliberate admin-dashboard visits during the window. Record
+accidental or automated visits and flag the window as non-comparable if the
+visit pattern cannot be matched.
 
-For every visit, record whether D1 Insights shows the user/activity aggregate
-and data aggregate executing. Treat that observed execution as the cache-status
+For each summary visit, record whether D1 Insights shows the user/activity and
+data aggregates executing. For each health visit, record the route's observed
+D1 work and cleanup behavior. Treat those observations as the cache-status
 evidence; do not infer a cache hit from elapsed time alone because module memory
 is best-effort and isolate-local.
 
 Record fixed admin cost separately:
 
-| Admin field | Value to record |
-| --- | --- |
-| Deliberate summary visits | Count and scheduled offsets |
-| Additional summary visits | Count and reason, or zero |
-| User/activity aggregate | Executions and rows read |
-| Data aggregate | Executions and rows read |
-| Total fixed admin rows | Sum of the two aggregate row counts |
-| Summary warnings | Aggregate warning codes/messages with identifiers removed |
+| Route | Requests | D1 read/write queries | Rows read/written | Cleanup writes |
+| --- | --- | --- | --- | --- |
+| `/api/admin/summary` | Count and scheduled offsets | Count each, or `unavailable` | Read and written counts, or `unavailable` | Count, or `unavailable` |
+| `/api/admin/health` | Count and scheduled offsets | Count each, or `unavailable` | Read and written counts, or `unavailable` | Count, or `unavailable` |
+| Total fixed admin cost | Sum only when route attribution is complete | Sum only when route attribution is complete | Sum only when route attribution is complete | Sum only when route attribution is complete |
 
-The 2026-07-15 reference has four executions and 36,036 rows for the
+Record summary and health warnings only as sanitized allowlisted local
+categories described below.
+
+The 2026-07-15 rolling reference has four executions and 36,036 rows for the
 user/activity aggregate, plus four executions and 12,828 rows for the data
-aggregate.
+aggregate. Route-level query, write, and cleanup attribution is unavailable for
+that reference.
 
 ### 3. Capture The Same Metrics
 
@@ -126,9 +136,15 @@ Capture all values against the fixed boundaries and record the source used:
 - D1 rows read, rows written, read queries, write queries, database size in
   bytes, and table count when available;
 - API 4xx and 5xx totals grouped by route template and status class;
-- application, cache, Lost Ark, Cloudflare, and metrics warnings grouped by
-  code or sanitized message;
+- application, cache, Lost Ark, Cloudflare, and metrics warnings counted only
+  by the allowlisted local category;
 - fixed admin visits and D1 cost from the preceding section.
+
+Store and count warnings only as one of these allowlisted local categories:
+`pages_project_unavailable`, `d1_usage_unavailable`,
+`workers_usage_unavailable`, `workers_zero_with_d1`, `external_timeout`, or
+`other`. Never copy upstream response bodies, URLs, ids, tokens, or text after
+a colon into the report.
 
 If Workers requests are zero while D1 queries are nonzero, first verify that the
 configured script resolves the Pages production script. Until it does, mark
@@ -141,22 +157,35 @@ Keep raw totals, then calculate normalized values only when both numerator and
 denominator are available and the denominator is greater than zero.
 
 ```text
-endUserRowsRead = d1RowsRead - fixedAdminRowsRead
+adminAdjustedRequests = workersRequests - fullyAttributedAdminRequests
+adminAdjustedRowsRead = d1RowsRead - fullyAttributedAdminRowsRead
+adminAdjustedRowsWritten = d1RowsWritten - fullyAttributedAdminRowsWritten
+adminAdjustedReadQueries = d1ReadQueries - fullyAttributedAdminReadQueries
+adminAdjustedWriteQueries = d1WriteQueries - fullyAttributedAdminWriteQueries
 
-requestsPerActiveUser = workersRequests / completionActiveUsers24h
-rowsReadPerActiveUser = endUserRowsRead / completionActiveUsers24h
-rowsWrittenPerActiveUser = d1RowsWritten / completionActiveUsers24h
-readQueriesPerActiveUser = d1ReadQueries / completionActiveUsers24h
-writeQueriesPerActiveUser = d1WriteQueries / completionActiveUsers24h
+adminAdjustedRequestsPerActiveUser = adminAdjustedRequests / completionActiveUsers24h
+adminAdjustedRowsReadPerActiveUser = adminAdjustedRowsRead / completionActiveUsers24h
+adminAdjustedRowsWrittenPerActiveUser = adminAdjustedRowsWritten / completionActiveUsers24h
+adminAdjustedReadQueriesPerActiveUser = adminAdjustedReadQueries / completionActiveUsers24h
+adminAdjustedWriteQueriesPerActiveUser = adminAdjustedWriteQueries / completionActiveUsers24h
 
-requestsPerCompletion = workersRequests / completionUpdates24h
-rowsReadPerCompletion = endUserRowsRead / completionUpdates24h
-rowsWrittenPerCompletion = d1RowsWritten / completionUpdates24h
+totalRequestsPerActiveUser = workersRequests / completionActiveUsers24h
+totalRowsReadPerActiveUser = d1RowsRead / completionActiveUsers24h
+totalRowsWrittenPerActiveUser = d1RowsWritten / completionActiveUsers24h
+totalReadQueriesPerActiveUser = d1ReadQueries / completionActiveUsers24h
+totalWriteQueriesPerActiveUser = d1WriteQueries / completionActiveUsers24h
+
+adminAdjustedRequestsPerCompletion = adminAdjustedRequests / completionUpdates24h
+adminAdjustedRowsReadPerCompletion = adminAdjustedRowsRead / completionUpdates24h
+adminAdjustedRowsWrittenPerCompletion = adminAdjustedRowsWritten / completionUpdates24h
 ```
 
-If `endUserRowsRead` is negative, the admin attribution is inconsistent; mark
-the adjusted read metrics unavailable and investigate the window. Do not use
-the stored-completion total as the completion-activity denominator.
+Compute admin-adjusted requests, reads, writes, and query metrics only when
+both admin routes have complete request, query, row, and cleanup attribution.
+Otherwise report the `total*` normalization values and mark all
+`adminAdjusted*` metrics `unavailable`. If any adjusted total is negative, the
+attribution is inconsistent; mark adjusted metrics unavailable and investigate.
+Do not use the stored-completion total as the completion-activity denominator.
 
 ### 5. Record Comparability And Decision
 

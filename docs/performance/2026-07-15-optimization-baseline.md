@@ -1,9 +1,10 @@
 # Performance Optimization Pre-Implementation Baseline
 
-This report freezes the aggregate, non-sensitive baseline used by the phased
-performance and caching rollout. It distinguishes measured evidence from source
-observations and from values that are not yet instrumented. It contains no user
-identities, session material, character names, note content, or share ids.
+This report records the aggregate, non-sensitive directional reference available
+before instrumentation for the phased performance and caching rollout. It
+distinguishes measured evidence from source observations and from values that
+are not yet instrumented. It contains no user identities, session material,
+character names, note content, or share ids.
 
 ## Capture Metadata
 
@@ -14,7 +15,8 @@ identities, session material, character names, note content, or share ids.
 | Source commit tested | `96c1f6f` |
 | Branch | `codex/performance-caching` |
 | Production aggregate source | Approved optimization design, based on the 2026-07-15 production admin aggregate and D1 Insights |
-| Production 24-hour boundaries | Not measured; the source snapshot records rolling 24-hour totals but not exact start and end timestamps |
+| Production window status | Directional rolling reference, not an operational fixed baseline and not directly comparable to later fixed windows |
+| Production 24-hour boundaries | Unavailable; the source snapshot records rolling 24-hour totals but not exact start and end timestamps |
 | Local test fixture/source | Repository Vitest fixtures and mocks at the source commit above; no production row or identity data was used by the local gates |
 | Browser viewport | Not measured; no browser capture was performed for this pre-implementation baseline |
 | Initial JS | `421.46 kB` raw / `125.27 kB` gzip from the verified production build |
@@ -42,14 +44,18 @@ reliable-writes phase creates it. `measure:board-reads` becomes a phase gate
 after the sheet-aware-read phase creates it; both are then rerun at the later
 phase checkpoints defined by the rollout plan.
 
-## Production Aggregate
+## Directional Production Rolling Reference
 
-The following is the authoritative aggregate already approved for the rollout.
+The following aggregate is the approved 2026-07-15 rolling reference. It has no
+exact start or end timestamps, so it is directional only and is **not directly
+comparable** to later fixed 24-hour windows. The first post-instrumentation
+exact 24-hour capture becomes the comparable operational baseline.
 
 | Metric | Observed value |
 | --- | ---: |
 | Registered users | 9 |
 | Completion-active users in 24h | 4 |
+| Completion updates in 24h | unavailable |
 | Active sessions | 51 |
 | Sheets | 14 |
 | Tables | 23 |
@@ -81,11 +87,13 @@ script is the production-metrics warning attached to this baseline.
 | Admin user/activity aggregate | 4 | 36,036 |
 | Admin data aggregate | 4 | 12,828 |
 
-The two fixed admin aggregates account for 48,864 rows read, or 50.05% of the
-24-hour total. With four completion-active users, raw D1 reads are 24,406.25 per
-active user; subtracting the observed fixed admin reads leaves 12,190.25 per
-active user. D1 writes are 489 per active user. These are comparison aids, not
-capacity claims.
+The two observed summary scans account for 48,864 rows read, or 50.05% of the
+rolling total. A summary-scan-adjusted read total is 48,761 rows, or 12,190.25
+per completion-active user; gross reads are 24,406.25 per completion-active
+user and D1 writes are 489 per completion-active user. This arithmetic still
+includes admin health, session, and other admin costs because those routes were
+not fully attributed. It cannot estimate an end-user unit cost and is only a
+directional comparison aid, not a capacity claim.
 
 A per-completion value is not calculated because the 24-hour completion-update
 count was not captured. The 2,244 stored completions are a current-state total,
@@ -94,10 +102,11 @@ not a valid activity denominator.
 ## User Distribution And Capacity Caveat
 
 Users average 1.56 sheets with a maximum of 3. They average 40 axis items with a
-maximum of 97. The rough 204 DAU estimate is explicitly sample-limited: it uses
-only four completion-active users and is materially distorted by fixed admin
-scans. It is retained only as a before/after reference and is not a production
-capacity guarantee.
+maximum of 97. The historical 204 DAU figure is a gross-read theoretical
+calculation:
+`5,000,000 / (97,625 / 4) ~= 204.87`, based on gross reads and four
+completion-active users. It is not admin-adjusted or accepted, and is excluded
+from operational capacity claims.
 
 ## Flow Evidence
 
@@ -120,8 +129,9 @@ request and D1 metadata instrumentation.
 
 ## Baseline Decision
 
-The repository gates are green, the current bundle is recorded, and the
-production aggregate is sufficient to begin phased implementation. This report
-does not claim that any target flow budget already passes. Those decisions
-require the phase-created SQL and board-read measurement gates plus browser
-request evidence.
+The repository gates are green and the current bundle is recorded. The rolling
+production reference is sufficient to begin phased implementation, but is not a
+fixed comparable baseline. The first post-instrumentation exact 24-hour capture
+is the comparable baseline. This report does not claim that any target flow
+budget already passes; those decisions require the phase-created SQL and
+board-read measurement gates plus browser request evidence.
