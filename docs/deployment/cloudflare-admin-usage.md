@@ -90,8 +90,8 @@ Record these fields for each window:
 | Commit | Full source commit SHA |
 | Deployment | Pages deployment id and public deployment URL |
 | Deployment completed | ISO 8601 timestamp |
-| Window start/end | Exact 24-hour UTC boundaries derived from the authenticated responses |
-| KST boundary equivalents | Exact Asia/Seoul boundaries for the same window |
+| Scheduled comparison target boundaries | Operator-scheduled 24-hour UTC start/end and corresponding Asia/Seoul (KST, UTC+09:00) start/end |
+| Provider effective boundary | Exact provider-reported start/end, or `unavailable` |
 | Metrics collected | ISO 8601 timestamp and operator timezone |
 | Traffic note | Same-day comparison, known incident, promotion, or other aggregate traffic-mix difference |
 
