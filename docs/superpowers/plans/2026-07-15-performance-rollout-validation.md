@@ -36,17 +36,18 @@ Record exact timestamp, commit SHA, test fixture, browser viewport, initial JS g
 
 The report contains aggregate counts only. Do not record session cookies, OAuth identities, character names, note content, or shared-rice-bin ids.
 
-- [ ] **Step 2: Run deterministic local measurements**
+- [ ] **Step 2: Run the available pre-implementation baseline gates**
 
 Run:
 
 ```bash
-pnpm test:d1-sql
-pnpm measure:board-reads
+pnpm check
+pnpm test
+pnpm build
 pnpm --filter @riceark/web build
 ```
 
-Copy the generated numeric summaries into the baseline report, including the prior initial bundle reference of `421.46 kB` raw and `125.27 kB` gzip for comparison. If the build output format changes, record the emitted asset filename and measured gzip bytes instead of estimating.
+Record total test counts and copy the emitted bundle sizes into the baseline report, including the prior initial bundle reference of `421.46 kB` raw and `125.27 kB` gzip for comparison. If the build output format changes, record the emitted asset filename and measured gzip bytes instead of estimating. `test:d1-sql` and `measure:board-reads` do not exist before implementation; add their numeric results after the reliable-writes and sheet-aware-read phases create them.
 
 - [ ] **Step 3: Capture the current production aggregate**
 
@@ -77,11 +78,22 @@ pnpm check
 pnpm test
 pnpm build
 pnpm --filter @riceark/web build:functions
-pnpm test:d1-sql
-pnpm measure:board-reads
 ```
 
 Expected: only intentionally uncommitted measurement updates before the report commit; all commands exit zero; the Pages Functions bundle resolves `@riceark/api/src/index` successfully.
+
+After reliable writes, additionally run:
+
+```bash
+pnpm test:d1-sql
+```
+
+After sheet-aware reads and again after shared/public caching, additionally run:
+
+```bash
+pnpm test:d1-sql
+pnpm measure:board-reads
+```
 
 - [ ] **Step 2: Enforce acceptance budgets**
 
