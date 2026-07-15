@@ -1056,6 +1056,29 @@ describe("ReliablePatchQueue", () => {
     expect(queue.getPendingSnapshot()).toEqual([]);
   });
 
+  it("lets a flush succeed when a newer same-key intent supersedes and clears an older rejection", async () => {
+    const firstAttempt = deferred<SendOutcome<string>>();
+    const olderPatch = { key: "cell", value: true };
+    const newerPatch = { key: "cell", value: false };
+    const send = vi
+      .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()
+      .mockImplementationOnce(async () => firstAttempt.promise)
+      .mockImplementation(async (patches) => accepted(patches));
+    const { queue } = makeQueue({ send });
+    queue.enqueue(olderPatch);
+
+    const flush = queue.flush();
+    await vi.advanceTimersByTimeAsync(0);
+    queue.enqueue(newerPatch);
+    firstAttempt.resolve({ type: "rejected", rejectedKeys: ["cell"], message: "Old intent rejected" });
+
+    await expect(flush).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]?.[0]).toEqual([newerPatch]);
+    expect(queue.getPendingSnapshot()).toEqual([]);
+    expect(queue.getRejectedSnapshot()).toEqual([]);
+  });
+
   it("continues remaining work when onPermanentFailure throws", async () => {
     const send = vi
       .fn<NonNullable<ReliablePatchQueueOptions<Patch, string>["send"]>>()
@@ -1155,11 +1178,7 @@ describe("ReliablePatchQueue", () => {
       );
       await Promise.resolve();
       if (firstOutcome === "retry") await vi.advanceTimersByTimeAsync(1_000);
-      if (firstOutcome === "rejected") {
-        await expect(queue.flush()).rejects.toMatchObject({ reason: "rejected" });
-      } else {
-        await expect(queue.flush()).resolves.toBeUndefined();
-      }
+      await expect(queue.flush()).resolves.toBeUndefined();
 
       expect(sent).toEqual([
         [{ key: "cell", value: true }],

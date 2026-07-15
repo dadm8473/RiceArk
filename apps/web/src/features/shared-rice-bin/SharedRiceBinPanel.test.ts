@@ -2,7 +2,15 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { buildSharedRiceBinLink, extractSharedRiceBinId, openSharedRiceBinInNewTab, SharedRiceBinPanel } from "./SharedRiceBinPanel";
+import {
+  buildSharedRiceBinLink,
+  extractSharedRiceBinId,
+  isSharedRiceBinWriteDisabled,
+  openSharedRiceBinInNewTab,
+  runSharedRiceBinWrite,
+  SharedRiceBinPanel
+} from "./SharedRiceBinPanel";
+import { createBoardMutationBarrier } from "../board/mutationBarrier";
 import type { BoardPayload } from "../board/types";
 
 const shareId = "AbCdEfGhIjKlMnOpQrStUv";
@@ -23,6 +31,14 @@ const ownerBoard: BoardPayload = {
   cellStates: [],
   completions: []
 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 describe("extractSharedRiceBinId", () => {
   it("accepts raw ids and RiceArk share links", () => {
@@ -47,6 +63,73 @@ describe("shared rice bin links", () => {
 });
 
 describe("SharedRiceBinPanel", () => {
+  it.each([
+    ["share:sheet-1", null],
+    [`favorite:${shareId}`, null],
+    ["share:sheet-1", "share:sheet-1"]
+  ])("disables the %s write control for lock or matching pending state", (controlKey, pending) => {
+    expect(isSharedRiceBinWriteDisabled(true, pending, controlKey)).toBe(true);
+    expect(isSharedRiceBinWriteDisabled(false, pending, controlKey)).toBe(pending === controlKey);
+  });
+
+  it("keeps a shared write's refresh chain inside one barrier admission", async () => {
+    const mutationRequest = deferred<void>();
+    const events: string[] = [];
+    const barrier = createBoardMutationBarrier();
+    const write = runSharedRiceBinWrite(
+      barrier.run,
+      async () => {
+        events.push("mutation:start");
+        await mutationRequest.promise;
+        events.push("refresh");
+      },
+      vi.fn(),
+      () => events.push("settled")
+    );
+    const drain = barrier.lockAndDrain();
+
+    mutationRequest.resolve();
+    await write;
+    await drain;
+    expect(events).toEqual(["mutation:start", "refresh", "settled"]);
+  });
+
+  it("rethrows shared write failures after UI error and pending cleanup", async () => {
+    const failure = new Error("favorite failed");
+    const onError = vi.fn();
+    const onSettled = vi.fn();
+    const barrier = createBoardMutationBarrier();
+
+    const write = runSharedRiceBinWrite(
+      barrier.run,
+      async () => {
+        throw failure;
+      },
+      onError,
+      onSettled
+    );
+    const drain = barrier.lockAndDrain();
+
+    await expect(write).rejects.toBe(failure);
+    await expect(drain).rejects.toMatchObject({ errors: [failure] });
+    expect(onError).toHaveBeenCalledWith(failure);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables owner share writes while logout reconciliation holds the lock", () => {
+    const html = renderToStaticMarkup(
+      createElement(SharedRiceBinPanel, {
+        ownerBoard,
+        sessionStatus: "authenticated",
+        writeLocked: true
+      })
+    );
+
+    expect(html).toContain('role="status"');
+    expect(html).toContain("로그아웃 중에는 공유 설정을 변경할 수 없습니다.");
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>.*공유 시작/s);
+  });
+
   it("renders lookup controls for anonymous visitors", () => {
     const html = renderToStaticMarkup(createElement(SharedRiceBinPanel, { sessionStatus: "anonymous" }));
 

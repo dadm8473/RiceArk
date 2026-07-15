@@ -112,6 +112,24 @@ export function runOptimisticBoardWrite<Patch>(
   });
 }
 
+export function runBoardAxisItemOperation<Result>(
+  runMutation: BoardMutationRunner,
+  operation: () => Promise<Result>
+): Promise<Result> {
+  return runMutation(operation);
+}
+
+export function runBoardAxisItemSaveOperation(
+  runMutation: BoardMutationRunner,
+  saveCharacter: (() => Promise<void>) | null,
+  saveAxisItem: () => Promise<void>
+): Promise<void> {
+  return runBoardAxisItemOperation(runMutation, async () => {
+    await saveCharacter?.();
+    await saveAxisItem();
+  });
+}
+
 type BoardDisplaySettings = BoardPayload["settings"];
 type BoardDisplaySettingKey = keyof BoardDisplaySettings;
 type BoardTaskResetType = Exclude<NonNullable<BoardAxisItem["task_reset_type"]>, "custom">;
@@ -1478,79 +1496,75 @@ export function BoardOverview({
     displaySettings?: BoardDisplaySettings | null,
     shouldUpdateDetails = true
   ) {
-    return runMutation(async () => {
-      if (shouldUpdateDetails) {
-        await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId), {
-          label,
-          taskColor,
-          taskResetType,
-          separator,
-          displaySettings
-        });
+    if (shouldUpdateDetails) {
+      await apiPatch("/api/board/axis-items/" + encodeURIComponent(axisItemId), {
+        label,
+        taskColor,
+        taskResetType,
+        separator,
+        displaySettings
+      });
+    }
+    const sizePatch = {
+      ...(sizePx !== undefined && sizePx !== null ? { sizePx } : {}),
+      ...(crossSizePx !== undefined && crossSizePx !== null ? { crossSizePx } : {})
+    };
+    const editedItem = axisItems.find((item) => item.id === axisItemId);
+    const sizePatches = new Map<string, typeof sizePatch>();
+    if (Object.keys(sizePatch).length > 0) {
+      sizePatches.set(axisItemId, sizePatch);
+    }
+    if (crossSizePx !== undefined && crossSizePx !== null && editedItem) {
+      for (const item of axisItems) {
+        if (item.table_id !== editedItem.table_id || item.axis !== editedItem.axis || item.visible !== 1) continue;
+        sizePatches.set(item.id, { ...(sizePatches.get(item.id) ?? {}), crossSizePx });
       }
-      const sizePatch = {
-        ...(sizePx !== undefined && sizePx !== null ? { sizePx } : {}),
-        ...(crossSizePx !== undefined && crossSizePx !== null ? { crossSizePx } : {})
-      };
-      const editedItem = axisItems.find((item) => item.id === axisItemId);
-      const sizePatches = new Map<string, typeof sizePatch>();
-      if (Object.keys(sizePatch).length > 0) {
-        sizePatches.set(axisItemId, sizePatch);
-      }
-      if (crossSizePx !== undefined && crossSizePx !== null && editedItem) {
-        for (const item of axisItems) {
-          if (item.table_id !== editedItem.table_id || item.axis !== editedItem.axis || item.visible !== 1) continue;
-          sizePatches.set(item.id, { ...(sizePatches.get(item.id) ?? {}), crossSizePx });
-        }
-      }
-      if (sizePatches.size > 0) {
-        await Promise.all(
-          [...sizePatches.entries()].map(([targetAxisItemId, patch]) =>
-            apiPatch("/api/board/axis-items/" + encodeURIComponent(targetAxisItemId) + "/size", patch)
-          )
-        );
-      }
-      setAxisItems((current) =>
-        applyBoardAxisItemSaveToAxisItems(current, {
-          axisItemId,
-          label,
-          taskColor,
-          taskResetType,
-          taskResetRuleJson,
-          separator,
-          sizePx,
-          crossSizePx,
-          displaySettings,
-          shouldUpdateDetails
-        })
+    }
+    if (sizePatches.size > 0) {
+      await Promise.all(
+        [...sizePatches.entries()].map(([targetAxisItemId, patch]) =>
+          apiPatch("/api/board/axis-items/" + encodeURIComponent(targetAxisItemId) + "/size", patch)
+        )
       );
-      setEditingAxisItem(null);
-    });
+    }
+    setAxisItems((current) =>
+      applyBoardAxisItemSaveToAxisItems(current, {
+        axisItemId,
+        label,
+        taskColor,
+        taskResetType,
+        taskResetRuleJson,
+        separator,
+        sizePx,
+        crossSizePx,
+        displaySettings,
+        shouldUpdateDetails
+      })
+    );
+    setEditingAxisItem(null);
   }
 
   async function handleBoardCharacterSave(
     characterId: string,
     input: BoardCharacterSaveInput
   ) {
-    return runMutation(async () => {
-      await apiPatch("/api/characters/" + encodeURIComponent(characterId), input);
-      setAxisItems((current) =>
-        current.map((item) =>
-          item.character_id === characterId
-            ? {
-                ...item,
-                label: input.name ?? item.label,
-                character_name: input.name ?? item.character_name,
-                character_server_name: input.serverName === undefined ? item.character_server_name : input.serverName,
-                character_class_name: input.className === undefined ? item.character_class_name : input.className,
-                character_display_name: input.displayName,
-                character_item_level: input.itemLevel,
-                character_combat_power: input.combatPower
-              }
-            : item
-        )
-      );
-    });
+    await apiPatch("/api/characters/" + encodeURIComponent(characterId), input);
+    setAxisItems((current) =>
+      current.map((item) =>
+        item.character_id === characterId
+          ? {
+              ...item,
+              label: input.name ?? item.label,
+              character_name: input.name ?? item.character_name,
+              character_server_name: input.serverName === undefined ? item.character_server_name : input.serverName,
+              character_class_name: input.className === undefined ? item.character_class_name : input.className,
+              character_display_name: input.displayName,
+              character_item_level: input.itemLevel,
+              character_combat_power: input.combatPower
+            }
+          : item
+      )
+    );
   }
 
   async function refreshBoardCharacter(characterId: string): Promise<BoardCharacterRefreshResult> {
@@ -1572,10 +1586,6 @@ export function BoardOverview({
       )
     );
     return updated;
-  }
-
-  async function handleBoardCharacterRefresh(characterId: string): Promise<BoardCharacterRefreshResult> {
-    return runMutation(() => refreshBoardCharacter(characterId));
   }
 
   async function handleRefreshTableCharacters(table: BoardTable): Promise<TableCharacterRefreshSummary> {
@@ -1619,11 +1629,9 @@ export function BoardOverview({
   }
 
   async function handleAxisItemDelete(axisItemId: string) {
-    return runMutation(async () => {
-      await apiDelete("/api/board/axis-items/" + encodeURIComponent(axisItemId));
-      setAxisItems((current) => current.map((item) => (item.id === axisItemId ? { ...item, visible: 0 } : item)));
-      setEditingAxisItem(null);
-    });
+    await apiDelete("/api/board/axis-items/" + encodeURIComponent(axisItemId));
+    setAxisItems((current) => current.map((item) => (item.id === axisItemId ? { ...item, visible: 0 } : item)));
+    setEditingAxisItem(null);
   }
 
   async function refreshBoard() {
@@ -1762,6 +1770,7 @@ export function BoardOverview({
         await refreshBoard();
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "표를 추가하지 못했습니다.");
+        throw err;
       } finally {
         setPendingAction(null);
       }
@@ -1788,6 +1797,7 @@ export function BoardOverview({
         await refreshBoard();
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "메모를 추가하지 못했습니다.");
+        throw err;
       } finally {
         setPendingAction(null);
       }
@@ -1818,6 +1828,7 @@ export function BoardOverview({
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "메모를 저장하지 못했습니다.");
         await refreshBoard();
+        throw err;
       }
     });
   }
@@ -1956,6 +1967,7 @@ export function BoardOverview({
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "표 잠금 상태를 저장하지 못했습니다.");
         await refreshBoard();
+        throw err;
       }
     });
   }
@@ -2013,6 +2025,7 @@ export function BoardOverview({
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "순서를 저장하지 못했습니다.");
         await refreshBoard();
+        throw err;
       }
     });
   }
@@ -2091,6 +2104,7 @@ export function BoardOverview({
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "표 위치를 저장하지 못했습니다.");
         await refreshBoard();
+        throw err;
       }
     });
   }
@@ -2151,6 +2165,7 @@ export function BoardOverview({
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "메모 위치를 저장하지 못했습니다.");
         await refreshBoard();
+        throw err;
       }
     });
   }
@@ -2837,10 +2852,11 @@ export function BoardOverview({
           settings={board.settings}
           table={tables.find((table) => table.id === editingAxisItem.table_id) ?? null}
           onClose={() => setEditingAxisItem(null)}
-          onCharacterRefresh={handleBoardCharacterRefresh}
+          onCharacterRefresh={refreshBoardCharacter}
           onCharacterSave={handleBoardCharacterSave}
           onDelete={handleAxisItemDelete}
           onSave={handleAxisItemSave}
+          runMutation={runMutation}
         />
       ) : null}
       {!isReadOnly && editingTable ? (
@@ -4843,6 +4859,7 @@ export function BoardAxisItemEditModal({
   onCharacterSave,
   onDelete,
   onSave,
+  runMutation = runBoardMutationDirect,
   settings,
   table
 }: {
@@ -4868,6 +4885,7 @@ export function BoardAxisItemEditModal({
     displaySettings?: BoardDisplaySettings | null,
     shouldUpdateDetails?: boolean
   ) => Promise<void>;
+  runMutation?: BoardMutationRunner | undefined;
 }) {
   const initialSeparator = parseBoardAxisSeparator(item.separator_json);
   const [label, setLabel] = useState(item.label);
@@ -4924,6 +4942,18 @@ export function BoardAxisItemEditModal({
     (isTaskItem && taskResetType !== initialTaskResetType) ||
     JSON.stringify(separator) !== JSON.stringify(initialSeparator) ||
     (isCharacterItem && JSON.stringify(displaySettings) !== JSON.stringify(initialDisplaySettings));
+  const shouldSaveCharacterDetails =
+    isCharacterItem &&
+    Boolean(item.character_id) &&
+    shouldSaveBoardCharacterDetails(
+      item,
+      characterDisplayName,
+      characterItemLevel,
+      characterCombatPower,
+      isManualCharacterItem ? characterName : undefined,
+      isManualCharacterItem ? characterServerName : undefined,
+      isManualCharacterItem ? characterClassName : undefined
+    );
 
   useEffect(() => {
     if (!refreshCooldown.isBlocked) return;
@@ -4938,40 +4968,33 @@ export function BoardAxisItemEditModal({
     setPending("save");
     setError(null);
     try {
-      if (
-        isCharacterItem &&
-        item.character_id &&
-        shouldSaveBoardCharacterDetails(
-          item,
-          characterDisplayName,
-          characterItemLevel,
-          characterCombatPower,
-          isManualCharacterItem ? characterName : undefined,
-          isManualCharacterItem ? characterServerName : undefined,
-          isManualCharacterItem ? characterClassName : undefined
-        )
-      ) {
-        await onCharacterSave(item.character_id, {
-          name: isManualCharacterItem ? normalizedCharacterName : undefined,
-          serverName: isManualCharacterItem ? normalizedCharacterServerName : undefined,
-          className: isManualCharacterItem ? normalizedCharacterClassName : undefined,
-          displayName: normalizedCharacterDisplayName ? normalizedCharacterDisplayName : null,
-          itemLevel: normalizedCharacterItemLevel || null,
-          combatPower: normalizedCharacterCombatPower ? normalizedCharacterCombatPower : null
-        });
-      }
-      const savedLabel = isManualCharacterItem ? normalizedCharacterName : isImportedCharacterItem ? item.label : normalizedLabel;
-      await onSave(
-        item.id,
-        savedLabel,
-        isTaskItem ? taskColor : undefined,
-        isTaskItem ? taskResetType : undefined,
-        isTaskItem ? getBoardTaskResetRuleJson(taskResetType) : undefined,
-        separator,
-        normalizeBoundedIntegerDraft(sizePx, { min: BOARD_AXIS_PRIMARY_SIZE_MIN, max: BOARD_AXIS_SIZE_MAX, fallback: sizeFallback }),
-        normalizeBoundedIntegerDraft(crossSizePx, { min: BOARD_AXIS_LABEL_SIZE_MIN, max: BOARD_AXIS_SIZE_MAX, fallback: crossSizeFallback }),
-        isCharacterItem ? displaySettings : undefined,
-        shouldUpdateAxisDetails
+      await runBoardAxisItemSaveOperation(
+        runMutation,
+        shouldSaveCharacterDetails && item.character_id
+          ? () => onCharacterSave(item.character_id!, {
+              name: isManualCharacterItem ? normalizedCharacterName : undefined,
+              serverName: isManualCharacterItem ? normalizedCharacterServerName : undefined,
+              className: isManualCharacterItem ? normalizedCharacterClassName : undefined,
+              displayName: normalizedCharacterDisplayName ? normalizedCharacterDisplayName : null,
+              itemLevel: normalizedCharacterItemLevel || null,
+              combatPower: normalizedCharacterCombatPower ? normalizedCharacterCombatPower : null
+            })
+          : null,
+        () => {
+          const savedLabel = isManualCharacterItem ? normalizedCharacterName : isImportedCharacterItem ? item.label : normalizedLabel;
+          return onSave(
+            item.id,
+            savedLabel,
+            isTaskItem ? taskColor : undefined,
+            isTaskItem ? taskResetType : undefined,
+            isTaskItem ? getBoardTaskResetRuleJson(taskResetType) : undefined,
+            separator,
+            normalizeBoundedIntegerDraft(sizePx, { min: BOARD_AXIS_PRIMARY_SIZE_MIN, max: BOARD_AXIS_SIZE_MAX, fallback: sizeFallback }),
+            normalizeBoundedIntegerDraft(crossSizePx, { min: BOARD_AXIS_LABEL_SIZE_MIN, max: BOARD_AXIS_SIZE_MAX, fallback: crossSizeFallback }),
+            isCharacterItem ? displaySettings : undefined,
+            shouldUpdateAxisDetails
+          );
+        }
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "항목을 저장하지 못했습니다.");
@@ -4983,7 +5006,7 @@ export function BoardAxisItemEditModal({
     setPending("delete");
     setError(null);
     try {
-      await onDelete(item.id);
+      await runBoardAxisItemOperation(runMutation, () => onDelete(item.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "항목을 삭제하지 못했습니다.");
       setPending(null);
@@ -5000,7 +5023,7 @@ export function BoardAxisItemEditModal({
     setError(null);
     setRefreshBlockedUntil(Date.now() + CHARACTER_REFRESH_CLIENT_COOLDOWN_MS);
     try {
-      const updated = await onCharacterRefresh(item.character_id);
+      const updated = await runBoardAxisItemOperation(runMutation, () => onCharacterRefresh(item.character_id!));
       setCharacterName(updated.name);
       setCharacterServerName(updated.serverName);
       setCharacterClassName(updated.className);

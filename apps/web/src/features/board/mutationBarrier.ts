@@ -16,10 +16,21 @@ export class BoardMutationBarrierLockedError extends Error {
   }
 }
 
+export class BoardMutationDrainError extends AggregateError {
+  constructor(errors: unknown[]) {
+    super(errors, "One or more active board mutations failed while preparing to log out");
+    this.name = "BoardMutationDrainError";
+  }
+}
+
 export const runBoardMutationDirect: BoardMutationRunner = async (operation) => operation();
 
 export function createBoardMutationBarrier(): BoardMutationBarrier {
-  const active = new Set<Promise<void>>();
+  type OperationOutcome =
+    | { status: "fulfilled" }
+    | { status: "rejected"; reason: unknown };
+
+  const active = new Set<Promise<OperationOutcome>>();
   let locked = false;
 
   const run: BoardMutationRunner = <T>(operation: () => Promise<T>) => {
@@ -29,8 +40,8 @@ export function createBoardMutationBarrier(): BoardMutationBarrier {
       return refusal;
     }
 
-    let finish!: () => void;
-    const completion = new Promise<void>((resolve) => {
+    let finish!: (outcome: OperationOutcome) => void;
+    const completion = new Promise<OperationOutcome>((resolve) => {
       finish = resolve;
     });
     active.add(completion);
@@ -44,11 +55,11 @@ export function createBoardMutationBarrier(): BoardMutationBarrier {
     void result.then(
       () => {
         active.delete(completion);
-        finish();
+        finish({ status: "fulfilled" });
       },
-      () => {
+      (reason) => {
         active.delete(completion);
-        finish();
+        finish({ status: "rejected", reason });
       }
     );
     return result;
@@ -58,7 +69,11 @@ export function createBoardMutationBarrier(): BoardMutationBarrier {
     run,
     lockAndDrain: async () => {
       locked = true;
-      await Promise.allSettled([...active]);
+      const outcomes = await Promise.all([...active]);
+      const failures = outcomes.flatMap((outcome) =>
+        outcome.status === "rejected" ? [outcome.reason] : []
+      );
+      if (failures.length > 0) throw new BoardMutationDrainError(failures);
     },
     unlock: () => {
       locked = false;

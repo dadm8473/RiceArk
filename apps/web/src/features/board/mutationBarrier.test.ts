@@ -62,17 +62,55 @@ describe("BoardMutationBarrier", () => {
     expect(events).toEqual(["first:start", "follow-up:start", "complete"]);
   });
 
-  it("contains operation failures while draining and accepts work again after unlock", async () => {
+  it("rejects the drain for an active failed operation and accepts a clean later attempt", async () => {
     const barrier = createBoardMutationBarrier();
+    const failure = new Error("save failed");
     const failed = barrier.run(async () => {
-      throw new Error("save failed");
+      throw failure;
     });
     const drain = barrier.lockAndDrain();
 
     await expect(failed).rejects.toThrow("save failed");
-    await expect(drain).resolves.toBeUndefined();
+    await expect(drain).rejects.toMatchObject({ errors: [failure] });
 
     barrier.unlock();
     await expect(barrier.run(async () => "retried")).resolves.toBe("retried");
+    await expect(barrier.lockAndDrain()).resolves.toBeUndefined();
+  });
+
+  it("does not retain failures from operations that settled before locking", async () => {
+    const barrier = createBoardMutationBarrier();
+    const failed = barrier.run(async () => {
+      throw new Error("historical failure");
+    });
+
+    await expect(failed).rejects.toThrow("historical failure");
+    await expect(barrier.lockAndDrain()).resolves.toBeUndefined();
+  });
+
+  it("waits for every snapshotted operation before reporting failures", async () => {
+    const failedStep = deferred<void>();
+    const slowStep = deferred<void>();
+    const failure = new Error("first operation failed");
+    const barrier = createBoardMutationBarrier();
+    const failed = barrier.run(async () => {
+      await failedStep.promise;
+      throw failure;
+    });
+    const slow = barrier.run(async () => {
+      await slowStep.promise;
+    });
+    let drainSettled = false;
+    const drain = barrier.lockAndDrain().finally(() => {
+      drainSettled = true;
+    });
+
+    failedStep.resolve();
+    await expect(failed).rejects.toBe(failure);
+    expect(drainSettled).toBe(false);
+
+    slowStep.resolve();
+    await slow;
+    await expect(drain).rejects.toMatchObject({ errors: [failure] });
   });
 });

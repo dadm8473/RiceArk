@@ -194,7 +194,6 @@ export class ReliablePatchQueue<T, K> {
   private generation = 0;
   private transportEpoch = 0;
   private lifecycleEpoch = 0;
-  private rejectionRevision = 0;
   private retryIndex = 0;
   private authPaused = false;
   private lastAuthError: ApiClientError | null = null;
@@ -237,7 +236,6 @@ export class ReliablePatchQueue<T, K> {
   }
 
   async flush(): Promise<void> {
-    const rejectionRevision = this.rejectionRevision;
     if (this.pending.size === 0) {
       if (this.rejected.size > 0) throw this.rejectedFlushError();
       return;
@@ -246,7 +244,7 @@ export class ReliablePatchQueue<T, K> {
     if (this.authPaused) throw new ReliablePatchQueueFlushError("auth", this.lastAuthError);
 
     const result = await this.startWorker();
-    if (this.rejectionRevision !== rejectionRevision || this.rejected.size > 0) {
+    if (this.rejected.size > 0) {
       throw this.rejectedFlushError();
     }
     if (this.pending.size > 0) {
@@ -593,7 +591,6 @@ export class ReliablePatchQueue<T, K> {
         this.rejected.set(entry.keyId, { entry, message });
       }
     }
-    this.rejectionRevision += 1;
     const reconciledCount = this.reconcileEntries(entries);
     this.reportingPermanentFailure = true;
     try {

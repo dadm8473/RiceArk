@@ -11,6 +11,7 @@ import {
   getDurableLogoutFailureState,
   getDirectSharedRiceBinHistoryUrls,
   getOwnerBoardInteractionProps,
+  getSharedRiceBinInteractionProps,
   getUrlWithoutSharedRiceBinId,
   recoverBoardAfterLogoutFailure,
   runDurableLogout
@@ -25,6 +26,7 @@ const hooks = vi.hoisted(() => ({
   }>,
   useBoard: vi.fn(),
   BoardOverview: vi.fn(),
+  SharedRiceBinPanel: vi.fn(),
   useSession: vi.fn()
 }));
 
@@ -46,7 +48,10 @@ vi.mock("./features/board/BoardOverview", () => ({
 }));
 
 vi.mock("./features/shared-rice-bin/SharedRiceBinPanel", () => ({
-  SharedRiceBinPanel: () => "shared rice bin panel",
+  SharedRiceBinPanel: (props: unknown) => {
+    hooks.SharedRiceBinPanel(props);
+    return "shared rice bin panel";
+  },
   extractSharedRiceBinId: () => null
 }));
 
@@ -118,10 +123,12 @@ function runLatestEffect() {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 describe("getAuthErrorMessage", () => {
@@ -248,15 +255,92 @@ describe("runDurableLogout", () => {
     expect(order).toEqual(["mutation:start", "mutation:end", "flush", "logout"]);
   });
 
-  it("unlocks mutations and reconciles the board after logout failure", async () => {
+  it("classifies an active mutation drain failure as durability failure and skips queues and logout", async () => {
+    const failure = new Error("table save failed");
+    const mutationStep = deferred<void>();
+    const barrier = createBoardMutationBarrier();
+    const mutation = barrier.run(async () => {
+      await mutationStep.promise;
+      throw failure;
+    });
+    const drain = barrier.lockAndDrain();
+    const flushPendingWrites = vi.fn(async () => undefined);
+    const logout = vi.fn(async () => undefined);
+
+    const logoutAttempt = runDurableLogout({
+      mode: "normal",
+      waitForMutations: () => drain,
+      flushPendingWrites,
+      retryPendingWrites: vi.fn(),
+      discardPendingWrites: vi.fn(),
+      logout
+    });
+    mutationStep.resolve();
+
+    await expect(mutation).rejects.toBe(failure);
+    await expect(logoutAttempt).rejects.toMatchObject({
+      stage: "flush",
+      cause: expect.objectContaining({ errors: [failure] })
+    });
+
+    expect(flushPendingWrites).not.toHaveBeenCalled();
+    expect(logout).not.toHaveBeenCalled();
+  });
+
+  it("keeps mutations locked until logout recovery reload and UI recovery settle", async () => {
     const barrier = createBoardMutationBarrier();
     await barrier.lockAndDrain();
-    const reload = vi.fn(async () => null);
+    const reload = deferred<null>();
+    const onRecovered = vi.fn();
 
-    await recoverBoardAfterLogoutFailure(barrier, reload);
+    const recovery = recoverBoardAfterLogoutFailure(barrier, () => reload.promise, onRecovered);
 
-    expect(reload).toHaveBeenCalledTimes(1);
+    await expect(barrier.run(async () => "too soon")).rejects.toThrow(/locked/i);
+    expect(onRecovered).not.toHaveBeenCalled();
+    reload.resolve(null);
+    await recovery;
+
+    expect(onRecovered).toHaveBeenCalledTimes(1);
     await expect(barrier.run(async () => "unlocked")).resolves.toBe("unlocked");
+  });
+
+  it("unlocks in finally only after a failed recovery reload settles", async () => {
+    const barrier = createBoardMutationBarrier();
+    await barrier.lockAndDrain();
+    const reload = deferred<null>();
+    const recovery = recoverBoardAfterLogoutFailure(barrier, () => reload.promise);
+
+    await expect(barrier.run(async () => "too soon")).rejects.toThrow(/locked/i);
+    reload.reject(new Error("reload failed"));
+    await recovery;
+    await expect(barrier.run(async () => "unlocked")).resolves.toBe("unlocked");
+  });
+
+  it.each(["retry", "discard"] as const)("allows a clean later %s logout attempt", async (mode) => {
+    const barrier = createBoardMutationBarrier();
+    const failed = barrier.run(async () => {
+      throw new Error("first attempt failed");
+    });
+    const failedDrain = barrier.lockAndDrain();
+    await expect(failed).rejects.toThrow("first attempt failed");
+    await expect(failedDrain).rejects.toBeDefined();
+    barrier.unlock();
+    const retryPendingWrites = vi.fn();
+    const discardPendingWrites = vi.fn();
+    const logout = vi.fn(async () => undefined);
+
+    await runDurableLogout({
+      mode,
+      waitForMutations: () => barrier.lockAndDrain(),
+      flushPendingWrites: vi.fn(async () => undefined),
+      retryPendingWrites,
+      discardPendingWrites,
+      logout
+    });
+
+    expect(logout).toHaveBeenCalledTimes(1);
+    expect(retryPendingWrites).toHaveBeenCalledTimes(mode === "retry" ? 1 : 0);
+    expect(discardPendingWrites).toHaveBeenCalledTimes(mode === "discard" ? 1 : 0);
   });
 
   it("does not call logout when flushing fails", async () => {
@@ -338,6 +422,7 @@ describe("App", () => {
     hooks.effects.length = 0;
     hooks.useBoard.mockClear();
     hooks.BoardOverview.mockClear();
+    hooks.SharedRiceBinPanel.mockClear();
     hooks.useSession.mockClear();
     hooks.useBoard.mockReturnValue({
       data: board,
@@ -425,6 +510,33 @@ describe("App", () => {
       runMutation,
       writeLocked: true
     });
+  });
+
+  it("passes the shared view the same mutation runner and logout lock", () => {
+    const runMutation = vi.fn();
+
+    expect(getSharedRiceBinInteractionProps(true, runMutation)).toEqual({
+      runMutation,
+      writeLocked: true
+    });
+  });
+
+  it("wires the live barrier runner into the rendered shared workspace", () => {
+    installBrowserWindow("https://riceark.pages.dev/?view=shared");
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-1", displayName: "RiceArk", avatarUrl: null, isAdmin: false },
+      error: null
+    });
+
+    renderToStaticMarkup(createElement(App));
+
+    expect(hooks.SharedRiceBinPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runMutation: expect.any(Function),
+        writeLocked: false
+      })
+    );
   });
 
   it("does not load the legacy dashboard payload for the board-only main screen", () => {

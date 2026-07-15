@@ -58,7 +58,11 @@ export async function runDurableLogout({
   discardPendingWrites: () => void;
   logout: () => Promise<void>;
 }): Promise<void> {
-  await waitForMutations?.();
+  try {
+    await waitForMutations?.();
+  } catch (error) {
+    throw new DurableLogoutError("flush", error);
+  }
   if (mode === "retry") retryPendingWrites();
   if (mode === "discard") {
     discardPendingWrites();
@@ -79,14 +83,17 @@ export async function runDurableLogout({
 
 export async function recoverBoardAfterLogoutFailure(
   barrier: Pick<BoardMutationBarrier, "unlock">,
-  reload: () => Promise<unknown>
+  reload: () => Promise<unknown>,
+  onRecovered?: (() => void) | undefined
 ): Promise<void> {
-  barrier.unlock();
   try {
     await reload();
   } catch {
     // The existing board error surface reports reconciliation failures.
+  } finally {
+    barrier.unlock();
   }
+  onRecovered?.();
 }
 
 export function getOwnerBoardInteractionProps(
@@ -101,6 +108,16 @@ export function getOwnerBoardInteractionProps(
     enqueueCellState: board.enqueueCellState,
     enqueueCompletion: board.enqueueCompletion,
     onBoardChanged: board.reload,
+    runMutation,
+    writeLocked: logoutPending
+  };
+}
+
+export function getSharedRiceBinInteractionProps(
+  logoutPending: boolean,
+  runMutation: BoardMutationRunner
+) {
+  return {
     runMutation,
     writeLocked: logoutPending
   };
@@ -305,11 +322,12 @@ export function App() {
       window.location.assign("/");
     } catch (err) {
       const failure = getDurableLogoutFailureState(err);
-      setLogoutPending(false);
-      setAuthMenuOpen(true);
-      setLogoutBlocked(failure.logoutBlocked);
-      setLogoutError(failure.logoutError);
-      await recoverBoardAfterLogoutFailure(boardMutationBarrier, board.reload);
+      await recoverBoardAfterLogoutFailure(boardMutationBarrier, board.reload, () => {
+        setLogoutPending(false);
+        setAuthMenuOpen(true);
+        setLogoutBlocked(failure.logoutBlocked);
+        setLogoutError(failure.logoutError);
+      });
       console.error(err);
     }
   };
@@ -453,6 +471,7 @@ export function App() {
             onSharedBoardClosed={handleSharedBoardClosed}
             onSharedBoardOpened={handleSharedBoardOpened}
             onOwnerBoardChanged={board.reload}
+            {...getSharedRiceBinInteractionProps(logoutPending, boardMutationBarrier.run)}
           />
         )}
       </section>

@@ -2,6 +2,10 @@ import { Copy, ExternalLink, Heart, Search, Share2, Trash2 } from "lucide-react"
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { apiDelete, apiGet, apiPost } from "../../api/client";
 import { BoardOverview } from "../board/BoardOverview";
+import {
+  type BoardMutationRunner,
+  runBoardMutationDirect
+} from "../board/mutationBarrier";
 import type { BoardPayload } from "../board/types";
 import type { SessionState } from "../auth/useSession";
 
@@ -25,7 +29,35 @@ interface Props {
   onSharedBoardClosed?: (() => void) | undefined;
   onSharedBoardOpened?: ((shareId: string) => void) | undefined;
   onOwnerBoardChanged?: (() => Promise<BoardPayload | null> | void) | undefined;
+  runMutation?: BoardMutationRunner | undefined;
   sessionStatus: SessionState["status"];
+  writeLocked?: boolean | undefined;
+}
+
+export function runSharedRiceBinWrite<Result>(
+  runMutation: BoardMutationRunner,
+  operation: () => Promise<Result>,
+  onError: (error: unknown) => void,
+  onSettled: () => void
+): Promise<Result> {
+  return runMutation(async () => {
+    try {
+      return await operation();
+    } catch (error) {
+      onError(error);
+      throw error;
+    } finally {
+      onSettled();
+    }
+  });
+}
+
+export function isSharedRiceBinWriteDisabled(
+  writeLocked: boolean,
+  pending: string | null,
+  controlKey: string
+): boolean {
+  return writeLocked || pending === controlKey;
 }
 
 export function extractSharedRiceBinId(input: string): string | null {
@@ -83,7 +115,9 @@ export function SharedRiceBinPanel({
   onSharedBoardClosed,
   onSharedBoardOpened,
   onOwnerBoardChanged,
-  sessionStatus
+  runMutation = runBoardMutationDirect,
+  sessionStatus,
+  writeLocked = false
 }: Props) {
   const [lookupValue, setLookupValue] = useState(initialShareId ?? "");
   const [sharedBoard, setSharedBoard] = useState<BoardPayload | null>(null);
@@ -177,52 +211,55 @@ export function SharedRiceBinPanel({
   }
 
   async function handleShareStart(sheetId: string) {
-    setPending(`share:${sheetId}`);
-    setError(null);
-    try {
-      const created = await apiPost<{ shareId: string }>("/api/board/sheets/" + encodeURIComponent(sheetId) + "/share", {});
-      await refreshShares();
-      await onOwnerBoardChanged?.();
-      setMessage("공유 아이디를 새로 만들었습니다.");
-      await copyText(buildSharedRiceBinLink(created.shareId));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "공유를 시작하지 못했습니다.");
-    } finally {
-      setPending(null);
-    }
+    return runSharedRiceBinWrite(
+      runMutation,
+      async () => {
+        setPending(`share:${sheetId}`);
+        setError(null);
+        const created = await apiPost<{ shareId: string }>("/api/board/sheets/" + encodeURIComponent(sheetId) + "/share", {});
+        await refreshShares();
+        await onOwnerBoardChanged?.();
+        setMessage("공유 아이디를 새로 만들었습니다.");
+        await copyText(buildSharedRiceBinLink(created.shareId));
+      },
+      (err) => setError(err instanceof Error ? err.message : "공유를 시작하지 못했습니다."),
+      () => setPending(null)
+    );
   }
 
   async function handleShareStop(sheetId: string) {
-    setPending(`share:${sheetId}`);
-    setError(null);
-    try {
-      await apiDelete("/api/board/sheets/" + encodeURIComponent(sheetId) + "/share");
-      await refreshShares();
-      await onOwnerBoardChanged?.();
-      setMessage("공유를 중단했습니다. 기존 링크는 더 이상 열리지 않습니다.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "공유를 중단하지 못했습니다.");
-    } finally {
-      setPending(null);
-    }
+    return runSharedRiceBinWrite(
+      runMutation,
+      async () => {
+        setPending(`share:${sheetId}`);
+        setError(null);
+        await apiDelete("/api/board/sheets/" + encodeURIComponent(sheetId) + "/share");
+        await refreshShares();
+        await onOwnerBoardChanged?.();
+        setMessage("공유를 중단했습니다. 기존 링크는 더 이상 열리지 않습니다.");
+      },
+      (err) => setError(err instanceof Error ? err.message : "공유를 중단하지 못했습니다."),
+      () => setPending(null)
+    );
   }
 
   async function handleFavoriteToggle(shareId: string) {
     if (!isAuthenticated) return;
-    setPending(`favorite:${shareId}`);
-    setError(null);
-    try {
-      if (favoriteShareIds.has(shareId)) {
-        await apiDelete("/api/board/share-favorites/" + encodeURIComponent(shareId));
-      } else {
-        await apiPost("/api/board/share-favorites", { shareId });
-      }
-      await refreshShares();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "즐겨찾기를 저장하지 못했습니다.");
-    } finally {
-      setPending(null);
-    }
+    return runSharedRiceBinWrite(
+      runMutation,
+      async () => {
+        setPending(`favorite:${shareId}`);
+        setError(null);
+        if (favoriteShareIds.has(shareId)) {
+          await apiDelete("/api/board/share-favorites/" + encodeURIComponent(shareId));
+        } else {
+          await apiPost("/api/board/share-favorites", { shareId });
+        }
+        await refreshShares();
+      },
+      (err) => setError(err instanceof Error ? err.message : "즐겨찾기를 저장하지 못했습니다."),
+      () => setPending(null)
+    );
   }
 
   function handleLookupSubmit(event: FormEvent<HTMLFormElement>) {
@@ -242,6 +279,7 @@ export function SharedRiceBinPanel({
       <section className="shared-rice-bin-panel" aria-label="공유 쌀통">
         {error ? <p className="error-text">{error}</p> : null}
         {message ? <p className="shared-rice-bin-message">{message}</p> : null}
+        {writeLocked ? <p role="status">로그아웃 중에는 공유 설정을 변경할 수 없습니다.</p> : null}
 
         <section className="shared-rice-bin-board shared-rice-bin-board-full">
           <div className="shared-rice-bin-board-heading">
@@ -262,9 +300,11 @@ export function SharedRiceBinPanel({
                     </button>
                   ) : null}
                   <button
-                    disabled={!sharedBoardShareId || pending === `favorite:${sharedBoardShareId}`}
+                    disabled={!sharedBoardShareId || isSharedRiceBinWriteDisabled(writeLocked, pending, `favorite:${sharedBoardShareId}`)}
                     type="button"
-                    onClick={() => sharedBoardShareId && void handleFavoriteToggle(sharedBoardShareId)}
+                    onClick={() => {
+                      if (sharedBoardShareId) void handleFavoriteToggle(sharedBoardShareId).catch(() => undefined);
+                    }}
                   >
                     <Heart aria-hidden="true" size={15} />
                     {sharedBoardShareId && favoriteShareIds.has(sharedBoardShareId) ? "즐겨찾기 해제" : "즐겨찾기"}
@@ -283,6 +323,7 @@ export function SharedRiceBinPanel({
     <section className="shared-rice-bin-panel" aria-label="공유 쌀통">
       {error ? <p className="error-text">{error}</p> : null}
       {message ? <p className="shared-rice-bin-message">{message}</p> : null}
+      {writeLocked ? <p role="status">로그아웃 중에는 공유 설정을 변경할 수 없습니다.</p> : null}
 
       <div className={`shared-rice-bin-hub${isAuthenticated && ownerBoard ? "" : " single"}`}>
         <section className="shared-rice-bin-section shared-rice-bin-lookup-panel">
@@ -329,7 +370,7 @@ export function SharedRiceBinPanel({
                         <button type="button" onClick={() => openSharedRiceBinInNewTab(favorite.shareId)}>
                           <ExternalLink aria-hidden="true" size={15} />새 탭
                         </button>
-                        <button disabled={pending === `favorite:${favorite.shareId}`} type="button" onClick={() => void handleFavoriteToggle(favorite.shareId)}>
+                        <button disabled={isSharedRiceBinWriteDisabled(writeLocked, pending, `favorite:${favorite.shareId}`)} type="button" onClick={() => void handleFavoriteToggle(favorite.shareId).catch(() => undefined)}>
                           <Heart aria-hidden="true" size={15} />
                           해제
                         </button>
@@ -372,13 +413,13 @@ export function SharedRiceBinPanel({
                             <button type="button" onClick={() => openSharedRiceBinInNewTab(share.shareId)}>
                               <ExternalLink aria-hidden="true" size={15} />새 탭
                             </button>
-                            <button disabled={pending === `share:${sheet.id}`} type="button" onClick={() => void handleShareStop(sheet.id)}>
+                            <button disabled={isSharedRiceBinWriteDisabled(writeLocked, pending, `share:${sheet.id}`)} type="button" onClick={() => void handleShareStop(sheet.id).catch(() => undefined)}>
                               <Trash2 aria-hidden="true" size={15} />
                               공유 중단
                             </button>
                           </>
                         ) : (
-                          <button disabled={pending === `share:${sheet.id}`} type="button" onClick={() => void handleShareStart(sheet.id)}>
+                          <button disabled={isSharedRiceBinWriteDisabled(writeLocked, pending, `share:${sheet.id}`)} type="button" onClick={() => void handleShareStart(sheet.id).catch(() => undefined)}>
                             <Share2 aria-hidden="true" size={15} />
                             공유 시작
                           </button>

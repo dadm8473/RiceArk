@@ -36,12 +36,22 @@ import {
   normalizeBoardEventNotificationMinutes,
   parseBoardEventOptions,
   normalizeBoardZoom,
+  runBoardAxisItemOperation,
+  runBoardAxisItemSaveOperation,
   runOptimisticBoardWrite,
   shouldSaveBoardCharacterDetails
 } from "./BoardOverview";
 import { getBoardCellPeriodKey } from "./completions";
-import { BoardMutationBarrierLockedError, createBoardMutationBarrier } from "./mutationBarrier";
+import { BoardMutationBarrierLockedError, createBoardMutationBarrier, type BoardMutationRunner } from "./mutationBarrier";
 import type { BoardAxisItem, BoardPayload } from "./types";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 const board: BoardPayload = {
   userId: "user-1",
@@ -115,6 +125,61 @@ const board: BoardPayload = {
 describe("BoardOverview", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("admits character metadata and axis detail save as one operation", async () => {
+    const metadataRequest = deferred<void>();
+    const events: string[] = [];
+    const barrier = createBoardMutationBarrier();
+    const save = runBoardAxisItemSaveOperation(
+      barrier.run,
+      async () => {
+        events.push("metadata:start");
+        await metadataRequest.promise;
+        events.push("metadata:end");
+      },
+      async () => {
+        events.push("axis:save");
+      }
+    );
+
+    const drain = barrier.lockAndDrain();
+    expect(events).toEqual(["metadata:start"]);
+    metadataRequest.resolve();
+
+    await save;
+    await drain;
+    expect(events).toEqual(["metadata:start", "metadata:end", "axis:save"]);
+  });
+
+  it("reports a failed axis follow-up through the admitted operation drain", async () => {
+    const failure = new Error("axis size failed");
+    const barrier = createBoardMutationBarrier();
+    const save = runBoardAxisItemSaveOperation(
+      barrier.run,
+      async () => undefined,
+      async () => {
+        throw failure;
+      }
+    );
+    const drain = barrier.lockAndDrain();
+
+    await expect(save).rejects.toBe(failure);
+    await expect(drain).rejects.toMatchObject({ errors: [failure] });
+  });
+
+  it.each(["refresh", "delete"])("admits axis item %s exactly once", async () => {
+    const operation = vi.fn(async () => "done");
+    const admission = vi.fn();
+    const runMutation: BoardMutationRunner = async (admitted) => {
+      admission();
+      return admitted();
+    };
+
+    await expect(runBoardAxisItemOperation(runMutation, operation)).resolves.toBe("done");
+
+    expect(admission).toHaveBeenCalledTimes(1);
+    expect(operation).toHaveBeenCalledTimes(1);
   });
 
   it("caches note input values before updating note state", () => {
