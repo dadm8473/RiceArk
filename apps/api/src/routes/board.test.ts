@@ -1721,6 +1721,11 @@ describe("board share routes", () => {
                   results: [
                     {
                       manifest_version: 0,
+                      show_display_name: 1,
+                      show_server_name: 0,
+                      show_class_name: 0,
+                      show_item_level: 1,
+                      show_combat_power: 0,
                       id: "sheet-1",
                       name: "숙제",
                       sort_order: 0,
@@ -1885,7 +1890,14 @@ describe("board share routes", () => {
     expect(await owner.json()).toEqual({
       manifestVersion: 0,
       sheets: [{ id: "sheet-1", name: "숙제", sort_order: 0, is_default: 1, version: 0 }],
-      periodFingerprint: ""
+      periodFingerprint: "",
+      settings: {
+        show_display_name: 1,
+        show_server_name: 0,
+        show_class_name: 0,
+        show_item_level: 1,
+        show_combat_power: 0
+      }
     });
 
     const shared = await app.request("/api/shared-rice-bins/AbCdEfGhIjKlMnOpQrStUv/version", {}, env);

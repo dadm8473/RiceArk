@@ -1188,6 +1188,11 @@ describe("board db defaults", () => {
                   results: [
                     {
                       manifest_version: 3,
+                      show_display_name: 1,
+                      show_server_name: 0,
+                      show_class_name: 0,
+                      show_item_level: 1,
+                      show_combat_power: 0,
                       id: "sheet-1",
                       name: "숙제",
                       sort_order: 10,
@@ -1208,7 +1213,14 @@ describe("board db defaults", () => {
     await expect(loadBoardVersionSummary(env, "user-1", new Date("2026-06-05T03:00:00.000Z"))).resolves.toEqual({
       manifestVersion: 3,
       sheets: [{ id: "sheet-1", name: "숙제", sort_order: 10, is_default: 1, version: 5 }],
-      periodFingerprint: ""
+      periodFingerprint: "",
+      settings: {
+        show_display_name: 1,
+        show_server_name: 0,
+        show_class_name: 0,
+        show_item_level: 1,
+        show_combat_power: 0
+      }
     });
     const sheetQuery = preparedSql[0];
     expect(sheetQuery).toContain("name");
