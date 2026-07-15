@@ -65,7 +65,9 @@ function createVersionDatabase(): DatabaseSync {
     );
     CREATE TABLE characters (
       id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL
+      user_id TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      deleted_at TEXT
     );
     CREATE TABLE board_axis_items (
       id TEXT PRIMARY KEY,
@@ -212,7 +214,7 @@ describe("board mutation versions", () => {
     expect(statements[0]?.sql).toContain("RETURNING id, content_version AS version");
   });
 
-  it("finds distinct owned sheets through character axis items and returns their versions", () => {
+  it("finds distinct visible owned sheets through active character axis items and returns their versions", () => {
     const { env, statements } = createEnv();
 
     bumpBoardSheetVersionsForCharacterStatement(env, "user-1", "character-1");
@@ -221,6 +223,9 @@ describe("board mutation versions", () => {
     expect(statements[0]?.sql).toContain("JOIN board_axis_items");
     expect(statements[0]?.sql).toContain("JOIN characters");
     expect(statements[0]?.sql).toContain("board_axis_items.character_id = ?");
+    expect(statements[0]?.sql).toContain("board_axis_items.visible = 1");
+    expect(statements[0]?.sql).toContain("characters.enabled = 1");
+    expect(statements[0]?.sql).toContain("characters.deleted_at IS NULL");
     expect(statements[0]?.sql).toContain("SELECT DISTINCT board_tables.sheet_id");
     expect(statements[0]?.sql.match(/user_id = \?/g)).toHaveLength(3);
     expect(statements[0]?.sql).toContain("RETURNING id, content_version AS version");
@@ -346,22 +351,73 @@ describe("board mutation versions", () => {
       });
     });
 
-    it("updates a sheet for an owned character reference but not a malformed foreign reference", () => {
+    it("increments each distinct sheet once for visible owned references only", () => {
       withVersionDatabase((database) => {
-        database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-1", "user-1");
-        database.prepare("INSERT INTO board_tables (id, user_id, sheet_id) VALUES (?, ?, ?)").run("table-1", "user-1", "sheet-1");
-        database.prepare("INSERT INTO characters (id, user_id) VALUES (?, ?)").run("character-1", "user-1");
-        database.prepare("INSERT INTO characters (id, user_id) VALUES (?, ?)").run("character-2", "user-2");
-        database.prepare("INSERT INTO board_axis_items (id, user_id, table_id, character_id) VALUES (?, ?, ?, ?)")
-          .run("axis-1", "user-1", "table-1", "character-1");
-        database.prepare("INSERT INTO board_axis_items (id, user_id, table_id, character_id) VALUES (?, ?, ?, ?)")
-          .run("axis-2", "user-1", "table-1", "character-2");
-        const ownedCharacter = captureStatement((env) => bumpBoardSheetVersionsForCharacterStatement(env, "user-1", "character-1"));
-        const foreignCharacter = captureStatement((env) => bumpBoardSheetVersionsForCharacterStatement(env, "user-1", "character-2"));
+        database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?), (?, ?), (?, ?), (?, ?)")
+          .run(
+            "sheet-1", "user-1",
+            "sheet-2", "user-1",
+            "sheet-hidden", "user-1",
+            "sheet-foreign", "user-2"
+          );
+        database.prepare("INSERT INTO board_tables (id, user_id, sheet_id) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?), (?, ?, ?), (?, ?, ?)")
+          .run(
+            "table-1", "user-1", "sheet-1",
+            "table-1-duplicate", "user-1", "sheet-1",
+            "table-2", "user-1", "sheet-2",
+            "table-hidden", "user-1", "sheet-hidden",
+            "table-foreign", "user-2", "sheet-foreign"
+          );
+        database.prepare("INSERT INTO characters (id, user_id) VALUES (?, ?), (?, ?), (?, ?), (?, ?)")
+          .run(
+            "character-1", "user-1",
+            "character-no-board", "user-1",
+            "character-deleted", "user-1",
+            "character-foreign", "user-2"
+          );
+        database.prepare("UPDATE characters SET enabled = 0, deleted_at = CURRENT_TIMESTAMP WHERE id = ?")
+          .run("character-deleted");
+        database.prepare(
+          "INSERT INTO board_axis_items (id, user_id, table_id, character_id, visible) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)"
+        ).run(
+          "axis-1", "user-1", "table-1", "character-1", 1,
+          "axis-1-duplicate", "user-1", "table-1", "character-1", 1,
+          "axis-1-other-table", "user-1", "table-1-duplicate", "character-1", 1,
+          "axis-2", "user-1", "table-2", "character-1", 1,
+          "axis-hidden", "user-1", "table-hidden", "character-1", 0,
+          "axis-foreign-character", "user-1", "table-1", "character-foreign", 1,
+          "axis-malformed-table", "user-1", "table-foreign", "character-1", 1,
+          "axis-deleted-character", "user-1", "table-1", "character-deleted", 1
+        );
 
-        expect(executeStatement(database, ownedCharacter)).toEqual([{ id: "sheet-1", version: 1 }]);
-        expect(executeStatement(database, foreignCharacter)).toEqual([]);
-        expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("sheet-1")).toEqual({ content_version: 1 });
+        const active = captureStatement((env) => bumpBoardSheetVersionsForCharacterStatement(env, "user-1", "character-1"));
+        const noBoard = captureStatement((env) =>
+          bumpBoardSheetVersionsForCharacterStatement(env, "user-1", "character-no-board")
+        );
+        const deleted = captureStatement((env) =>
+          bumpBoardSheetVersionsForCharacterStatement(env, "user-1", "character-deleted")
+        );
+        const foreign = captureStatement((env) =>
+          bumpBoardSheetVersionsForCharacterStatement(env, "user-1", "character-foreign")
+        );
+        const missing = captureStatement((env) =>
+          bumpBoardSheetVersionsForCharacterStatement(env, "user-1", "character-missing")
+        );
+
+        expect(executeStatement(database, active)).toEqual([
+          { id: "sheet-1", version: 1 },
+          { id: "sheet-2", version: 1 }
+        ]);
+        expect(executeStatement(database, noBoard)).toEqual([]);
+        expect(executeStatement(database, deleted)).toEqual([]);
+        expect(executeStatement(database, foreign)).toEqual([]);
+        expect(executeStatement(database, missing)).toEqual([]);
+        expect(database.prepare("SELECT id, content_version FROM sheets ORDER BY id").all()).toEqual([
+          { id: "sheet-1", content_version: 1 },
+          { id: "sheet-2", content_version: 1 },
+          { id: "sheet-foreign", content_version: 0 },
+          { id: "sheet-hidden", content_version: 0 }
+        ]);
       });
     });
   });

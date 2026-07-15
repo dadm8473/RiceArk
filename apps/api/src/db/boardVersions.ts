@@ -177,6 +177,9 @@ export function bumpBoardSheetVersionsForCharacterStatement(env: Env, userId: st
          WHERE board_tables.user_id = ?
            AND board_axis_items.user_id = ?
            AND board_axis_items.character_id = ?
+           AND board_axis_items.visible = 1
+           AND characters.enabled = 1
+           AND characters.deleted_at IS NULL
        )
      RETURNING id, content_version AS version`
   ).bind(userId, userId, userId, characterId);

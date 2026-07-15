@@ -150,7 +150,7 @@ characterRoutes.patch(
     };
     const updated = await updateCharacterDetails(c.env, user.id, id, normalized);
     if (!updated) throw new ApiError(404, "character_not_found", "Character not found");
-    return c.json({ ok: true });
+    return c.json(updated);
   }
 );
 
@@ -163,7 +163,8 @@ characterRoutes.post(
     const updated = await updateCharacterFromLostArk(c.env, user.id, id);
     if (updated === "manual") throw new ApiError(400, "manual_character_refresh_unavailable", "수동 캐릭터는 갱신할 수 없습니다.");
     if (updated === "not_found") throw new ApiError(404, "character_not_found", "Character not found");
-    if (typeof updated === "object" && "type" in updated && updated.type === "rate_limited") {
+    if (typeof updated === "object" && "type" in updated) {
+      c.header("Retry-After", String(updated.retryAfterSeconds));
       throw new ApiError(
         429,
         "character_refresh_rate_limited",
@@ -173,7 +174,7 @@ characterRoutes.post(
     if (updated === "not_available") {
       throw new ApiError(404, "lostark_character_not_found", "로스트아크 API에서 캐릭터 정보를 찾지 못했습니다.");
     }
-    return c.json(updated);
+    return c.json({ ...updated.character, versions: updated.versions });
   }
 );
 
@@ -205,7 +206,7 @@ characterRoutes.patch(
     const { id } = c.req.valid("param");
     const updated = await updateCharacterDisplayName(c.env, user.id, id, normalized);
     if (!updated) throw new ApiError(404, "character_not_found", "Character not found");
-    return c.json({ ok: true });
+    return c.json(updated);
   }
 );
 
@@ -217,7 +218,7 @@ characterRoutes.delete(
     const { id } = c.req.valid("param");
     const deleted = await deleteCharacter(c.env, user.id, id);
     if (!deleted) throw new ApiError(404, "character_not_found", "Character not found");
-    return c.body(null, 204);
+    return c.json(deleted);
   }
 );
 

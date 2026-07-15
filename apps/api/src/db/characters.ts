@@ -2,6 +2,13 @@ import type { CharacterSelection } from "@riceark/core";
 import { normalizeCharacterSelection } from "@riceark/core";
 import type { Env } from "../env";
 import { searchRosterCharacters } from "../lostark/client";
+import {
+  buildBoardMutationVersions,
+  bumpBoardSheetVersionsForCharacterStatement,
+  type BoardMutationResult,
+  type BoardMutationVersions,
+  type BoardSheetVersion
+} from "./boardVersions";
 
 export interface CharacterSnapshot {
   id?: string;
@@ -17,7 +24,50 @@ export interface CharacterRefreshRateLimited {
   retryAfterSeconds: number;
 }
 
+export interface CharacterRefreshSuccess {
+  character: CharacterSnapshot;
+  versions: BoardMutationVersions;
+}
+
 export const CHARACTER_REFRESH_COOLDOWN_MS = 60_000;
+
+function firstBatchRow<T>(result: unknown): T | null {
+  if (!result || typeof result !== "object" || !("results" in result)) return null;
+  const rows = (result as { results?: unknown[] }).results;
+  return Array.isArray(rows) && rows.length > 0 ? (rows[0] as T) : null;
+}
+
+function returnedMutationId(result: unknown, expectedId: string): string | null {
+  const row = firstBatchRow<{ id?: unknown }>(result);
+  return row?.id === expectedId ? expectedId : null;
+}
+
+function returnedSheetVersions(result: unknown): BoardSheetVersion[] | null {
+  if (!result || typeof result !== "object" || !("results" in result)) return null;
+  const rows = (result as { results?: unknown[] }).results;
+  if (!Array.isArray(rows)) return null;
+  const versions = rows.flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const { id, version } = row as { id?: unknown; version?: unknown };
+    return typeof id === "string" && typeof version === "number" ? [{ id, version }] : [];
+  });
+  return versions.length === rows.length ? versions : null;
+}
+
+function buildCharacterMutationResult(
+  mutationResult: unknown,
+  versionResult: unknown,
+  characterId: string
+): BoardMutationResult | null {
+  const mutationId = returnedMutationId(mutationResult, characterId);
+  const sheetVersions = returnedSheetVersions(versionResult);
+  if (sheetVersions === null) throw new Error("Character mutation batch returned malformed version rows");
+  if (!mutationId) {
+    if (sheetVersions.length > 0) throw new Error("Character mutation batch returned versions without a character mutation");
+    return null;
+  }
+  return { ok: true, versions: buildBoardMutationVersions(sheetVersions) };
+}
 
 function parseStoredTimestamp(value: string | null | undefined): number | null {
   if (!value) return null;
@@ -108,15 +158,17 @@ export async function updateCharacterDisplayName(
   userId: string,
   characterId: string,
   displayName: string | null
-): Promise<boolean> {
-  const result = await env.DB.prepare(
-    `UPDATE characters
-     SET display_name = ?, updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL`
-  )
-    .bind(displayName, characterId, userId)
-    .run();
-  return (result.meta.changes ?? 0) > 0;
+): Promise<BoardMutationResult | null> {
+  const [updatedResult, versionResult] = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE characters
+       SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL
+       RETURNING id`
+    ).bind(displayName, characterId, userId),
+    bumpBoardSheetVersionsForCharacterStatement(env, userId, characterId)
+  ]);
+  return buildCharacterMutationResult(updatedResult, versionResult, characterId);
 }
 
 export async function updateCharacterDetails(
@@ -132,20 +184,21 @@ export async function updateCharacterDetails(
     combatPower: string | null;
     memo?: string | null | undefined;
   }
-): Promise<boolean> {
-  const result = await env.DB.prepare(
-    `UPDATE characters
-     SET name = CASE WHEN source = 'manual' AND ? = 1 THEN ? ELSE name END,
-         server_name = CASE WHEN source = 'manual' AND ? = 1 THEN ? ELSE server_name END,
-         class_name = CASE WHEN source = 'manual' AND ? = 1 THEN ? ELSE class_name END,
-         display_name = ?,
-         item_level = ?,
-         combat_power = ?,
-         memo = CASE WHEN ? = 1 THEN ? ELSE memo END,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL`
-  )
-    .bind(
+): Promise<BoardMutationResult | null> {
+  const [updatedResult, versionResult] = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE characters
+       SET name = CASE WHEN source = 'manual' AND ? = 1 THEN ? ELSE name END,
+           server_name = CASE WHEN source = 'manual' AND ? = 1 THEN ? ELSE server_name END,
+           class_name = CASE WHEN source = 'manual' AND ? = 1 THEN ? ELSE class_name END,
+           display_name = ?,
+           item_level = ?,
+           combat_power = ?,
+           memo = CASE WHEN ? = 1 THEN ? ELSE memo END,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL
+       RETURNING id`
+    ).bind(
       input.name !== undefined ? 1 : 0,
       input.name ?? null,
       input.serverName !== undefined ? 1 : 0,
@@ -159,16 +212,17 @@ export async function updateCharacterDetails(
       input.memo ?? null,
       characterId,
       userId
-    )
-    .run();
-  return (result.meta.changes ?? 0) > 0;
+    ),
+    bumpBoardSheetVersionsForCharacterStatement(env, userId, characterId)
+  ]);
+  return buildCharacterMutationResult(updatedResult, versionResult, characterId);
 }
 
 export async function updateCharacterFromLostArk(
   env: Env,
   userId: string,
   characterId: string
-): Promise<CharacterSnapshot | CharacterRefreshRateLimited | "manual" | "not_found" | "not_available"> {
+): Promise<CharacterRefreshSuccess | CharacterRefreshRateLimited | "manual" | "not_found" | "not_available"> {
   const current = await env.DB.prepare(
     `SELECT id, name, server_name, source, last_refresh_attempt_at
      FROM characters
@@ -203,19 +257,23 @@ export async function updateCharacterFromLostArk(
   const latest = roster.find((character) => character.name === current.name && character.serverName === current.server_name);
   if (!latest) return "not_available";
 
-  await env.DB.prepare(
-    `UPDATE characters
-     SET class_name = ?,
-         item_level = ?,
-         combat_power = ?,
-         source = 'lostark',
-         updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL`
-  )
-    .bind(latest.className, latest.itemLevel, latest.combatPower, characterId, userId)
-    .run();
+  const [updatedResult, versionResult] = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE characters
+       SET class_name = ?,
+           item_level = ?,
+           combat_power = ?,
+           source = 'lostark',
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL
+       RETURNING id`
+    ).bind(latest.className, latest.itemLevel, latest.combatPower, characterId, userId),
+    bumpBoardSheetVersionsForCharacterStatement(env, userId, characterId)
+  ]);
+  const mutation = buildCharacterMutationResult(updatedResult, versionResult, characterId);
+  if (!mutation) return "not_found";
 
-  return {
+  const character = {
     id: characterId,
     name: latest.name,
     serverName: latest.serverName,
@@ -223,19 +281,26 @@ export async function updateCharacterFromLostArk(
     itemLevel: latest.itemLevel,
     combatPower: latest.combatPower
   };
+  return { character, versions: mutation.versions };
 }
 
-export async function deleteCharacter(env: Env, userId: string, characterId: string): Promise<boolean> {
-  const result = await env.DB.prepare(
-    `UPDATE characters
-     SET enabled = 0,
-         deleted_at = CURRENT_TIMESTAMP,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL`
-  )
-    .bind(characterId, userId)
-    .run();
-  return (result.meta.changes ?? 0) > 0;
+export async function deleteCharacter(
+  env: Env,
+  userId: string,
+  characterId: string
+): Promise<BoardMutationResult | null> {
+  const [versionResult, deletedResult] = await env.DB.batch([
+    bumpBoardSheetVersionsForCharacterStatement(env, userId, characterId),
+    env.DB.prepare(
+      `UPDATE characters
+       SET enabled = 0,
+           deleted_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL
+       RETURNING id`
+    ).bind(characterId, userId)
+  ]);
+  return buildCharacterMutationResult(deletedResult, versionResult, characterId);
 }
 
 export async function reorderCharacters(env: Env, userId: string, characterIds: string[]): Promise<boolean> {
