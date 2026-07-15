@@ -161,6 +161,23 @@ interface BoardCharacterRefreshResult {
   combatPower: string | null;
 }
 
+export type BoardCharacterRefreshUpdatedResult = {
+  id: string;
+  status: "updated";
+  character: BoardCharacterRefreshResult & { id?: string | undefined };
+};
+
+export type BoardCharacterRefreshBatchItem =
+  | BoardCharacterRefreshUpdatedResult
+  | { id: string; status: "manual" | "not_found" | "not_available" }
+  | { id: string; status: "rate_limited"; retryAfterSeconds: number }
+  | { id: string; status: "failed"; code: string };
+
+interface BoardCharacterRefreshBatchResponse {
+  results: BoardCharacterRefreshBatchItem[];
+  versions: { sheets: Array<{ id: string; version: number }> };
+}
+
 export interface TableCharacterRefreshSummary {
   failedCount: number;
   refreshedCount: number;
@@ -264,6 +281,56 @@ export interface BoardAxisItemSaveInput {
 }
 
 type BoardPatchRequest = (path: string, body: unknown) => Promise<unknown>;
+type BoardCharacterRefreshPostRequest = (
+  path: string,
+  body: unknown
+) => Promise<BoardCharacterRefreshBatchResponse>;
+
+export const CHARACTER_REFRESH_BATCH_MAX_COUNT = 40;
+
+export function applyBoardCharacterRefreshResultsToAxisItems(
+  items: BoardAxisItem[],
+  results: BoardCharacterRefreshUpdatedResult[]
+): BoardAxisItem[] {
+  const updates = new Map(results.map((result) => [result.id, result.character]));
+  return items.map((item) => {
+    const updated = item.character_id ? updates.get(item.character_id) : undefined;
+    return updated
+      ? {
+          ...item,
+          label: updated.name,
+          character_name: updated.name,
+          character_server_name: updated.serverName,
+          character_class_name: updated.className,
+          character_item_level: updated.itemLevel,
+          character_combat_power: updated.combatPower,
+          character_source: "lostark"
+        }
+      : item;
+  });
+}
+
+export async function refreshBoardTableCharactersRequest(
+  characterIds: string[],
+  applyUpdated: (results: BoardCharacterRefreshUpdatedResult[]) => void,
+  postRequest: BoardCharacterRefreshPostRequest = (path, body) => apiPost<BoardCharacterRefreshBatchResponse>(path, body)
+): Promise<TableCharacterRefreshSummary> {
+  if (characterIds.length > CHARACTER_REFRESH_BATCH_MAX_COUNT) {
+    return { failedCount: characterIds.length, refreshedCount: 0, totalCount: characterIds.length };
+  }
+  if (characterIds.length === 0) return { failedCount: 0, refreshedCount: 0, totalCount: 0 };
+
+  const response = await postRequest("/api/characters/refresh-batch", { characterIds });
+  const updated = response.results.filter(
+    (result): result is BoardCharacterRefreshUpdatedResult => result.status === "updated"
+  );
+  if (updated.length > 0) applyUpdated(updated);
+  return {
+    failedCount: response.results.length - updated.length,
+    refreshedCount: updated.length,
+    totalCount: response.results.length
+  };
+}
 
 export async function saveBoardTableSettingsRequest(
   tableId: string,
@@ -1639,31 +1706,26 @@ export function BoardOverview({
     if (characterIds.length === 0) {
       return { failedCount: 0, refreshedCount: 0, totalCount: 0 };
     }
+    if (characterIds.length > CHARACTER_REFRESH_BATCH_MAX_COUNT) {
+      setFormError(`캐릭터 정보는 한 번에 최대 ${CHARACTER_REFRESH_BATCH_MAX_COUNT}명까지 갱신할 수 있습니다.`);
+      return { failedCount: characterIds.length, refreshedCount: 0, totalCount: characterIds.length };
+    }
 
     return runMutation(async () => {
       setRefreshingCharacterTableId(table.id);
       setFormError(null);
-      let failedCount = 0;
 
       try {
-        for (const characterId of characterIds) {
-          try {
-            await refreshBoardCharacter(characterId);
-          } catch {
-            failedCount += 1;
-          }
-        }
+        const summary = await refreshBoardTableCharactersRequest(characterIds, (updated) => {
+          setAxisItems((current) => applyBoardCharacterRefreshResultsToAxisItems(current, updated));
+        });
 
-        if (failedCount > 0) {
+        if (summary.failedCount > 0) {
           setFormError(
-            `캐릭터 ${characterIds.length - failedCount}명 갱신, ${failedCount}명 실패했습니다. 1분 제한 또는 로스트아크 API 상태를 확인해주세요.`
+            `캐릭터 ${summary.refreshedCount}명 갱신, ${summary.failedCount}명 실패했습니다. 1분 제한 또는 로스트아크 API 상태를 확인해주세요.`
           );
         }
-        return {
-          failedCount,
-          refreshedCount: characterIds.length - failedCount,
-          totalCount: characterIds.length
-        };
+        return summary;
       } finally {
         setRefreshingCharacterTableId(null);
       }

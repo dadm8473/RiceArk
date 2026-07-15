@@ -1,7 +1,9 @@
 import type { CharacterSelection } from "@riceark/core";
 import { normalizeCharacterSelection } from "@riceark/core";
 import type { Env } from "../env";
-import { searchRosterCharacters } from "../lostark/client";
+import { ApiError } from "../http/errors";
+import { fetchLostArkCharacterProfile, mapWithConcurrency } from "../lostark/client";
+import type { ImportedCharacterCandidate } from "../lostark/normalize";
 import {
   buildBoardMutationVersions,
   bumpBoardSheetVersionsForCharacterImportStatement,
@@ -30,7 +32,32 @@ export interface CharacterRefreshSuccess {
   versions: BoardMutationVersions;
 }
 
+export type CharacterRefreshBatchItem =
+  | { id: string; status: "updated"; character: CharacterSnapshot }
+  | { id: string; status: "manual" | "not_found" | "not_available" }
+  | { id: string; status: "rate_limited"; retryAfterSeconds: number }
+  | { id: string; status: "failed"; code: string };
+
+export interface CharacterRefreshBatchResult {
+  results: CharacterRefreshBatchItem[];
+  versions: BoardMutationVersions;
+}
+
 export const CHARACTER_REFRESH_COOLDOWN_MS = 60_000;
+export const CHARACTER_REFRESH_BATCH_MAX_COUNT = 40;
+
+interface CharacterRefreshRow {
+  position: number;
+  requested_id: string;
+  id: string | null;
+  name: string | null;
+  server_name: string | null;
+  class_name: string | null;
+  item_level: string | null;
+  combat_power: string | null;
+  source: string | null;
+  last_refresh_attempt_at: string | null;
+}
 
 function firstBatchRow<T>(result: unknown): T | null {
   if (!result || typeof result !== "object" || !("results" in result)) return null;
@@ -65,6 +92,44 @@ function returnedIds(result: unknown): string[] | null {
     return typeof id === "string" ? [id] : [];
   });
   return ids.length === rows.length ? ids : null;
+}
+
+function returnedUniqueIdSubset(result: unknown, expectedIds: Set<string>, errorMessage: string): Set<string> {
+  const ids = returnedIds(result);
+  if (
+    ids === null ||
+    new Set(ids).size !== ids.length ||
+    ids.some((id) => !expectedIds.has(id))
+  ) {
+    throw new Error(errorMessage);
+  }
+  return new Set(ids);
+}
+
+function completeCharacterRefreshResults(
+  results: Array<CharacterRefreshBatchItem | undefined>
+): CharacterRefreshBatchItem[] {
+  if (results.some((result) => result === undefined)) {
+    throw new Error("Character refresh did not produce every requested result");
+  }
+  return results as CharacterRefreshBatchItem[];
+}
+
+function retryAfterSecondsFrom(error: ApiError): number {
+  const retryAfter = error.options.headers?.["Retry-After"];
+  if (retryAfter && /^\d+$/.test(retryAfter)) {
+    const seconds = Number(retryAfter);
+    if (Number.isSafeInteger(seconds)) return seconds;
+  }
+  if (retryAfter) {
+    const retryAt = Date.parse(retryAfter);
+    if (!Number.isNaN(retryAt)) return Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+  }
+  return CHARACTER_REFRESH_COOLDOWN_MS / 1000;
+}
+
+function characterRefreshFailureCode(error: unknown): string {
+  return error instanceof ApiError ? error.code : "lostark_api_unavailable";
 }
 
 function characterIdentityKey(name: string, serverName: string): string {
@@ -298,70 +363,284 @@ export async function updateCharacterDetails(
   return buildCharacterMutationResult(updatedResult, versionResult, characterId);
 }
 
+export async function refreshCharactersFromLostArk(
+  env: Env,
+  userId: string,
+  characterIds: string[]
+): Promise<CharacterRefreshBatchResult> {
+  if (characterIds.length === 0) return { results: [], versions: { sheets: [] } };
+  if (characterIds.length > CHARACTER_REFRESH_BATCH_MAX_COUNT) {
+    throw new RangeError(`Character refresh accepts at most ${CHARACTER_REFRESH_BATCH_MAX_COUNT} ids`);
+  }
+  if (new Set(characterIds).size !== characterIds.length) {
+    throw new Error("Character refresh ids must be unique");
+  }
+
+  const requestedIdsJson = JSON.stringify(characterIds);
+  const loaded = await env.DB.prepare(
+    `WITH input AS (
+       SELECT CAST(key AS INTEGER) AS position,
+              CASE WHEN typeof(value) = 'text' THEN value END AS id
+       FROM json_each(?2)
+     )
+     SELECT input.position,
+            input.id AS requested_id,
+            characters.id,
+            characters.name,
+            characters.server_name,
+            characters.class_name,
+            characters.item_level,
+            characters.combat_power,
+            characters.source,
+            characters.last_refresh_attempt_at
+     FROM input
+     LEFT JOIN characters
+       ON characters.id = input.id
+      AND characters.user_id = ?1
+      AND characters.enabled = 1
+      AND characters.deleted_at IS NULL
+     ORDER BY input.position`
+  ).bind(userId, requestedIdsJson).all<CharacterRefreshRow>();
+  const rows = loaded.results ?? [];
+  if (
+    rows.length !== characterIds.length ||
+    rows.some((row, index) => row.position !== index || row.requested_id !== characterIds[index])
+  ) {
+    throw new Error("Character refresh load did not return every requested id in order");
+  }
+
+  const now = Date.now();
+  const results: Array<CharacterRefreshBatchItem | undefined> = new Array(characterIds.length);
+  const eligible: Array<{ index: number; id: string; name: string }> = [];
+  for (const row of rows) {
+    if (!row.id || !row.name) {
+      results[row.position] = { id: row.requested_id, status: "not_found" };
+      continue;
+    }
+    if (row.source === "manual") {
+      results[row.position] = { id: row.id, status: "manual" };
+      continue;
+    }
+    const lastAttempt = parseStoredTimestamp(row.last_refresh_attempt_at);
+    const retryAfterMs = lastAttempt === null ? 0 : CHARACTER_REFRESH_COOLDOWN_MS - (now - lastAttempt);
+    if (retryAfterMs > 0) {
+      results[row.position] = {
+        id: row.id,
+        status: "rate_limited",
+        retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000))
+      };
+      continue;
+    }
+    eligible.push({ index: row.position, id: row.id, name: row.name });
+  }
+
+  if (eligible.length === 0) {
+    return { results: completeCharacterRefreshResults(results), versions: { sheets: [] } };
+  }
+
+  const eligibleIds = eligible.map((candidate) => candidate.id);
+  const expectedEligibleIds = new Set(eligibleIds);
+  const stamped = await env.DB.prepare(
+    `WITH input AS (
+       SELECT value AS id
+       FROM json_each(?2)
+       WHERE typeof(value) = 'text'
+     )
+     UPDATE characters
+     SET last_refresh_attempt_at = ?3
+     WHERE user_id = ?1
+       AND enabled = 1
+       AND deleted_at IS NULL
+       AND source <> 'manual'
+       AND id IN (SELECT id FROM input)
+       AND (SELECT COUNT(DISTINCT id) FROM input) = json_array_length(?2)
+     RETURNING id`
+  ).bind(userId, JSON.stringify(eligibleIds), new Date(now).toISOString()).all<{ id: string }>();
+  const stampedIds = returnedUniqueIdSubset(
+    stamped,
+    expectedEligibleIds,
+    "Character refresh attempt stamp returned invalid character ids"
+  );
+  const attempted = eligible.filter((candidate) => {
+    if (stampedIds.has(candidate.id)) return true;
+    results[candidate.index] = { id: candidate.id, status: "not_found" };
+    return false;
+  });
+
+  const profileOutcomes = await mapWithConcurrency(attempted, 4, async (candidate) => {
+    try {
+      const profile = await fetchLostArkCharacterProfile(env, candidate.name);
+      if (!profile) return { ...candidate, result: { id: candidate.id, status: "not_available" } as const };
+      return { ...candidate, profile };
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 429) {
+        return {
+          ...candidate,
+          result: {
+            id: candidate.id,
+            status: "rate_limited",
+            retryAfterSeconds: retryAfterSecondsFrom(error)
+          } as const
+        };
+      }
+      return {
+        ...candidate,
+        result: { id: candidate.id, status: "failed", code: characterRefreshFailureCode(error) } as const
+      };
+    }
+  });
+
+  const successes: Array<{
+    index: number;
+    id: string;
+    profile: ImportedCharacterCandidate;
+  }> = [];
+  for (const outcome of profileOutcomes) {
+    if ("profile" in outcome) successes.push(outcome);
+    else results[outcome.index] = outcome.result;
+  }
+  if (successes.length === 0) {
+    return { results: completeCharacterRefreshResults(results), versions: { sheets: [] } };
+  }
+
+  const profilesJson = JSON.stringify(successes.map(({ id, profile }) => ({
+    id,
+    className: profile.className,
+    itemLevel: profile.itemLevel,
+    combatPower: profile.combatPower
+  })));
+  const [versionResult, updatedResult] = await env.DB.batch([
+    env.DB.prepare(
+      `WITH input AS (
+         SELECT json_extract(value, '$.id') AS id,
+                json_extract(value, '$.className') AS class_name,
+                json_extract(value, '$.itemLevel') AS item_level,
+                json_extract(value, '$.combatPower') AS combat_power
+         FROM json_each(?2)
+       ),
+       valid_input AS (
+         SELECT *
+         FROM input
+         WHERE typeof(id) = 'text'
+           AND typeof(class_name) = 'text'
+           AND typeof(item_level) = 'text'
+           AND (combat_power IS NULL OR typeof(combat_power) = 'text')
+       ),
+       changed_characters AS (
+         SELECT characters.id
+         FROM characters
+         JOIN valid_input ON valid_input.id = characters.id
+         WHERE characters.user_id = ?1
+           AND characters.enabled = 1
+           AND characters.deleted_at IS NULL
+           AND (
+             characters.class_name IS NOT valid_input.class_name
+             OR characters.item_level IS NOT valid_input.item_level
+             OR characters.combat_power IS NOT valid_input.combat_power
+             OR characters.source <> 'lostark'
+           )
+       ),
+       affected_sheets AS (
+         SELECT DISTINCT board_tables.sheet_id
+         FROM board_axis_items
+         JOIN board_tables
+           ON board_tables.id = board_axis_items.table_id
+          AND board_tables.user_id = board_axis_items.user_id
+         JOIN changed_characters
+           ON changed_characters.id = board_axis_items.character_id
+         WHERE board_axis_items.user_id = ?1
+           AND board_tables.user_id = ?1
+       )
+       UPDATE sheets
+       SET content_version = content_version + 1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE sheets.user_id = ?1
+         AND json_array_length(?2) > 0
+         AND (SELECT COUNT(*) FROM valid_input) = json_array_length(?2)
+         AND (SELECT COUNT(DISTINCT id) FROM valid_input) = json_array_length(?2)
+         AND sheets.id IN (SELECT sheet_id FROM affected_sheets)
+       RETURNING id, content_version AS version`
+    ).bind(userId, profilesJson),
+    env.DB.prepare(
+      `WITH input AS (
+         SELECT json_extract(value, '$.id') AS id,
+                json_extract(value, '$.className') AS class_name,
+                json_extract(value, '$.itemLevel') AS item_level,
+                json_extract(value, '$.combatPower') AS combat_power
+         FROM json_each(?2)
+       ),
+       valid_input AS (
+         SELECT *
+         FROM input
+         WHERE typeof(id) = 'text'
+           AND typeof(class_name) = 'text'
+           AND typeof(item_level) = 'text'
+           AND (combat_power IS NULL OR typeof(combat_power) = 'text')
+       )
+       UPDATE characters
+       SET class_name = (SELECT class_name FROM valid_input WHERE valid_input.id = characters.id),
+           item_level = (SELECT item_level FROM valid_input WHERE valid_input.id = characters.id),
+           combat_power = (SELECT combat_power FROM valid_input WHERE valid_input.id = characters.id),
+           source = 'lostark',
+           updated_at = CURRENT_TIMESTAMP
+       WHERE characters.user_id = ?1
+         AND characters.enabled = 1
+         AND characters.deleted_at IS NULL
+         AND characters.id IN (SELECT id FROM valid_input)
+         AND (SELECT COUNT(*) FROM valid_input) = json_array_length(?2)
+         AND (SELECT COUNT(DISTINCT id) FROM valid_input) = json_array_length(?2)
+       RETURNING id`
+    ).bind(userId, profilesJson)
+  ]);
+
+  const sheetVersions = returnedSheetVersions(versionResult);
+  if (
+    sheetVersions === null ||
+    new Set(sheetVersions.map((sheet) => sheet.id)).size !== sheetVersions.length
+  ) {
+    throw new Error("Character refresh batch returned invalid sheet versions");
+  }
+  const expectedSuccessIds = new Set(successes.map((success) => success.id));
+  const updatedIds = returnedUniqueIdSubset(
+    updatedResult,
+    expectedSuccessIds,
+    "Character refresh batch returned invalid character ids"
+  );
+  if (updatedIds.size === 0 && sheetVersions.length > 0) {
+    throw new Error("Character refresh batch returned invalid sheet versions");
+  }
+  for (const success of successes) {
+    results[success.index] = updatedIds.has(success.id)
+      ? {
+          id: success.id,
+          status: "updated",
+          character: { id: success.id, ...success.profile }
+        }
+      : { id: success.id, status: "not_found" };
+  }
+
+  return {
+    results: completeCharacterRefreshResults(results),
+    versions: buildBoardMutationVersions(sheetVersions)
+  };
+}
+
 export async function updateCharacterFromLostArk(
   env: Env,
   userId: string,
   characterId: string
 ): Promise<CharacterRefreshSuccess | CharacterRefreshRateLimited | "manual" | "not_found" | "not_available"> {
-  const current = await env.DB.prepare(
-    `SELECT id, name, server_name, source, last_refresh_attempt_at
-     FROM characters
-     WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL`
-  )
-    .bind(characterId, userId)
-    .first<{ id: string; name: string; server_name: string; source: string; last_refresh_attempt_at: string | null }>();
-  if (!current) return "not_found";
-  if (current.source === "manual") return "manual";
-
-  const now = Date.now();
-  const lastAttempt = parseStoredTimestamp(current.last_refresh_attempt_at);
-  if (lastAttempt !== null) {
-    const retryAfterMs = CHARACTER_REFRESH_COOLDOWN_MS - (now - lastAttempt);
-    if (retryAfterMs > 0) {
-      return {
-        type: "rate_limited",
-        retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000))
-      };
-    }
+  const refreshed = await refreshCharactersFromLostArk(env, userId, [characterId]);
+  const result = refreshed.results[0];
+  if (!result) return "not_found";
+  if (result.status === "updated") return { character: result.character, versions: refreshed.versions };
+  if (result.status === "rate_limited") {
+    return { type: "rate_limited", retryAfterSeconds: result.retryAfterSeconds };
   }
-
-  await env.DB.prepare(
-    `UPDATE characters
-     SET last_refresh_attempt_at = ?
-     WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL`
-  )
-    .bind(new Date(now).toISOString(), characterId, userId)
-    .run();
-
-  const roster = await searchRosterCharacters(env, current.name, { bypassCache: true });
-  const latest = roster.find((character) => character.name === current.name && character.serverName === current.server_name);
-  if (!latest) return "not_available";
-
-  const [updatedResult, versionResult] = await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE characters
-       SET class_name = ?,
-           item_level = ?,
-           combat_power = ?,
-           source = 'lostark',
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL
-       RETURNING id`
-    ).bind(latest.className, latest.itemLevel, latest.combatPower, characterId, userId),
-    bumpBoardSheetVersionsForCharacterStatement(env, userId, characterId)
-  ]);
-  const mutation = buildCharacterMutationResult(updatedResult, versionResult, characterId);
-  if (!mutation) return "not_found";
-
-  const character = {
-    id: characterId,
-    name: latest.name,
-    serverName: latest.serverName,
-    className: latest.className,
-    itemLevel: latest.itemLevel,
-    combatPower: latest.combatPower
-  };
-  return { character, versions: mutation.versions };
+  if (result.status === "failed") {
+    throw new ApiError(502, result.code, "Lost Ark character refresh failed");
+  }
+  return result.status;
 }
 
 export async function deleteCharacter(

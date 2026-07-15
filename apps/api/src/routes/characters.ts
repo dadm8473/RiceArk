@@ -4,11 +4,12 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { requireUser } from "../auth/requireUser";
 import {
+  CHARACTER_REFRESH_BATCH_MAX_COUNT,
   createManualCharacter,
   deleteCharacter,
+  refreshCharactersFromLostArk,
   reorderCharacters,
   saveSelectedCharacters,
-  updateCharacterFromLostArk,
   updateCharacterDetails,
   updateCharacterDisplayName
 } from "../db/characters";
@@ -107,6 +108,16 @@ export const characterOrderSchema = z
     path: ["characterIds"]
   });
 
+export const characterRefreshBatchSchema = z
+  .object({
+    characterIds: z.array(resourceIdSchema).min(1).max(CHARACTER_REFRESH_BATCH_MAX_COUNT)
+  })
+  .strict()
+  .refine((input) => !hasDuplicates(input.characterIds), {
+    message: "Duplicate character ids are not allowed",
+    path: ["characterIds"]
+  });
+
 characterRoutes.get(
   "/characters/search",
   zValidator("query", characterSearchSchema),
@@ -155,26 +166,50 @@ characterRoutes.patch(
 );
 
 characterRoutes.post(
+  "/characters/refresh-batch",
+  zValidator("json", characterRefreshBatchSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    const { characterIds } = c.req.valid("json");
+    return c.json(await refreshCharactersFromLostArk(c.env, user.id, characterIds));
+  }
+);
+
+characterRoutes.post(
   "/characters/:id/refresh",
   zValidator("param", characterIdParamSchema),
   async (c) => {
     const user = await requireUser(c);
     const { id } = c.req.valid("param");
-    const updated = await updateCharacterFromLostArk(c.env, user.id, id);
-    if (updated === "manual") throw new ApiError(400, "manual_character_refresh_unavailable", "수동 캐릭터는 갱신할 수 없습니다.");
-    if (updated === "not_found") throw new ApiError(404, "character_not_found", "Character not found");
-    if (typeof updated === "object" && "type" in updated) {
-      c.header("Retry-After", String(updated.retryAfterSeconds));
+    const refreshed = await refreshCharactersFromLostArk(c.env, user.id, [id]);
+    const result = refreshed.results[0];
+    if (!result) throw new ApiError(500, "character_refresh_failed", "Character refresh failed");
+    if (result.status === "manual") {
+      throw new ApiError(400, "manual_character_refresh_unavailable", "수동 캐릭터는 갱신할 수 없습니다.");
+    }
+    if (result.status === "not_found") throw new ApiError(404, "character_not_found", "Character not found");
+    if (result.status === "rate_limited") {
+      c.header("Retry-After", String(result.retryAfterSeconds));
       throw new ApiError(
         429,
         "character_refresh_rate_limited",
-        `캐릭터 갱신은 1분에 한 번만 시도할 수 있습니다. ${updated.retryAfterSeconds}초 후 다시 시도해주세요.`
+        `캐릭터 갱신은 1분에 한 번만 시도할 수 있습니다. ${result.retryAfterSeconds}초 후 다시 시도해주세요.`
       );
     }
-    if (updated === "not_available") {
+    if (result.status === "not_available") {
       throw new ApiError(404, "lostark_character_not_found", "로스트아크 API에서 캐릭터 정보를 찾지 못했습니다.");
     }
-    return c.json({ ...updated.character, versions: updated.versions });
+    if (result.status === "failed") {
+      throw new ApiError(
+        result.code === "lostark_key_missing" ? 500 : 502,
+        result.code,
+        "로스트아크 API에서 캐릭터 정보를 갱신하지 못했습니다."
+      );
+    }
+    if (result.status !== "updated") {
+      throw new ApiError(500, "character_refresh_failed", "Character refresh failed");
+    }
+    return c.json({ ...result.character, versions: refreshed.versions });
   }
 );
 

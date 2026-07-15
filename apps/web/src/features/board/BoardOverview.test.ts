@@ -91,6 +91,42 @@ type SaveBoardAxisItemRequest = (
   applyLocal: () => void
 ) => Promise<void>;
 
+type BoardCharacterRefreshUpdatedResult = {
+  id: string;
+  status: "updated";
+  character: {
+    id?: string;
+    name: string;
+    serverName: string;
+    className: string;
+    itemLevel: string;
+    combatPower: string | null;
+  };
+};
+
+type BoardCharacterRefreshBatchResult =
+  | BoardCharacterRefreshUpdatedResult
+  | { id: string; status: "manual" | "not_found" | "not_available" }
+  | { id: string; status: "rate_limited"; retryAfterSeconds: number }
+  | { id: string; status: "failed"; code: string };
+
+type ApplyBoardCharacterRefreshResults = (
+  items: BoardAxisItem[],
+  results: BoardCharacterRefreshUpdatedResult[]
+) => BoardAxisItem[];
+
+type RefreshBoardTableCharactersRequest = (
+  characterIds: string[],
+  applyUpdated: (results: BoardCharacterRefreshUpdatedResult[]) => void,
+  postRequest?: (
+    path: string,
+    body: unknown
+  ) => Promise<{
+    results: BoardCharacterRefreshBatchResult[];
+    versions: { sheets: Array<{ id: string; version: number }> };
+  }>
+) => Promise<{ failedCount: number; refreshedCount: number; totalCount: number }>;
+
 function getSaveBoardTableSettingsRequest(): SaveBoardTableSettingsRequest {
   const candidate = (BoardOverviewModule as unknown as {
     saveBoardTableSettingsRequest?: SaveBoardTableSettingsRequest;
@@ -106,6 +142,24 @@ function getSaveBoardAxisItemRequest(): SaveBoardAxisItemRequest {
   }).saveBoardAxisItemRequest;
   expect(candidate).toBeTypeOf("function");
   if (!candidate) throw new Error("saveBoardAxisItemRequest is unavailable");
+  return candidate;
+}
+
+function getApplyBoardCharacterRefreshResults(): ApplyBoardCharacterRefreshResults {
+  const candidate = (BoardOverviewModule as unknown as {
+    applyBoardCharacterRefreshResultsToAxisItems?: ApplyBoardCharacterRefreshResults;
+  }).applyBoardCharacterRefreshResultsToAxisItems;
+  expect(candidate).toBeTypeOf("function");
+  if (!candidate) throw new Error("applyBoardCharacterRefreshResultsToAxisItems is unavailable");
+  return candidate;
+}
+
+function getRefreshBoardTableCharactersRequest(): RefreshBoardTableCharactersRequest {
+  const candidate = (BoardOverviewModule as unknown as {
+    refreshBoardTableCharactersRequest?: RefreshBoardTableCharactersRequest;
+  }).refreshBoardTableCharactersRequest;
+  expect(candidate).toBeTypeOf("function");
+  if (!candidate) throw new Error("refreshBoardTableCharactersRequest is unavailable");
   return candidate;
 }
 
@@ -866,6 +920,145 @@ describe("BoardOverview", () => {
         }
       ])
     ).toEqual(["character-1"]);
+  });
+
+  it("refreshes 20 table characters with one batch request and applies every reference only after success", async () => {
+    const refreshBoardTableCharactersRequest = getRefreshBoardTableCharactersRequest();
+    const applyBoardCharacterRefreshResults = getApplyBoardCharacterRefreshResults();
+    const characterIds = Array.from({ length: 20 }, (_, index) => `character-${index}`);
+    const originalItems: BoardAxisItem[] = [
+      ...characterIds.map((characterId, index) => ({
+        ...board.axisItems[1]!,
+        id: `axis-${index}`,
+        character_id: characterId,
+        character_name: `old-${index}`,
+        character_class_name: "브레이커",
+        character_item_level: "1,640.00",
+        character_combat_power: "2,500.00",
+        character_source: "lostark" as const,
+        sort_order: index * 10
+      })),
+      {
+        ...board.axisItems[1]!,
+        id: "axis-character-0-reference",
+        table_id: "table-2",
+        character_id: "character-0",
+        character_name: "old-reference",
+        character_source: "lostark",
+        sort_order: 0
+      }
+    ];
+    const results: BoardCharacterRefreshUpdatedResult[] = characterIds.map((id, index) => ({
+      id,
+      status: "updated",
+      character: {
+        id,
+        name: `updated-${index}`,
+        serverName: index % 2 === 0 ? "아만" : "카단",
+        className: "환수사",
+        itemLevel: "1,700.00",
+        combatPower: "3,000.00"
+      }
+    }));
+    const response = deferred<{
+      results: BoardCharacterRefreshBatchResult[];
+      versions: { sheets: Array<{ id: string; version: number }> };
+    }>();
+    const postRequest = vi.fn((_path: string, _body: unknown) => response.promise);
+    let localItems = originalItems;
+
+    const refresh = refreshBoardTableCharactersRequest(
+      characterIds,
+      (updated) => {
+        localItems = applyBoardCharacterRefreshResults(localItems, updated);
+      },
+      postRequest
+    );
+
+    expect(postRequest).toHaveBeenCalledTimes(1);
+    expect(postRequest).toHaveBeenCalledWith("/api/characters/refresh-batch", { characterIds });
+    expect(postRequest.mock.calls[0]?.[0]).not.toContain("/siblings");
+    expect(postRequest.mock.calls[0]?.[0]).not.toMatch(/\/characters\/[^/]+\/refresh$/);
+    expect(localItems).toBe(originalItems);
+
+    response.resolve({ results, versions: { sheets: [{ id: "sheet-1", version: 8 }] } });
+    await expect(refresh).resolves.toEqual({ failedCount: 0, refreshedCount: 20, totalCount: 20 });
+    expect(localItems).not.toBe(originalItems);
+    expect(localItems.filter((item) => item.character_id === "character-0")).toEqual([
+      expect.objectContaining({
+        id: "axis-0",
+        label: "updated-0",
+        character_name: "updated-0",
+        character_class_name: "환수사",
+        character_item_level: "1,700.00",
+        character_combat_power: "3,000.00"
+      }),
+      expect.objectContaining({
+        id: "axis-character-0-reference",
+        label: "updated-0",
+        character_name: "updated-0"
+      })
+    ]);
+  });
+
+  it("keeps local character state untouched when the batch request fails", async () => {
+    const applyLocal = vi.fn();
+    const failure = new Error("batch unavailable");
+
+    await expect(
+      getRefreshBoardTableCharactersRequest()(
+        ["character-1"],
+        applyLocal,
+        vi.fn(async () => {
+          throw failure;
+        })
+      )
+    ).rejects.toBe(failure);
+    expect(applyLocal).not.toHaveBeenCalled();
+  });
+
+  it("derives refreshed and failed counts from mixed batch statuses", async () => {
+    const results: BoardCharacterRefreshBatchResult[] = [
+      {
+        id: "updated",
+        status: "updated",
+        character: {
+          id: "updated",
+          name: "업데이트",
+          serverName: "아만",
+          className: "환수사",
+          itemLevel: "1,700.00",
+          combatPower: "3,000.00"
+        }
+      },
+      { id: "manual", status: "manual" },
+      { id: "missing", status: "not_found" },
+      { id: "unavailable", status: "not_available" },
+      { id: "rate", status: "rate_limited", retryAfterSeconds: 17 },
+      { id: "failed", status: "failed", code: "lostark_api_error" }
+    ];
+    const applyLocal = vi.fn();
+
+    await expect(
+      getRefreshBoardTableCharactersRequest()(
+        results.map((result) => result.id),
+        applyLocal,
+        vi.fn(async () => ({ results, versions: { sheets: [] } }))
+      )
+    ).resolves.toEqual({ failedCount: 5, refreshedCount: 1, totalCount: 6 });
+    expect(applyLocal).toHaveBeenCalledWith([results[0]]);
+  });
+
+  it("handles the 40-character API limit without sending a partial table refresh", async () => {
+    const postRequest = vi.fn();
+    const applyLocal = vi.fn();
+    const characterIds = Array.from({ length: 41 }, (_, index) => `character-${index}`);
+
+    await expect(
+      getRefreshBoardTableCharactersRequest()(characterIds, applyLocal, postRequest)
+    ).resolves.toEqual({ failedCount: 41, refreshedCount: 0, totalCount: 41 });
+    expect(postRequest).not.toHaveBeenCalled();
+    expect(applyLocal).not.toHaveBeenCalled();
   });
 
   it("offers a Lost Ark event table template from the table creation flow", () => {

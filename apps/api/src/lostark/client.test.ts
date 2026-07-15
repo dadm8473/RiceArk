@@ -1,6 +1,43 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { searchRosterCharacters } from "./client";
+import * as LostArkClient from "./client";
 import type { Env } from "../env";
+
+const { searchRosterCharacters } = LostArkClient;
+
+type FetchLostArkCharacterProfile = (
+  env: Env,
+  characterName: string
+) => Promise<{
+  name: string;
+  serverName: string;
+  className: string;
+  itemLevel: string;
+  combatPower: string | null;
+} | null>;
+
+type MapWithConcurrency = <Item, Result>(
+  items: Item[],
+  concurrency: number,
+  worker: (item: Item, index: number) => Promise<Result>
+) => Promise<Result[]>;
+
+function getFetchLostArkCharacterProfile(): FetchLostArkCharacterProfile {
+  const candidate = (LostArkClient as unknown as {
+    fetchLostArkCharacterProfile?: FetchLostArkCharacterProfile;
+  }).fetchLostArkCharacterProfile;
+  expect(candidate).toBeTypeOf("function");
+  if (!candidate) throw new Error("fetchLostArkCharacterProfile is unavailable");
+  return candidate;
+}
+
+function getMapWithConcurrency(): MapWithConcurrency {
+  const candidate = (LostArkClient as unknown as {
+    mapWithConcurrency?: MapWithConcurrency;
+  }).mapWithConcurrency;
+  expect(candidate).toBeTypeOf("function");
+  if (!candidate) throw new Error("mapWithConcurrency is unavailable");
+  return candidate;
+}
 
 function createEnv(initialCache: Record<string, unknown> = {}): Env {
   const cache = new Map<string, string>();
@@ -20,6 +57,137 @@ function createEnv(initialCache: Record<string, unknown> = {}): Env {
     } as unknown as KVNamespace
   } as Env;
 }
+
+describe("fetchLostArkCharacterProfile", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("fetches and normalizes one fresh profile without touching KV", async () => {
+    const cacheGet = vi.fn();
+    const cachePut = vi.fn();
+    const env = {
+      LOSTARK_API_KEY: "lostark-key",
+      CACHE: { get: cacheGet, put: cachePut }
+    } as unknown as Env;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({
+      CharacterName: "냠 수/나이스1",
+      ServerName: "아만",
+      CharacterClassName: "환수사",
+      ItemAvgLevel: "1,700.00",
+      CombatPower: "3,000.00"
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getFetchLostArkCharacterProfile()(env, "냠 수/나이스1")).resolves.toEqual({
+      name: "냠 수/나이스1",
+      serverName: "아만",
+      className: "환수사",
+      itemLevel: "1,700.00",
+      combatPower: "3,000.00"
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://developer-lostark.game.onstove.com/armories/characters/%EB%83%A0%20%EC%88%98%2F%EB%82%98%EC%9D%B4%EC%8A%A41/profiles"
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      headers: {
+        accept: "application/json",
+        authorization: "bearer lostark-key"
+      },
+      signal: expect.any(AbortSignal)
+    });
+    expect(cacheGet).not.toHaveBeenCalled();
+    expect(cachePut).not.toHaveBeenCalled();
+  });
+
+  it("requires the Lost Ark API key before making a request", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      getFetchLostArkCharacterProfile()({ LOSTARK_API_KEY: "" } as Env, "냠수나이스1")
+    ).rejects.toMatchObject({
+      status: 500,
+      code: "lostark_key_missing"
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns null for an upstream 404", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 404 })));
+
+    await expect(getFetchLostArkCharacterProfile()(createEnv(), "없는캐릭터")).resolves.toBeNull();
+  });
+
+  it("throws a structured error for non-404 upstream failures", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("unavailable", { status: 503 })));
+
+    await expect(getFetchLostArkCharacterProfile()(createEnv(), "냠수나이스1")).rejects.toMatchObject({
+      status: 503,
+      code: "lostark_api_error"
+    });
+  });
+
+  it.each([
+    ["delay seconds", "17"],
+    ["HTTP date", "Thu, 16 Jul 2026 00:00:17 GMT"]
+  ])("preserves 429 Retry-After %s metadata", async (_description, retryAfter) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("slow down", {
+      status: 429,
+      headers: { "Retry-After": retryAfter }
+    })));
+
+    await expect(getFetchLostArkCharacterProfile()(createEnv(), "냠수나이스1")).rejects.toMatchObject({
+      status: 429,
+      code: "lostark_api_error",
+      options: { headers: { "Retry-After": retryAfter } }
+    });
+  });
+});
+
+describe("mapWithConcurrency", () => {
+  it("preserves order while keeping four workers active", async () => {
+    const mapWithConcurrency = getMapWithConcurrency();
+    const items = Array.from({ length: 20 }, (_, index) => index);
+    const releases = items.map(() => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((resolvePromise) => {
+        resolve = resolvePromise;
+      });
+      return { promise, resolve };
+    });
+    const started: number[] = [];
+    let active = 0;
+    let maxActive = 0;
+
+    const resultPromise = mapWithConcurrency(items, 4, async (item) => {
+      started.push(item);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await releases[item]!.promise;
+      active -= 1;
+      return `result-${item}`;
+    });
+
+    await vi.waitFor(() => expect(started).toEqual([0, 1, 2, 3]));
+    releases[1]!.resolve();
+    await vi.waitFor(() => expect(started).toContain(4));
+    expect(active).toBe(4);
+    for (const release of releases) release.resolve();
+
+    await expect(resultPromise).resolves.toEqual(items.map((item) => `result-${item}`));
+    expect(maxActive).toBe(4);
+  });
+
+  it("handles an empty input without invoking the worker", async () => {
+    const worker = vi.fn();
+
+    await expect(getMapWithConcurrency()([], 4, worker)).resolves.toEqual([]);
+    expect(worker).not.toHaveBeenCalled();
+  });
+});
 
 describe("searchRosterCharacters", () => {
   afterEach(() => {
