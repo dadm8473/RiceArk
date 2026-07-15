@@ -113,6 +113,28 @@ describe("api client", () => {
     });
   });
 
+  it.each([
+    ["RFC850", "Wednesday, 15-Jul-26 00:00:05 GMT", "2026-07-15T00:00:00.000Z"],
+    ["asctime", "Wed Jul 15 00:00:05 2026", "2026-07-15T00:00:00.000Z"],
+    ["single-digit asctime", "Sun Jul  5 00:00:05 2026", "2026-07-05T00:00:00.000Z"]
+  ])("parses %s Retry-After HTTP dates", async (_format, retryAfter, now) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(JSON.stringify({ error: { code: "rate_limited" } }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": retryAfter }
+        });
+      })
+    );
+
+    await expect(apiPatch("/api/board/completions", { patches: [] })).rejects.toMatchObject({
+      retryAfterMs: 5_000
+    });
+  });
+
   it("clamps past Retry-After dates to zero", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
@@ -138,6 +160,33 @@ describe("api client", () => {
         return new Response(JSON.stringify({ error: { code: "rate_limited" } }), {
           status: 429,
           headers: { "Content-Type": "application/json", "Retry-After": "after lunch" }
+        });
+      })
+    );
+
+    await expect(apiPatch("/api/board/completions", { patches: [] })).rejects.toMatchObject({
+      retryAfterMs: null
+    });
+  });
+
+  it.each([
+    ["slash date", "1/2"],
+    ["ISO date", "2026-07-16"],
+    ["locale date", "July 16, 2026"],
+    ["locale date with time", "Thu Jul 16 2026 00:00:00 GMT"],
+    ["invalid calendar date", "Thu, 31 Feb 2026 00:00:00 GMT"],
+    ["mismatched weekday", "Fri, 16 Jul 2026 00:00:00 GMT"],
+    ["missing GMT", "Thu, 16 Jul 2026 00:00:00"],
+    ["incorrect casing", "thu, 16 jul 2026 00:00:00 gmt"]
+  ])("rejects a non-HTTP %s in Retry-After", async (_description, retryAfter) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(JSON.stringify({ error: { code: "rate_limited" } }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": retryAfter }
         });
       })
     );
