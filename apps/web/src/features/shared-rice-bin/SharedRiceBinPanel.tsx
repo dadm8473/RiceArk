@@ -1,6 +1,6 @@
 import { Copy, ExternalLink, Heart, Search, Share2, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { apiDelete, apiGet, apiPost } from "../../api/client";
+import { ApiClientError, apiDelete, apiGet, apiPost } from "../../api/client";
 import { BoardOverview } from "../board/BoardOverview";
 import {
   type BoardMutationRunner,
@@ -34,6 +34,12 @@ interface BoardSharingOverview {
   sheets: BoardSheetManifestSummary[];
   shares: BoardShareSummary[];
   favorites: BoardShareFavoriteSummary[];
+}
+
+interface SharedBoardPayload extends BoardPayload {
+  shareId: string;
+  readOnly: true;
+  version: number;
 }
 
 interface Props {
@@ -130,7 +136,7 @@ export function SharedRiceBinPanel({
   writeLocked = false
 }: Props) {
   const [lookupValue, setLookupValue] = useState(initialShareId ?? "");
-  const [sharedBoard, setSharedBoard] = useState<BoardPayload | null>(null);
+  const [sharedBoard, setSharedBoard] = useState<SharedBoardPayload | null>(null);
   const [sharedActiveSheetId, setSharedActiveSheetId] = useState<string | null>(null);
   const [overview, setOverview] = useState<BoardSharingOverview | null>(null);
   const [sharedBoardFavorite, setSharedBoardFavorite] = useState(false);
@@ -140,6 +146,12 @@ export function SharedRiceBinPanel({
   const lastResetToLookupKeyRef = useRef(resetToLookupKey);
   const lookupRequestRef = useRef(0);
   const favoriteStatusRequestRef = useRef<string | null>(null);
+  const overviewRequestRef = useRef<Promise<BoardSharingOverview> | null>(null);
+  const sharedRevalidationRequestRef = useRef<{ shareId: string; promise: Promise<void> } | null>(null);
+  const loadedSharedVersionRef = useRef<number | null>(null);
+  const unavailableShareIdRef = useRef<string | null>(null);
+  const onSharedBoardClosedRef = useRef(onSharedBoardClosed);
+  onSharedBoardClosedRef.current = onSharedBoardClosed;
   const isAuthenticated = sessionStatus === "authenticated";
   const sheets = overview?.sheets ?? [];
   const shares = overview?.shares ?? [];
@@ -156,28 +168,133 @@ export function SharedRiceBinPanel({
     }
   }
 
+  function requestOverview(): Promise<BoardSharingOverview> {
+    if (overviewRequestRef.current) return overviewRequestRef.current;
+
+    const request = apiGet<BoardSharingOverview>("/api/board/sharing-overview");
+    overviewRequestRef.current = request;
+    void request.then(
+      () => {
+        if (overviewRequestRef.current === request) overviewRequestRef.current = null;
+      },
+      () => {
+        if (overviewRequestRef.current === request) overviewRequestRef.current = null;
+      }
+    );
+    return request;
+  }
+
   useEffect(() => {
     if (!isAuthenticated) {
+      overviewRequestRef.current = null;
       favoriteStatusRequestRef.current = null;
       setOverview(null);
       setSharedBoardFavorite(false);
       return;
     }
-    if (initialShareId) return;
+    if (initialShareId || sharedBoard?.shareId) return;
+
     let active = true;
-    apiGet<BoardSharingOverview>("/api/board/sharing-overview")
-      .then((payload) => {
-        if (active) setOverview(payload);
-      })
-      .catch((err) => {
-        if (active) setError(err instanceof Error ? err.message : "공유 쌀통 목록을 불러오지 못했습니다.");
-      });
+    const refreshOverview = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      void requestOverview()
+        .then((payload) => {
+          if (active) setOverview(payload);
+        })
+        .catch((err) => {
+          if (active) setError(err instanceof Error ? err.message : "공유 쌀통 목록을 불러오지 못했습니다.");
+        });
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshOverview();
+    };
+
+    refreshOverview();
+    if (typeof window !== "undefined") window.addEventListener("focus", refreshOverview);
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", handleVisibilityChange);
+
     return () => {
       active = false;
+      if (typeof window !== "undefined") window.removeEventListener("focus", refreshOverview);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [isAuthenticated, initialShareId]);
+  }, [isAuthenticated, initialShareId, sharedBoard?.shareId]);
 
   const sharedBoardShareId = sharedBoard?.shareId ?? null;
+
+  useEffect(() => {
+    if (!sharedBoardShareId || (typeof window === "undefined" && typeof document === "undefined")) return;
+
+    let active = true;
+    const clearUnavailableBoard = () => {
+      unavailableShareIdRef.current = sharedBoardShareId;
+      loadedSharedVersionRef.current = null;
+      favoriteStatusRequestRef.current = null;
+      lookupRequestRef.current += 1;
+      setSharedBoard(null);
+      setSharedActiveSheetId(null);
+      setSharedBoardFavorite(false);
+      setError("공유가 중단되었거나 삭제된 쌀통입니다.");
+      onSharedBoardClosedRef.current?.();
+    };
+    const revalidate = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const currentRequest = sharedRevalidationRequestRef.current;
+      if (currentRequest?.shareId === sharedBoardShareId) return;
+
+      const promise = (async () => {
+        try {
+          const latest = await apiGet<{ version: number }>(
+            "/api/shared-rice-bins/" + encodeURIComponent(sharedBoardShareId) + "/version"
+          );
+          if (!active || latest.version === loadedSharedVersionRef.current) return;
+
+          const payload = await apiGet<SharedBoardPayload>(
+            "/api/shared-rice-bins/" + encodeURIComponent(sharedBoardShareId)
+          );
+          if (!active) return;
+
+          loadedSharedVersionRef.current = payload.version;
+          unavailableShareIdRef.current = null;
+          setSharedBoard({ ...payload, readOnly: true });
+          setSharedActiveSheetId((current) =>
+            current && payload.sheets.some((sheet) => sheet.id === current)
+              ? current
+              : payload.sheets.find((sheet) => sheet.is_default === 1)?.id ?? payload.sheets[0]?.id ?? null
+          );
+          setError(null);
+        } catch (err) {
+          if (!active) return;
+          if (err instanceof ApiClientError && err.status === 404) {
+            clearUnavailableBoard();
+            return;
+          }
+          setError(err instanceof Error ? err.message : "공유 쌀통을 다시 확인하지 못했습니다.");
+        }
+      })();
+      const request = { shareId: sharedBoardShareId, promise };
+      sharedRevalidationRequestRef.current = request;
+      void promise.then(
+        () => {
+          if (sharedRevalidationRequestRef.current === request) sharedRevalidationRequestRef.current = null;
+        },
+        () => {
+          if (sharedRevalidationRequestRef.current === request) sharedRevalidationRequestRef.current = null;
+        }
+      );
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") revalidate();
+    };
+
+    if (typeof window !== "undefined") window.addEventListener("focus", revalidate);
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      active = false;
+      if (typeof window !== "undefined") window.removeEventListener("focus", revalidate);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [sharedBoardShareId]);
 
   useEffect(() => {
     if (!isAuthenticated || !sharedBoardShareId) return;
@@ -194,12 +311,16 @@ export function SharedRiceBinPanel({
 
   useEffect(() => {
     if (!initialShareId) {
+      unavailableShareIdRef.current = null;
+      loadedSharedVersionRef.current = null;
       favoriteStatusRequestRef.current = null;
       setSharedBoard(null);
       setSharedActiveSheetId(null);
       setSharedBoardFavorite(false);
       return;
     }
+    if (unavailableShareIdRef.current === initialShareId) return;
+    unavailableShareIdRef.current = null;
     if (sharedBoard?.shareId === initialShareId) return;
     void handleLookup(initialShareId, { syncHistory: false });
   }, [initialShareId]);
@@ -208,6 +329,7 @@ export function SharedRiceBinPanel({
     if (lastResetToLookupKeyRef.current === resetToLookupKey) return;
     lastResetToLookupKeyRef.current = resetToLookupKey;
     if (!sharedBoard) return;
+    loadedSharedVersionRef.current = null;
     setSharedBoard(null);
     setSharedActiveSheetId(null);
     onSharedBoardClosed?.();
@@ -223,10 +345,12 @@ export function SharedRiceBinPanel({
     setError(null);
     setMessage(null);
     favoriteStatusRequestRef.current = null;
+    unavailableShareIdRef.current = null;
     const requestId = ++lookupRequestRef.current;
     try {
-      const payload = await apiGet<BoardPayload>("/api/shared-rice-bins/" + encodeURIComponent(shareId));
+      const payload = await apiGet<SharedBoardPayload>("/api/shared-rice-bins/" + encodeURIComponent(shareId));
       if (requestId !== lookupRequestRef.current) return;
+      loadedSharedVersionRef.current = payload.version;
       setSharedBoard({ ...payload, readOnly: true });
       setSharedActiveSheetId(
         payload.sheets.find((sheet) => sheet.is_default === 1)?.id ?? payload.sheets[0]?.id ?? null
@@ -237,6 +361,7 @@ export function SharedRiceBinPanel({
       if (!overview) await loadFavoriteStatus(shareId);
     } catch (err) {
       if (requestId !== lookupRequestRef.current) return;
+      loadedSharedVersionRef.current = null;
       setSharedBoard(null);
       setSharedActiveSheetId(null);
       setSharedBoardFavorite(false);
@@ -381,6 +506,7 @@ export function SharedRiceBinPanel({
   }
 
   function handleSharedBoardClose() {
+    loadedSharedVersionRef.current = null;
     favoriteStatusRequestRef.current = null;
     setSharedBoard(null);
     setSharedActiveSheetId(null);

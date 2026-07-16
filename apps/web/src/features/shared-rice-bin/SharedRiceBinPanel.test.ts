@@ -7,7 +7,8 @@ import {
 } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiClientError } from "../../api/client";
 import {
   buildSharedRiceBinLink,
   extractSharedRiceBinId,
@@ -83,11 +84,15 @@ vi.mock("react", async (importOriginal) => {
   };
 });
 
-vi.mock("../../api/client", () => ({
-  apiDelete: api.apiDelete,
-  apiGet: api.apiGet,
-  apiPost: api.apiPost
-}));
+vi.mock("../../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api/client")>();
+  return {
+    ...actual,
+    apiDelete: api.apiDelete,
+    apiGet: api.apiGet,
+    apiPost: api.apiPost
+  };
+});
 
 const shareId = "AbCdEfGhIjKlMnOpQrStUv";
 const replacementShareId = "ZyXwVuTsRqPoNmLkJiHgFe";
@@ -190,10 +195,72 @@ function findButton(
   return button as ReactElement<{ onClick: () => void }>;
 }
 
-function createSharedBoardPayload(id = shareId): BoardPayload & { shareId: string } {
+function createSharedBoardPayload(
+  id = shareId,
+  version = 7
+): BoardPayload & { shareId: string; readOnly: true; version: number } {
   return {
     ...ownerBoard,
-    shareId: id
+    shareId: id,
+    readOnly: true,
+    version
+  };
+}
+
+function installFakeBrowser(initialVisibility: DocumentVisibilityState = "visible") {
+  let visibilityState = initialVisibility;
+  const windowListeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
+  const documentListeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
+
+  function addListener(
+    target: Map<string, Set<EventListenerOrEventListenerObject>>,
+    type: string,
+    listener: EventListenerOrEventListenerObject
+  ) {
+    const listeners = target.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+    listeners.add(listener);
+    target.set(type, listeners);
+  }
+
+  function removeListener(
+    target: Map<string, Set<EventListenerOrEventListenerObject>>,
+    type: string,
+    listener: EventListenerOrEventListenerObject
+  ) {
+    target.get(type)?.delete(listener);
+  }
+
+  function dispatch(target: Map<string, Set<EventListenerOrEventListenerObject>>, type: string) {
+    for (const listener of target.get(type) ?? []) {
+      if (typeof listener === "function") listener({ type } as Event);
+      else listener.handleEvent({ type } as Event);
+    }
+  }
+
+  vi.stubGlobal("window", {
+    addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
+      addListener(windowListeners, type, listener);
+    },
+    removeEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
+      removeListener(windowListeners, type, listener);
+    },
+    location: { origin: "https://riceark.pages.dev" }
+  });
+  vi.stubGlobal("document", {
+    addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
+      addListener(documentListeners, type, listener);
+    },
+    removeEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
+      removeListener(documentListeners, type, listener);
+    },
+    get visibilityState() {
+      return visibilityState;
+    }
+  });
+
+  return {
+    dispatchFocus: () => dispatch(windowListeners, "focus"),
+    dispatchVisibilityChange: () => dispatch(documentListeners, "visibilitychange")
   };
 }
 
@@ -217,6 +284,9 @@ beforeEach(() => {
     if (path === `/api/shared-rice-bins/${shareId}`) {
       return createSharedBoardPayload();
     }
+    if (path === `/api/shared-rice-bins/${shareId}/version`) {
+      return { version: 7 };
+    }
     if (path === `/api/board/share-favorites/${shareId}`) {
       return { favorite: true };
     }
@@ -230,6 +300,10 @@ beforeEach(() => {
     api.calls.push(path);
     return undefined;
   });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("extractSharedRiceBinId", () => {
@@ -354,6 +428,159 @@ describe("SharedRiceBinPanel", () => {
     ]);
     expect(api.calls).not.toContain(`/api/board/share-favorites/${shareId}`);
     expect(getNodeText(detail)).toContain("즐겨찾기 해제");
+  });
+
+  it("checks a visible shared board version on focus without reloading unchanged detail", async () => {
+    const browser = installFakeBrowser();
+
+    renderPanel({ initialShareId: shareId, sessionStatus: "anonymous" });
+    runCapturedEffects();
+    await flushPromises();
+
+    renderPanel({ initialShareId: shareId, sessionStatus: "anonymous" });
+    runCapturedEffects();
+    browser.dispatchFocus();
+    await flushPromises();
+
+    expect(api.calls).toEqual([
+      `/api/shared-rice-bins/${shareId}`,
+      `/api/shared-rice-bins/${shareId}/version`
+    ]);
+  });
+
+  it("deduplicates visible focus events and reloads changed shared detail exactly once", async () => {
+    const browser = installFakeBrowser();
+    const versionRequest = deferred<{ version: number }>();
+    let detailReads = 0;
+    api.apiGet.mockImplementation(async (path: string) => {
+      api.calls.push(path);
+      if (path === `/api/shared-rice-bins/${shareId}`) {
+        detailReads += 1;
+        return createSharedBoardPayload(shareId, detailReads === 1 ? 7 : 8);
+      }
+      if (path === `/api/shared-rice-bins/${shareId}/version`) return versionRequest.promise;
+      return {};
+    });
+
+    renderPanel({ initialShareId: shareId, sessionStatus: "anonymous" });
+    runCapturedEffects();
+    await flushPromises();
+    renderPanel({ initialShareId: shareId, sessionStatus: "anonymous" });
+    runCapturedEffects();
+
+    browser.dispatchVisibilityChange();
+    browser.dispatchFocus();
+    expect(api.calls.filter((path) => path.endsWith("/version"))).toHaveLength(1);
+
+    versionRequest.resolve({ version: 8 });
+    await flushPromises();
+
+    expect(api.calls.filter((path) => path === `/api/shared-rice-bins/${shareId}`)).toHaveLength(2);
+    expect(hooks.stateUpdates).toContainEqual(expect.objectContaining({ shareId, version: 8, readOnly: true }));
+  });
+
+  it("clears a shared board and shows a revoked lookup error when focus revalidation returns 404", async () => {
+    const browser = installFakeBrowser();
+    const onSharedBoardClosed = vi.fn();
+    api.apiGet.mockImplementation(async (path: string) => {
+      api.calls.push(path);
+      if (path === `/api/shared-rice-bins/${shareId}`) return createSharedBoardPayload();
+      if (path === `/api/shared-rice-bins/${shareId}/version`) {
+        throw new ApiClientError(404, "not_found", "Shared board not found");
+      }
+      return {};
+    });
+
+    renderPanel({ initialShareId: shareId, onSharedBoardClosed, sessionStatus: "anonymous" });
+    runCapturedEffects();
+    await flushPromises();
+    renderPanel({ initialShareId: shareId, onSharedBoardClosed, sessionStatus: "anonymous" });
+    runCapturedEffects();
+
+    browser.dispatchFocus();
+    await flushPromises();
+
+    const lookup = renderPanel({ initialShareId: null, onSharedBoardClosed, sessionStatus: "anonymous" });
+    runCapturedEffects();
+    expect(getNodeText(lookup)).toContain("공유가 중단되었거나 삭제된 쌀통입니다.");
+    expect(getNodeText(lookup)).not.toContain("읽기 전용");
+    expect(onSharedBoardClosed).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not revalidate a shared board while the document is hidden", async () => {
+    const browser = installFakeBrowser("hidden");
+
+    renderPanel({ initialShareId: shareId, sessionStatus: "anonymous" });
+    runCapturedEffects();
+    await flushPromises();
+    renderPanel({ initialShareId: shareId, sessionStatus: "anonymous" });
+    runCapturedEffects();
+
+    browser.dispatchVisibilityChange();
+    browser.dispatchFocus();
+    await flushPromises();
+
+    expect(api.calls).toEqual([`/api/shared-rice-bins/${shareId}`]);
+  });
+
+  it("refreshes the authenticated sharing overview once on visible hub focus", async () => {
+    const browser = installFakeBrowser();
+
+    renderPanel({ sessionStatus: "authenticated" });
+    runCapturedEffects();
+    await flushPromises();
+
+    browser.dispatchFocus();
+    await flushPromises();
+
+    expect(api.calls).toEqual([
+      "/api/board/sharing-overview",
+      "/api/board/sharing-overview"
+    ]);
+  });
+
+  it("refreshes the in-memory overview when returning from detail to the hub", async () => {
+    api.apiGet.mockImplementation(async (path: string) => {
+      api.calls.push(path);
+      if (path === "/api/board/sharing-overview") {
+        return {
+          sheets: [{ ...ownerBoard.sheets[0]!, version: 7 }],
+          shares: [],
+          favorites: [{
+            shareId,
+            sheetId: "sheet-1",
+            sheetName: "친구 보드",
+            ownerDisplayName: "친구",
+            createdAt: "2026-07-16T00:00:00.000Z"
+          }]
+        };
+      }
+      if (path === `/api/shared-rice-bins/${shareId}`) return createSharedBoardPayload();
+      return {};
+    });
+
+    renderPanel({ sessionStatus: "authenticated" });
+    runCapturedEffects();
+    await flushPromises();
+    const hub = renderPanel({ sessionStatus: "authenticated" });
+    findButton(hub, "열기", "친구 보드").props.onClick();
+    await flushPromises();
+
+    const detail = renderPanel({ sessionStatus: "authenticated" });
+    runCapturedEffects();
+    findButton(detail, "조회로 돌아가기").props.onClick();
+
+    renderPanel({ sessionStatus: "authenticated" });
+    runCapturedEffects();
+    await flushPromises();
+
+    expect(api.calls.filter((path) => path === "/api/board/sharing-overview")).toHaveLength(2);
+  });
+
+  it("does not create a polling interval for shared state revalidation", () => {
+    const source = readFileSync(new URL("./SharedRiceBinPanel.tsx", import.meta.url), "utf8");
+
+    expect(source).not.toContain("setInterval(");
   });
 
   it("renders anonymous lookup hub without any overview request", async () => {
