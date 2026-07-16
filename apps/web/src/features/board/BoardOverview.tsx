@@ -72,9 +72,22 @@ interface Props {
   enqueueCellState?: ((patch: BoardCellStatePatch) => void) | undefined;
   enqueueCompletion?: ((patch: BoardCompletionPatch) => void) | undefined;
   onBoardChanged?: () => Promise<BoardPayload | null> | void;
+  onBoardSheetStale?: ((sheetId: string) => Promise<void> | void) | undefined;
   readOnly?: boolean | undefined;
   runMutation?: BoardMutationRunner | undefined;
   writeLocked?: boolean | undefined;
+}
+
+export async function recoverFailedBoardNoteMutation(
+  sheetId: string,
+  onBoardSheetStale?: ((sheetId: string) => Promise<void> | void) | undefined,
+  onBoardChanged?: (() => Promise<BoardPayload | null> | void) | undefined
+): Promise<void> {
+  if (onBoardSheetStale) {
+    await onBoardSheetStale(sheetId);
+    return;
+  }
+  await onBoardChanged?.();
 }
 
 export function isBoardInteractionLocked({
@@ -1273,6 +1286,7 @@ export function BoardOverview({
   enqueueCellState,
   enqueueCompletion,
   onBoardChanged,
+  onBoardSheetStale,
   readOnly = false,
   runMutation = runBoardMutationDirect,
   writeLocked = false
@@ -1914,6 +1928,7 @@ export function BoardOverview({
         await refreshBoard();
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "메모를 추가하지 못했습니다.");
+        await recoverFailedBoardNoteMutation(activeSheet.id, onBoardSheetStale, onBoardChanged);
         throw err;
       } finally {
         setPendingAction(null);
@@ -1944,7 +1959,7 @@ export function BoardOverview({
         await apiPatch("/api/board/notes/" + encodeURIComponent(noteId), buildBoardNoteSavePatch(currentNote, input));
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "메모를 저장하지 못했습니다.");
-        await refreshBoard();
+        await recoverFailedBoardNoteMutation(currentNote.sheet_id, onBoardSheetStale, onBoardChanged);
         throw err;
       }
     });
@@ -1952,10 +1967,18 @@ export function BoardOverview({
 
   async function handleNoteDelete(noteId: string) {
     return runMutation(async () => {
-      await apiDelete("/api/board/notes/" + encodeURIComponent(noteId));
-      setNotes((current) => current.filter((note) => note.id !== noteId));
-      setEditingNote(null);
-      setOpenNoteMenuId((current) => (current === noteId ? null : current));
+      const currentNote = notes.find((note) => note.id === noteId);
+      if (!currentNote) return;
+      try {
+        await apiDelete("/api/board/notes/" + encodeURIComponent(noteId));
+        setNotes((current) => current.filter((note) => note.id !== noteId));
+        setEditingNote(null);
+        setOpenNoteMenuId((current) => (current === noteId ? null : current));
+      } catch (err) {
+        setFormError(err instanceof Error ? err.message : "메모를 삭제하지 못했습니다.");
+        await recoverFailedBoardNoteMutation(currentNote.sheet_id, onBoardSheetStale, onBoardChanged);
+        throw err;
+      }
     });
   }
 

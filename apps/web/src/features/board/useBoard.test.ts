@@ -514,12 +514,13 @@ describe("sheet-aware board session", () => {
   it("does not bootstrap while initially disabled, retains same-user cache, and clears on disposal", async () => {
     const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
     const getBootstrap = vi.fn(async () => bootstrapPayload(sheetPayload("sheet-1"), [sheet1]));
+    const getVersions = vi.fn(async () => versionSummary([sheet1]));
     const session = createBoardSession({
       userId: "user-1",
       api: {
         getBootstrap,
         getSheet: async () => sheetPayload("sheet-1"),
-        getVersions: async () => versionSummary([sheet1])
+        getVersions
       },
       runtime: null
     });
@@ -540,6 +541,7 @@ describe("sheet-aware board session", () => {
     expect(session.snapshot()).toMatchObject({ data: null, hasPendingWrites: true });
     await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
     expect(getBootstrap).toHaveBeenCalledTimes(1);
+    expect(getVersions).toHaveBeenCalledTimes(1);
     expect(session.snapshot().data?.completions).toHaveLength(1);
 
     session.dispose();
@@ -624,6 +626,37 @@ describe("sheet-aware board session", () => {
     expect(session.snapshot().data?.completions).toEqual([
       expect.objectContaining({ row_item_id: "pending-row", completed: 1 })
     ]);
+    session.dispose();
+  });
+
+  it("forces a cached fallback sheet refresh when logout recovery deletes the prior active sheet", async () => {
+    const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const sheet2 = manifestSheet("sheet-2", 1, { sort_order: 1 });
+    const calls: string[] = [];
+    const session = createBoardSession({
+      userId: "user-1",
+      api: {
+        getBootstrap: async () =>
+          bootstrapPayload(sheetPayload("sheet-1"), [sheet1, sheet2]),
+        getSheet: async (sheetId) => {
+          calls.push(`sheet:${sheetId}`);
+          return sheetPayload(sheetId);
+        },
+        getVersions: async () => {
+          calls.push("versions");
+          return versionSummary([sheet2], 2);
+        }
+      },
+      runtime: null
+    });
+    await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
+    await session.selectSheet("sheet-2");
+    await session.selectSheet("sheet-1");
+
+    await session.reconcileAfterLogoutFailure();
+
+    expect(session.snapshot().activeSheetId).toBe("sheet-2");
+    expect(calls).toEqual(["sheet:sheet-2", "versions", "sheet:sheet-2"]);
     session.dispose();
   });
 });

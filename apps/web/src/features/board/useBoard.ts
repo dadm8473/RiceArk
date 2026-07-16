@@ -62,12 +62,9 @@ type BoardVersionUpdate = Pick<BoardMutationVersions, "sheets" | "manifestVersio
   settings?: BoardDisplaySettings | undefined;
 };
 
-export interface BoardTrackedVersionSummary {
-  manifestVersion: number;
-  sheets: Array<{ id: string; version: number }>;
-  periodFingerprint: string;
-  settings?: BoardDisplaySettings | undefined;
-}
+export type BoardTrackedVersionSummary = Omit<BoardVersionSummary, "sheets"> & {
+  sheets: Array<Pick<BoardVersionSummary["sheets"][number], "id" | "version">>;
+};
 
 export function mergeBoardVersionSummary(
   current: BoardTrackedVersionSummary | null,
@@ -1420,8 +1417,11 @@ export function createBoardSession(options: CreateBoardSessionOptions): BoardSes
     if (disposed) return;
     const generation = ++configurationGeneration;
     const hadBootstrapped = bootstrapped;
+    const wasEnabled = enabled;
     const wasPolling = pollingOwner?.isRunning() ?? false;
     const shouldPoll = configuration.enabled && configuration.pollingEnabled;
+    const shouldRevalidateOnReturn =
+      hadBootstrapped && !wasEnabled && configuration.enabled;
     if (!shouldPoll) {
       pollingOwner?.stop();
       clearBoundaryTimer();
@@ -1452,8 +1452,12 @@ export function createBoardSession(options: CreateBoardSessionOptions): BoardSes
     if (disposed || generation !== configurationGeneration || !enabled) return;
     await reconcileRequestedRoute(routeChanged);
     if (disposed || generation !== configurationGeneration || !enabled) return;
+    if (shouldRevalidateOnReturn) {
+      await controller.revalidate("view-return");
+      if (disposed || generation !== configurationGeneration || !enabled) return;
+    }
     if (shouldPoll && pollingOwner && !wasPolling) {
-      pollingOwner.start(hadBootstrapped);
+      pollingOwner.start(hadBootstrapped && !shouldRevalidateOnReturn);
       scheduleBoundary();
     }
   };
@@ -1481,11 +1485,19 @@ export function createBoardSession(options: CreateBoardSessionOptions): BoardSes
     reload,
     reconcileAfterLogoutFailure: async () => {
       if (disposed || !bootstrapped) return buildSnapshot().data;
-      const before = getActiveBoardSheetPayload(controller.snapshot());
+      const beforeState = controller.snapshot();
       await controller.revalidate("logout-recovery");
       const afterState = controller.snapshot();
       const after = getActiveBoardSheetPayload(afterState);
-      if (afterState.activeSheetId !== null && before === after) {
+      const beforeActivePayload =
+        afterState.activeSheetId === null
+          ? null
+          : getBoardSheetCacheEntry(
+              beforeState.cache,
+              options.userId,
+              afterState.activeSheetId
+            )?.payload ?? null;
+      if (afterState.activeSheetId !== null && beforeActivePayload === after) {
         await controller.markSheetStale(afterState.activeSheetId);
       }
       return buildSnapshot().data;

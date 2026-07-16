@@ -532,12 +532,14 @@ describe("App", () => {
     const enqueueCompletion = vi.fn();
     const enqueueCellState = vi.fn();
     const reload = vi.fn();
+    const markSheetStale = vi.fn();
     const runMutation = vi.fn();
 
-    expect(getOwnerBoardInteractionProps(true, { enqueueCompletion, enqueueCellState, reload }, runMutation)).toEqual({
+    expect(getOwnerBoardInteractionProps(true, { enqueueCompletion, enqueueCellState, reload, markSheetStale }, runMutation)).toEqual({
       enqueueCompletion,
       enqueueCellState,
       onBoardChanged: reload,
+      onBoardSheetStale: markSheetStale,
       runMutation,
       writeLocked: true
     });

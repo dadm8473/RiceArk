@@ -100,7 +100,7 @@ export function getOwnerBoardInteractionProps(
   logoutPending: boolean,
   board: Pick<
     ReturnType<typeof useBoard>,
-    "enqueueCellState" | "enqueueCompletion" | "reload"
+    "enqueueCellState" | "enqueueCompletion" | "markSheetStale" | "reload"
   >,
   runMutation: BoardMutationRunner
 ) {
@@ -108,6 +108,7 @@ export function getOwnerBoardInteractionProps(
     enqueueCellState: board.enqueueCellState,
     enqueueCompletion: board.enqueueCompletion,
     onBoardChanged: board.reload,
+    onBoardSheetStale: board.markSheetStale,
     runMutation,
     writeLocked: logoutPending
   };

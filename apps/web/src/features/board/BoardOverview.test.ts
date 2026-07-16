@@ -2541,4 +2541,34 @@ describe("BoardOverview", () => {
 
     expect(html).toContain('aria-checked="mixed"');
   });
+
+  it("routes failed note mutations to the owning sheet before falling back to a broad reload", async () => {
+    const recover = (BoardOverviewModule as unknown as {
+      recoverFailedBoardNoteMutation?: (
+        sheetId: string,
+        onBoardSheetStale?: (sheetId: string) => Promise<void> | void,
+        onBoardChanged?: () => Promise<BoardPayload | null> | void
+      ) => Promise<void>;
+    }).recoverFailedBoardNoteMutation;
+    expect(recover).toBeTypeOf("function");
+    if (!recover) return;
+    const markSheetStale = vi.fn(async () => undefined);
+    const reload = vi.fn(async () => board);
+
+    await recover("sheet-2", markSheetStale, reload);
+
+    expect(markSheetStale).toHaveBeenCalledWith("sheet-2");
+    expect(reload).not.toHaveBeenCalled();
+
+    await recover("sheet-3", undefined, reload);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses sheet-scoped recovery in every failed note mutation path", () => {
+    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+
+    expect(source).toMatch(/handleCreateNote[\s\S]*?catch \(err\)[\s\S]*?recoverFailedBoardNoteMutation\(activeSheet\.id/);
+    expect(source).toMatch(/handleNoteSave[\s\S]*?catch \(err\)[\s\S]*?recoverFailedBoardNoteMutation\(currentNote\.sheet_id/);
+    expect(source).toMatch(/handleNoteDelete[\s\S]*?catch \(err\)[\s\S]*?recoverFailedBoardNoteMutation\(currentNote\.sheet_id/);
+  });
 });
