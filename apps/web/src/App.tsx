@@ -261,6 +261,10 @@ export function App() {
     requestedSheetId: routeSheetId,
     onReplaceSheetId: handleReplaceBoardSheetId
   });
+  const handleBoardSheetSelected = useCallback((sheetId: string) => {
+    applyAppRoute({ activeView: "board", shareId: null, sheetId }, "push");
+    void board.selectSheet(sheetId).catch(() => undefined);
+  }, [applyAppRoute, board.selectSheet]);
   const boardMutationBarrierRef = useRef<BoardMutationBarrier | null>(null);
   if (!boardMutationBarrierRef.current) {
     boardMutationBarrierRef.current = createBoardMutationBarrier();
@@ -465,7 +469,9 @@ export function App() {
               {!board.data && !board.error ? <p>로스트아크 숙제 체크리스트를 불러오는 중입니다.</p> : null}
               {board.data ? (
                 <BoardOverview
+                  activeSheetId={board.activeSheetId}
                   board={board.data}
+                  onSheetSelected={handleBoardSheetSelected}
                   {...getOwnerBoardInteractionProps(logoutPending, board, boardMutationBarrier.run)}
                 />
               ) : null}

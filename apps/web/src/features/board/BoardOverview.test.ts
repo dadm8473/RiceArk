@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { createElement } from "react";
+import { Children, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as BoardOverviewModule from "./BoardOverview";
@@ -160,6 +160,21 @@ function getRefreshBoardTableCharactersRequest(): RefreshBoardTableCharactersReq
   }).refreshBoardTableCharactersRequest;
   expect(candidate).toBeTypeOf("function");
   if (!candidate) throw new Error("refreshBoardTableCharactersRequest is unavailable");
+  return candidate;
+}
+
+type BoardSheetTabsComponent = (props: {
+  activeSheetId: string | null;
+  onSheetSelected: (sheetId: string) => void;
+  sheets: BoardPayload["sheets"];
+}) => ReactElement;
+
+function getBoardSheetTabs(): BoardSheetTabsComponent {
+  const candidate = (BoardOverviewModule as unknown as {
+    BoardSheetTabs?: BoardSheetTabsComponent;
+  }).BoardSheetTabs;
+  expect(candidate).toBeTypeOf("function");
+  if (!candidate) throw new Error("BoardSheetTabs is unavailable");
   return candidate;
 }
 
@@ -1153,6 +1168,95 @@ describe("BoardOverview", () => {
     expect(html).not.toContain("열 1");
     expect(html).not.toContain("행 높이 40px");
     expect(html).not.toContain("열 너비 132px");
+  });
+
+  it("delegates tab clicks without owning browser history", () => {
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+    const onSheetSelected = vi.fn();
+    vi.stubGlobal("window", { history: { pushState, replaceState } });
+    const tabs = getBoardSheetTabs()({
+      activeSheetId: "sheet-1",
+      onSheetSelected,
+      sheets: [
+        ...board.sheets,
+        { id: "sheet-2", name: "부캐", sort_order: 10, is_default: 0 }
+      ]
+    });
+    const buttons = Children.toArray((tabs.props as { children?: ReactNode }).children)
+      .filter((child): child is ReactElement => isValidElement(child));
+    const secondTab = buttons[1] as ReactElement<{ onClick: () => void }>;
+
+    secondTab.props.onClick();
+
+    expect(onSheetSelected).toHaveBeenCalledTimes(1);
+    expect(onSheetSelected).toHaveBeenCalledWith("sheet-2");
+    expect(pushState).not.toHaveBeenCalled();
+    expect(replaceState).not.toHaveBeenCalled();
+  });
+
+  it("renders only the payload selected by the controlled active sheet prop", () => {
+    const secondSheet = { id: "sheet-2", name: "부캐", sort_order: 10, is_default: 0 };
+    const secondTable = {
+      ...board.tables[0]!,
+      id: "table-2",
+      sheet_id: secondSheet.id,
+      name: "두 번째 표"
+    };
+    const controlledBoard: BoardPayload = {
+      ...board,
+      sheets: [...board.sheets, secondSheet],
+      tables: [{ ...board.tables[0]!, name: "첫 번째 표" }, secondTable],
+      axisItems: [
+        ...board.axisItems,
+        ...board.axisItems.map((item) => ({
+          ...item,
+          id: `${item.id}-2`,
+          table_id: secondTable.id,
+          character_id: item.character_id ? `${item.character_id}-2` : null,
+          task_id: item.task_id ? `${item.task_id}-2` : null
+        }))
+      ]
+    };
+
+    const firstHtml = renderToStaticMarkup(createElement(BoardOverview, {
+      activeSheetId: "sheet-1",
+      board: controlledBoard,
+      onSheetSelected: () => undefined
+    }));
+    const secondHtml = renderToStaticMarkup(createElement(BoardOverview, {
+      activeSheetId: "sheet-2",
+      board: controlledBoard,
+      onSheetSelected: () => undefined
+    }));
+    const backHtml = renderToStaticMarkup(createElement(BoardOverview, {
+      activeSheetId: "sheet-1",
+      board: controlledBoard,
+      onSheetSelected: () => undefined
+    }));
+
+    expect(firstHtml).toContain("첫 번째 표");
+    expect(firstHtml).not.toContain("두 번째 표");
+    expect(secondHtml).toContain("두 번째 표");
+    expect(secondHtml).not.toContain("첫 번째 표");
+    expect(backHtml).toContain("첫 번째 표");
+    expect(backHtml).not.toContain("두 번째 표");
+  });
+
+  it("contains no URL parsing or history ownership and refreshes before selecting a created sheet", () => {
+    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+    const createSheetBlock = source.slice(
+      source.indexOf("async function handleCreateSheet"),
+      source.indexOf("async function handleUpdateSheet")
+    );
+
+    expect(source).not.toContain("getBoardSheetIdFromUrl");
+    expect(source).not.toContain("getBoardSheetRouteUrl");
+    expect(source).not.toContain("getBoardHistoryState");
+    expect(source).not.toContain('addEventListener("popstate"');
+    expect(source).not.toContain("window.history.pushState");
+    expect(createSheetBlock).not.toContain("setActiveSheetId");
+    expect(createSheetBlock).toMatch(/const sheet = await apiPost[\s\S]*await refreshBoard\(\);[\s\S]*onSheetSelected\(sheet\.id\)/);
   });
 
   it("renders board zoom controls at the far right of the tab bar without server persistence", () => {

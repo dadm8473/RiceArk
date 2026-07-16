@@ -65,14 +65,17 @@ import {
   type BoardMutationRunner,
   runBoardMutationDirect
 } from "./mutationBarrier";
+import { indexBoardPayloadByTable } from "./boardIndexes";
 import type { BoardAxis, BoardAxisItem, BoardCellState, BoardNote, BoardOrientation, BoardPayload, BoardSheet, BoardTable } from "./types";
 
 interface Props {
   board: BoardPayload;
+  activeSheetId?: string | null | undefined;
   enqueueCellState?: ((patch: BoardCellStatePatch) => void) | undefined;
   enqueueCompletion?: ((patch: BoardCompletionPatch) => void) | undefined;
   onBoardChanged?: () => Promise<BoardPayload | null> | void;
   onBoardSheetStale?: ((sheetId: string) => Promise<void> | void) | undefined;
+  onSheetSelected?: ((sheetId: string) => void) | undefined;
   readOnly?: boolean | undefined;
   runMutation?: BoardMutationRunner | undefined;
   writeLocked?: boolean | undefined;
@@ -518,26 +521,30 @@ export interface BoardCellMarkBrush {
   memo: string;
 }
 
-export function getBoardSheetIdFromUrl(href: string): string | null {
-  const url = new URL(href, "https://riceark.pages.dev");
-  const sheetId = url.searchParams.get("sheet");
-  return sheetId?.trim() ? sheetId : null;
-}
-
-function getBoardSheetRouteUrl(sheetId: string | null, href: string): string {
-  const url = new URL(href, "https://riceark.pages.dev");
-  url.pathname = "/";
-  url.searchParams.delete("view");
-  url.searchParams.delete("share");
-  url.searchParams.delete("sheet");
-  if (sheetId?.trim()) url.searchParams.set("sheet", sheetId);
-  return `${url.pathname}${url.search}${url.hash}`;
-}
-
-function getBoardHistoryState(currentState: unknown): Record<string, unknown> {
-  return currentState && typeof currentState === "object" && !Array.isArray(currentState)
-    ? { ...(currentState as Record<string, unknown>), ricearkRoute: true }
-    : { ricearkRoute: true };
+export function BoardSheetTabs({
+  activeSheetId,
+  onSheetSelected,
+  sheets
+}: {
+  activeSheetId: string | null;
+  onSheetSelected: (sheetId: string) => void;
+  sheets: BoardPayload["sheets"];
+}) {
+  return (
+    <div className="sheet-tab-list">
+      {sheets.map((sheet) => (
+        <button
+          key={sheet.id}
+          type="button"
+          className={`sheet-tab${sheet.id === activeSheetId ? " active" : ""}`}
+          aria-current={sheet.id === activeSheetId ? "page" : undefined}
+          onClick={() => onSheetSelected(sheet.id)}
+        >
+          {sheet.name}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 type BoardCellMarkPaintHandler = (
@@ -1287,10 +1294,12 @@ function isBoardTableLocked(table: BoardTable): boolean {
 
 export function BoardOverview({
   board,
+  activeSheetId: controlledActiveSheetId,
   enqueueCellState,
   enqueueCompletion,
   onBoardChanged,
   onBoardSheetStale,
+  onSheetSelected = () => undefined,
   readOnly = false,
   runMutation = runBoardMutationDirect,
   writeLocked = false
@@ -1305,9 +1314,6 @@ export function BoardOverview({
   const [axisItems, setAxisItems] = useState(board.axisItems);
   const [tables, setTables] = useState(board.tables);
   const [notes, setNotes] = useState(board.notes ?? []);
-  const [activeSheetId, setActiveSheetId] = useState<string | null>(() =>
-    isReadOnly || typeof window === "undefined" ? null : getBoardSheetIdFromUrl(window.location.href)
-  );
   const [tableName, setTableName] = useState("");
   const [tableOrientation, setTableOrientation] = useState<BoardOrientation>("custom");
   const [tableDefaultRowHeight, setTableDefaultRowHeight] = useState("40");
@@ -1392,34 +1398,19 @@ export function BoardOverview({
     () => board.sheets.slice().sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name)),
     [board.sheets]
   );
+  const boardIndexes = useMemo(
+    () => indexBoardPayloadByTable({ tables, notes, axisItems, cellStates, completions }),
+    [tables, notes, axisItems, cellStates, completions]
+  );
+  const activeSheetId =
+    controlledActiveSheetId ??
+    sortedSheets.find((sheet) => sheet.is_default === 1)?.id ??
+    sortedSheets[0]?.id ??
+    null;
   const activeSheet =
     sortedSheets.find((sheet) => sheet.id === activeSheetId) ??
     sortedSheets.find((sheet) => sheet.is_default === 1) ??
     sortedSheets[0];
-
-  function handleSheetSelected(sheetId: string) {
-    setActiveSheetId(sheetId);
-    if (isReadOnly || typeof window === "undefined") return;
-
-    const nextUrl = getBoardSheetRouteUrl(sheetId, window.location.href);
-    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    if (nextUrl !== currentUrl) {
-      window.history.pushState(getBoardHistoryState(window.history.state), "", nextUrl);
-    }
-  }
-
-  useEffect(() => {
-    if (isReadOnly || typeof window === "undefined") return;
-
-    function handlePopState() {
-      setActiveSheetId(getBoardSheetIdFromUrl(window.location.href));
-    }
-
-    window.addEventListener("popstate", handlePopState);
-    return () => {
-      window.removeEventListener("popstate", handlePopState);
-    };
-  }, [isReadOnly]);
 
   useEffect(() => {
     setCompletions(board.completions);
@@ -1786,8 +1777,8 @@ export function BoardOverview({
       setFormError(null);
       try {
         const sheet = await apiPost<{ id: string }>("/api/board/sheets", { name });
-        setActiveSheetId(sheet.id);
         await refreshBoard();
+        onSheetSelected(sheet.id);
       } catch (err) {
         const message = err instanceof Error ? err.message : "탭을 추가하지 못했습니다.";
         setFormError(message);
@@ -1824,7 +1815,6 @@ export function BoardOverview({
       setFormError(null);
       try {
         await apiDelete("/api/board/sheets/" + encodeURIComponent(sheetId));
-        if (activeSheet?.id === sheetId) setActiveSheetId(null);
         await refreshBoard();
       } catch (err) {
         const message = err instanceof Error ? err.message : "탭을 삭제하지 못했습니다.";
@@ -2337,11 +2327,11 @@ export function BoardOverview({
     );
   }
 
-  const activeTables = tables
-    .filter((table) => table.sheet_id === activeSheet.id)
+  const activeTables = (boardIndexes.tablesBySheet.get(activeSheet.id) ?? [])
+    .slice()
     .sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name));
-  const activeNotes = notes
-    .filter((note) => note.sheet_id === activeSheet.id)
+  const activeNotes = (boardIndexes.notesBySheet.get(activeSheet.id) ?? [])
+    .slice()
     .sort((left, right) => left.sort_order - right.sort_order || left.title.localeCompare(right.title));
 
   const boardCanvas = (
@@ -2358,9 +2348,9 @@ export function BoardOverview({
               const isMarkEditMode = !isReadOnly && markEditTableId === table.id && !tableLocked;
               const tableGrid = (
                 <BoardTableGrid
-                  axisItems={axisItems}
-                  cellStates={cellStates}
-                  completions={completions}
+                  axisItems={boardIndexes.axisItemsByTable.get(table.id) ?? []}
+                  cellStates={boardIndexes.cellStatesByTable.get(table.id) ?? []}
+                  completions={boardIndexes.completionsByTable.get(table.id) ?? []}
                   eventNotificationSettings={getEventNotificationSettings(table.id)}
                   isMarkEditMode={isMarkEditMode}
                   isReorderMode={isReorderMode}
@@ -2838,19 +2828,11 @@ export function BoardOverview({
     >
       {writeLocked ? <p role="status">로그아웃 중에는 보드를 편집할 수 없습니다.</p> : null}
       <div className="sheet-tab-bar" aria-label="탭 선택">
-        <div className="sheet-tab-list">
-          {sortedSheets.map((sheet) => (
-            <button
-              key={sheet.id}
-              type="button"
-              className={`sheet-tab${sheet.id === activeSheet.id ? " active" : ""}`}
-              aria-current={sheet.id === activeSheet.id ? "page" : undefined}
-              onClick={() => handleSheetSelected(sheet.id)}
-            >
-              {sheet.name}
-            </button>
-          ))}
-        </div>
+        <BoardSheetTabs
+          activeSheetId={activeSheet.id}
+          onSheetSelected={onSheetSelected}
+          sheets={sortedSheets}
+        />
         {!isReadOnly ? <button className="sheet-settings-button" type="button" aria-label="탭 설정" title="탭 설정" onClick={() => setIsSheetSettingsOpen(true)}>
           <Settings aria-hidden="true" size={16} />
           설정

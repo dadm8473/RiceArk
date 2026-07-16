@@ -455,10 +455,13 @@ describe("App", () => {
     hooks.SharedRiceBinPanel.mockClear();
     hooks.useSession.mockClear();
     hooks.useBoard.mockReturnValue({
+      activeSheetId: "sheet-1",
       data: board,
       error: null,
       reload: vi.fn(),
       reconcileAfterLogoutFailure: vi.fn(async () => null),
+      selectSheet: vi.fn(async () => undefined),
+      markSheetStale: vi.fn(async () => undefined),
       enqueueCompletion: vi.fn(),
       enqueueCellState: vi.fn(),
       flushPendingWrites: vi.fn(async () => undefined),
@@ -723,6 +726,62 @@ describe("App", () => {
       error: null
     });
 
+    renderToStaticMarkup(createElement(App));
+
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({
+      enabled: true,
+      pollingEnabled: true,
+      userId: "user-1",
+      requestedSheetId: "sheet-2",
+      onReplaceSheetId: expect.any(Function)
+    });
+  });
+
+  it("pushes controlled tab selections through App and into the useBoard route state", () => {
+    const browser = installBrowserWindow("https://riceark.pages.dev/?foo=1&sheet=sheet-1#memo");
+    const selectSheet = vi.fn(async () => undefined);
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-1", displayName: "RiceArk", avatarUrl: null, isAdmin: false },
+      error: null
+    });
+    hooks.useBoard.mockReturnValue({
+      ...hooks.useBoard(),
+      activeSheetId: "sheet-1",
+      selectSheet,
+      data: {
+        ...board,
+        sheets: [
+          { id: "sheet-1", name: "기본", sort_order: 0, is_default: 1 },
+          { id: "sheet-2", name: "부캐", sort_order: 10, is_default: 0 }
+        ]
+      }
+    });
+
+    renderToStaticMarkup(createElement(App));
+    const overviewProps = hooks.BoardOverview.mock.lastCall?.[0] as {
+      activeSheetId?: string | null;
+      onSheetSelected?: (sheetId: string) => void;
+    };
+
+    expect(overviewProps.activeSheetId).toBe("sheet-1");
+    expect(overviewProps.onSheetSelected).toBeTypeOf("function");
+    overviewProps.onSheetSelected?.("sheet-2");
+
+    expect(hooks.stateUpdates).toContain("sheet-2");
+    expect(browser.pushState).toHaveBeenCalledWith(expect.any(Object), "", "/?foo=1&sheet=sheet-2#memo");
+    expect(browser.replaceState).not.toHaveBeenCalled();
+    expect(selectSheet).toHaveBeenCalledWith("sheet-2");
+
+    const pushedUrl = browser.pushState.mock.calls.at(-1)?.[2];
+    expect(pushedUrl).toBeTypeOf("string");
+    const next = new URL(String(pushedUrl), window.location.href);
+    Object.assign(window.location, {
+      hash: next.hash,
+      href: next.href,
+      pathname: next.pathname,
+      search: next.search
+    });
     renderToStaticMarkup(createElement(App));
 
     expect(hooks.useBoard).toHaveBeenLastCalledWith({
