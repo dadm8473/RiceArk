@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, Calculator, FileText } from "lucide-react";
 import { apiPatch, apiPostNoContent } from "./api/client";
 import { AdminDashboard } from "./features/admin/AdminDashboard";
@@ -227,8 +227,28 @@ export function App() {
   const initialRouteRef = useRef<AppRouteState>(typeof window === "undefined" ? { activeView: "board", shareId: null, sheetId: null } : getAppRouteState(window.location.href));
   const seededSharedHistoryRef = useRef(false);
   const [routeShareId, setRouteShareId] = useState<string | null>(() => initialRouteRef.current.shareId);
+  const [routeSheetId, setRouteSheetId] = useState<string | null>(() => initialRouteRef.current.sheetId);
   const [activeView, setActiveView] = useState<AppView>(() => initialRouteRef.current.activeView);
   const [sharedRiceBinLookupResetKey, setSharedRiceBinLookupResetKey] = useState(0);
+  const applyAppRoute = useCallback((
+    route: AppRouteState,
+    mode: "push" | "replace" | "pop" = "push"
+  ) => {
+    setActiveView(route.activeView);
+    setRouteShareId(route.shareId);
+    setRouteSheetId(route.sheetId);
+    if (typeof window === "undefined" || mode === "pop") return;
+
+    const nextUrl = getAppRouteUrl(route, window.location.href);
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextUrl === currentUrl) return;
+
+    const historyMethod = mode === "replace" ? "replaceState" : "pushState";
+    window.history[historyMethod](getHistoryState(window.history.state), "", nextUrl);
+  }, []);
+  const handleReplaceBoardSheetId = useCallback((sheetId: string | null) => {
+    applyAppRoute({ activeView: "board", shareId: null, sheetId }, "replace");
+  }, [applyAppRoute]);
   const isAuthenticated = session.status === "authenticated";
   const isAdmin = isAuthenticated && session.user.isAdmin === true;
   const isBoardEnabled = isAuthenticated && (activeView === "board" || activeView === "shared");
@@ -236,7 +256,9 @@ export function App() {
   const board = useBoard({
     enabled: isBoardEnabled,
     pollingEnabled: isBoardPollingEnabled,
-    userId: isAuthenticated ? session.user.id : null
+    userId: isAuthenticated ? session.user.id : null,
+    requestedSheetId: routeSheetId,
+    onReplaceSheetId: handleReplaceBoardSheetId
   });
   const boardMutationBarrierRef = useRef<BoardMutationBarrier | null>(null);
   if (!boardMutationBarrierRef.current) {
@@ -253,19 +275,6 @@ export function App() {
     getStoredAppTheme(typeof window === "undefined" ? null : window.localStorage)
   );
   const authErrorMessage = typeof window === "undefined" ? null : getAuthErrorMessage(window.location.search);
-
-  const applyAppRoute = (route: AppRouteState, mode: "push" | "replace" = "push") => {
-    setActiveView(route.activeView);
-    setRouteShareId(route.shareId);
-    if (typeof window === "undefined") return;
-
-    const nextUrl = getAppRouteUrl(route, window.location.href);
-    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    if (nextUrl === currentUrl) return;
-
-    const historyMethod = mode === "replace" ? "replaceState" : "pushState";
-    window.history[historyMethod](getHistoryState(window.history.state), "", nextUrl);
-  };
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -288,8 +297,7 @@ export function App() {
 
     function handlePopState() {
       const route = getAppRouteState(window.location.href);
-      setActiveView(route.activeView);
-      setRouteShareId(route.shareId);
+      applyAppRoute(route, "pop");
       setCalculatorOpen(false);
     }
 
@@ -297,7 +305,7 @@ export function App() {
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, []);
+  }, [applyAppRoute]);
 
   useEffect(() => {
     if (activeView !== "admin" || session.status === "checking") return;

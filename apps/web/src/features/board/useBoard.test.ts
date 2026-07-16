@@ -1,5 +1,4 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
 import { ApiClientError } from "../../api/client";
 import {
   BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS,
@@ -9,21 +8,32 @@ import {
   buildLocalBoardPeriodFingerprint,
   buildBoardVersionKey,
   canClaimBoardPollingLeadership,
-  createBoardInvalidationPublisher,
+  createBoardDataApi,
   createBoardReadGate,
   createBoardRecoveryReadOwner,
-  createBoardReloadGate,
+  createBoardSession,
   createBoardVersionTracker,
   createBoardWriteCoordinator,
   formatBoardError,
+  getBoardPollingChannelName,
   getBoardPollingDelayMs,
+  getBoardPollingStorageKey,
   getNextBoardPeriodBoundaryMs,
   mergeBoardVersionSummary,
+  parseBoardPollingMessage,
   parseBoardPollingLeaderRecord,
-  reportBoardReloadErrorIfCurrent,
-  shouldReloadForBoardBroadcast
+  reportBoardReloadErrorIfCurrent
 } from "./useBoard";
-import type { BoardDisplaySettings, BoardPayload } from "./types";
+import type { BoardPollingRuntime } from "./useBoard";
+import type { BoardDataApi } from "./boardDataController";
+import type {
+  BoardBootstrapPayload,
+  BoardDisplaySettings,
+  BoardPayload,
+  BoardSheetManifestItem,
+  BoardSheetPayload,
+  BoardVersionSummary
+} from "./types";
 
 const emptyBoard: BoardPayload = {
   userId: "user-1",
@@ -42,7 +52,969 @@ const emptyBoard: BoardPayload = {
   completions: []
 };
 
+const boardSettings: BoardDisplaySettings = emptyBoard.settings;
+
+function manifestSheet(
+  id: string,
+  version = 1,
+  options: Partial<BoardSheetManifestItem> = {}
+): BoardSheetManifestItem {
+  return {
+    id,
+    name: options.name ?? id,
+    sort_order: options.sort_order ?? 0,
+    is_default: options.is_default ?? 0,
+    version,
+    ...options
+  };
+}
+
+function sheetPayload(
+  id: string,
+  version = 1,
+  options: Partial<BoardSheetPayload> = {}
+): BoardSheetPayload {
+  return {
+    sheet: {
+      id,
+      name: options.sheet?.name ?? id,
+      sort_order: options.sheet?.sort_order ?? 0,
+      is_default: options.sheet?.is_default ?? 0,
+      content_version: version
+    },
+    tables: [],
+    notes: [],
+    axisItems: [],
+    cellStates: [],
+    completions: [],
+    periodFingerprint: "",
+    ...options
+  };
+}
+
+function bootstrapPayload(
+  activeSheet: BoardSheetPayload,
+  sheets: BoardSheetManifestItem[],
+  userId = "user-1"
+): BoardBootstrapPayload {
+  const activeManifest = sheets.find((sheet) => sheet.id === activeSheet.sheet.id);
+  return {
+    userId,
+    settings: boardSettings,
+    manifest: { version: Math.max(0, ...sheets.map((sheet) => sheet.version)), sheets },
+    activeSheet: activeManifest
+      ? {
+          ...activeSheet,
+          sheet: {
+            id: activeManifest.id,
+            name: activeManifest.name,
+            sort_order: activeManifest.sort_order,
+            is_default: activeManifest.is_default,
+            content_version: activeManifest.version
+          }
+        }
+      : activeSheet
+  };
+}
+
+function versionSummary(
+  sheets: BoardSheetManifestItem[],
+  manifestVersion = Math.max(0, ...sheets.map((sheet) => sheet.version))
+): BoardVersionSummary {
+  return { manifestVersion, sheets, periodFingerprint: "", settings: boardSettings };
+}
+
+type FakePollingEvent = "focus" | "visibilitychange" | "activity";
+
+function createFakeBoardPollingRuntime(options: {
+  nowMs?: number;
+  visible?: boolean;
+  storageValues?: Map<string, string>;
+} = {}) {
+  let nowMs = options.nowMs ?? 0;
+  let visible = options.visible ?? true;
+  let nextTimerId = 0;
+  const timers = new Map<number, {
+    callback: () => void;
+    delayMs: number;
+    dueAt: number;
+  }>();
+  const listeners = new Map<FakePollingEvent, Set<() => void>>();
+  const storageValues = options.storageValues ?? new Map<string, string>();
+  const posted: unknown[] = [];
+  const channelNames: string[] = [];
+  let channelMessageHandler: ((message: unknown) => void) | null = null;
+  let closedChannels = 0;
+
+  const runtime: BoardPollingRuntime = {
+    nowMs: () => nowMs,
+    isVisible: () => visible,
+    storage: {
+      getItem: (key: string) => storageValues.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        storageValues.set(key, value);
+      },
+      removeItem: (key: string) => {
+        storageValues.delete(key);
+      }
+    },
+    setTimeout: (callback: () => void, delayMs: number) => {
+      const id = ++nextTimerId;
+      timers.set(id, { callback, delayMs, dueAt: nowMs + delayMs });
+      return id;
+    },
+    clearTimeout: (timer: unknown) => {
+      if (typeof timer === "number") timers.delete(timer);
+    },
+    addEventListener: (event: FakePollingEvent, callback: () => void) => {
+      const callbacks = listeners.get(event) ?? new Set<() => void>();
+      callbacks.add(callback);
+      listeners.set(event, callbacks);
+      return () => callbacks.delete(callback);
+    },
+    openChannel: (name: string, onMessage: (message: unknown) => void) => {
+      channelNames.push(name);
+      channelMessageHandler = onMessage;
+      let closed = false;
+      return {
+        postMessage: (message: unknown) => posted.push(message),
+        close: () => {
+          if (closed) return;
+          closed = true;
+          closedChannels += 1;
+          if (channelMessageHandler === onMessage) channelMessageHandler = null;
+        }
+      };
+    }
+  };
+
+  const flushAsyncWork = async () => {
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+  };
+
+  return {
+    runtime,
+    posted,
+    channelNames,
+    storageValues,
+    nowMs: () => nowMs,
+    get closedChannels() {
+      return closedChannels;
+    },
+    pendingDelays: () => [...timers.values()].map((timer) => timer.delayMs).sort((a, b) => a - b),
+    pendingDueAt: (delayMs: number) =>
+      [...timers.values()].find((timer) => timer.delayMs === delayMs)?.dueAt,
+    listenerCount: () => [...listeners.values()].reduce((total, callbacks) => total + callbacks.size, 0),
+    setVisible: (next: boolean) => {
+      visible = next;
+    },
+    setNow: (next: number) => {
+      nowMs = next;
+    },
+    emit: async (event: FakePollingEvent) => {
+      for (const callback of [...(listeners.get(event) ?? [])]) callback();
+      await flushAsyncWork();
+    },
+    receive: async (message: unknown) => {
+      channelMessageHandler?.(message);
+      await flushAsyncWork();
+    },
+    fireTimer: async (delayMs: number, preserveNow = false) => {
+      const match = [...timers].find(([, timer]) => timer.delayMs === delayMs);
+      if (!match) throw new Error(`No timer scheduled for ${delayMs}ms; pending: ${[...timers.values()].map((timer) => timer.delayMs).join(", ")}`);
+      const [id, timer] = match;
+      timers.delete(id);
+      if (!preserveNow) nowMs = Math.max(nowMs, timer.dueAt);
+      timer.callback();
+      await flushAsyncWork();
+    }
+  };
+}
+
 expectTypeOf<BoardPayload["settings"]>().toEqualTypeOf<BoardDisplaySettings>();
+
+describe("board data API", () => {
+  it("uses encoded bootstrap and sheet URLs plus the v2 versions endpoint", async () => {
+    const calls: string[] = [];
+    const get = vi.fn(async (url: string) => {
+      calls.push(url);
+      return {};
+    });
+    const api = createBoardDataApi(get);
+
+    await api.getBootstrap();
+    await api.getBootstrap("sheet /?한글");
+    await api.getSheet("sheet /?한글");
+    await api.getVersions();
+
+    expect(calls).toEqual([
+      "/api/board/bootstrap",
+      "/api/board/bootstrap?sheetId=sheet%20%2F%3F%ED%95%9C%EA%B8%80",
+      "/api/board/sheets/sheet%20%2F%3F%ED%95%9C%EA%B8%80",
+      "/api/board/versions"
+    ]);
+  });
+});
+
+describe("sheet-aware board session", () => {
+  it("bootstraps the requested sheet once without an immediate versions request", async () => {
+    const requestedId = "sheet /?한글";
+    const active = sheetPayload(requestedId, 3, {
+      sheet: {
+        id: requestedId,
+        name: "요청 시트",
+        sort_order: 2,
+        is_default: 0,
+        content_version: 3
+      },
+      notes: [{
+        id: "note-1",
+        sheet_id: requestedId,
+        title: "memo",
+        body: "body",
+        color: "yellow",
+        sort_order: 0,
+        x: 0,
+        y: 0,
+        width: 2,
+        height: 2,
+        locked: 0
+      }]
+    });
+    const manifest = [
+      manifestSheet("sheet-1", 1, { is_default: 1 }),
+      manifestSheet(requestedId, 3, { name: "요청 시트", sort_order: 2 })
+    ];
+    const calls: string[] = [];
+    const api = createBoardDataApi(async (url) => {
+      calls.push(url);
+      if (url.startsWith("/api/board/bootstrap")) return bootstrapPayload(active, manifest);
+      throw new Error(`Unexpected GET ${url}`);
+    });
+    const session = createBoardSession({ userId: "user-1", api, runtime: null });
+
+    await session.configure({ enabled: true, pollingEnabled: true, requestedSheetId: requestedId });
+
+    expect(calls).toEqual([
+      "/api/board/bootstrap?sheetId=sheet%20%2F%3F%ED%95%9C%EA%B8%80"
+    ]);
+    expect(session.snapshot()).toMatchObject({
+      activeSheetId: requestedId,
+      loading: false,
+      error: null,
+      data: {
+        userId: "user-1",
+        settings: boardSettings,
+        sheets: manifest,
+        notes: [expect.objectContaining({ id: "note-1" })]
+      }
+    });
+    session.dispose();
+  });
+
+  it("uses one GET for an uncached sheet, zero for cached return, and one versions GET for no-change reload", async () => {
+    const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const sheet2 = manifestSheet("sheet-2", 1, { sort_order: 1 });
+    const calls: string[] = [];
+    const api: BoardDataApi = {
+      getBootstrap: async (requestedId) => {
+        calls.push(`bootstrap:${requestedId ?? ""}`);
+        return bootstrapPayload(sheetPayload("sheet-1", 1, { sheet: { ...sheet1, content_version: 1 } }), [sheet1, sheet2]);
+      },
+      getSheet: async (sheetId) => {
+        calls.push(`sheet:${sheetId}`);
+        const item = sheetId === "sheet-1" ? sheet1 : sheet2;
+        return sheetPayload(sheetId, item.version, { sheet: { ...item, content_version: item.version } });
+      },
+      getVersions: async () => {
+        calls.push("versions");
+        return versionSummary([sheet1, sheet2]);
+      }
+    };
+    const session = createBoardSession({ userId: "user-1", api, runtime: null });
+
+    await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
+    await session.selectSheet("sheet-2");
+    await session.selectSheet("sheet-1");
+    await session.reload();
+
+    expect(calls).toEqual(["bootstrap:", "sheet:sheet-2", "versions"]);
+    expect(session.snapshot().activeSheetId).toBe("sheet-1");
+    session.dispose();
+  });
+
+  it("reconciles requested, null-history, and invalid routes without replaying replacement effects", async () => {
+    const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const sheet2 = manifestSheet("sheet-2", 1, { sort_order: 1 });
+    let remoteManifest = [sheet1, sheet2];
+    const replacements: Array<string | null> = [];
+    const calls: string[] = [];
+    const api: BoardDataApi = {
+      getBootstrap: async (requestedId) => {
+        calls.push(`bootstrap:${requestedId ?? ""}`);
+        const selected = remoteManifest.find((sheet) => sheet.id === requestedId) ?? sheet1;
+        return bootstrapPayload(
+          sheetPayload(selected.id, selected.version, {
+            sheet: { ...selected, content_version: selected.version }
+          }),
+          remoteManifest
+        );
+      },
+      getSheet: async (sheetId) => {
+        calls.push(`sheet:${sheetId}`);
+        const item = remoteManifest.find((sheet) => sheet.id === sheetId)!;
+        return sheetPayload(sheetId, item.version, { sheet: { ...item, content_version: item.version } });
+      },
+      getVersions: async () => {
+        calls.push("versions");
+        return versionSummary(remoteManifest, 2);
+      }
+    };
+    const session = createBoardSession({ userId: "user-1", api, runtime: null });
+
+    await session.configure({
+      enabled: true,
+      pollingEnabled: false,
+      requestedSheetId: "missing",
+      onReplaceSheetId: (sheetId) => replacements.push(sheetId)
+    });
+    await session.configure({
+      enabled: true,
+      pollingEnabled: false,
+      requestedSheetId: "missing",
+      onReplaceSheetId: (sheetId) => replacements.push(sheetId)
+    });
+    await session.configure({
+      enabled: true,
+      pollingEnabled: false,
+      requestedSheetId: "sheet-2",
+      onReplaceSheetId: (sheetId) => replacements.push(sheetId)
+    });
+    expect(session.snapshot().activeSheetId).toBe("sheet-2");
+
+    await session.configure({
+      enabled: true,
+      pollingEnabled: false,
+      requestedSheetId: null,
+      onReplaceSheetId: (sheetId) => replacements.push(sheetId)
+    });
+    expect(session.snapshot().activeSheetId).toBe("sheet-1");
+
+    await session.configure({
+      enabled: true,
+      pollingEnabled: false,
+      requestedSheetId: "sheet-2",
+      onReplaceSheetId: (sheetId) => replacements.push(sheetId)
+    });
+    remoteManifest = [sheet1];
+    await session.reload();
+    await session.reload();
+
+    expect(replacements).toEqual(["sheet-1", "sheet-1"]);
+    expect(session.snapshot().activeSheetId).toBe("sheet-1");
+    expect(calls).toEqual([
+      "bootstrap:missing",
+      "sheet:sheet-2",
+      "versions",
+      "versions"
+    ]);
+    session.dispose();
+  });
+
+  it("reloads a stale active note owner only and defers an inactive owner until selection", async () => {
+    const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const sheet2 = manifestSheet("sheet-2", 1, { sort_order: 1 });
+    const calls: string[] = [];
+    const api: BoardDataApi = {
+      getBootstrap: async () => bootstrapPayload(sheetPayload("sheet-1"), [sheet1, sheet2]),
+      getSheet: async (sheetId) => {
+        calls.push(`sheet:${sheetId}`);
+        const item = sheetId === "sheet-1" ? sheet1 : sheet2;
+        return sheetPayload(sheetId, item.version, { sheet: { ...item, content_version: item.version } });
+      },
+      getVersions: async () => versionSummary([sheet1, sheet2])
+    };
+    const session = createBoardSession({ userId: "user-1", api, runtime: null });
+    await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
+
+    await session.markSheetStale("sheet-1");
+    await session.selectSheet("sheet-2");
+    await session.selectSheet("sheet-1");
+    calls.length = 0;
+    await session.markSheetStale("sheet-2");
+
+    expect(calls).toEqual([]);
+    expect(session.snapshot().activeSheetId).toBe("sheet-1");
+    await session.selectSheet("sheet-2");
+    expect(calls).toEqual(["sheet:sheet-2"]);
+    session.dispose();
+  });
+
+  it("preserves accepted and pending write overlays across same-payload version emissions and fresh sheets", async () => {
+    const sheet1v1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const sheet1v2 = manifestSheet("sheet-1", 2, { is_default: 1 });
+    const acceptedCompletion = {
+      table_id: "table-1",
+      row_item_id: "accepted-row",
+      column_item_id: "column-1",
+      period_key: "daily:2026-07-16",
+      completed: 1
+    };
+    const calls: string[] = [];
+    const api: BoardDataApi = {
+      getBootstrap: async () => bootstrapPayload(sheetPayload("sheet-1", 1), [sheet1v1]),
+      getSheet: async (sheetId) => {
+        calls.push(`sheet:${sheetId}`);
+        return sheetPayload("sheet-1", 2, { completions: [acceptedCompletion] });
+      },
+      getVersions: async () => versionSummary([sheet1v2], 2)
+    };
+    const patch = vi.fn(async () => ({
+      ok: true as const,
+      versions: { manifestVersion: 2, sheets: [{ id: "sheet-1", version: 2 }] }
+    }));
+    const session = createBoardSession({
+      userId: "user-1",
+      api,
+      runtime: null,
+      writeCoordinatorOptions: { attachLifecycle: false, patch }
+    });
+    await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
+    session.enqueueCompletion({
+      tableId: "table-1",
+      rowItemId: "accepted-row",
+      columnItemId: "column-1",
+      periodKey: "daily:2026-07-16",
+      completed: true
+    });
+
+    await session.flushPendingWrites();
+
+    expect(session.snapshot().data?.completions).toEqual([acceptedCompletion]);
+    expect(session.snapshot().data?.sheets[0]).toMatchObject({ id: "sheet-1", version: 2 });
+    expect(calls).toEqual([]);
+
+    session.enqueueCompletion({
+      tableId: "table-1",
+      rowItemId: "pending-row",
+      columnItemId: "column-1",
+      periodKey: "daily:2026-07-16",
+      completed: true
+    });
+    await session.markSheetStale("sheet-1");
+
+    expect(calls).toEqual(["sheet:sheet-1"]);
+    expect(session.snapshot().data?.completions).toEqual([
+      acceptedCompletion,
+      expect.objectContaining({ row_item_id: "pending-row", completed: 1 })
+    ]);
+    session.dispose();
+  });
+
+  it("does not bootstrap while initially disabled, retains same-user cache, and clears on disposal", async () => {
+    const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const getBootstrap = vi.fn(async () => bootstrapPayload(sheetPayload("sheet-1"), [sheet1]));
+    const session = createBoardSession({
+      userId: "user-1",
+      api: {
+        getBootstrap,
+        getSheet: async () => sheetPayload("sheet-1"),
+        getVersions: async () => versionSummary([sheet1])
+      },
+      runtime: null
+    });
+    await session.configure({ enabled: false, pollingEnabled: false, requestedSheetId: null });
+    expect(getBootstrap).not.toHaveBeenCalled();
+    expect(session.snapshot().data).toBeNull();
+
+    await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
+    session.enqueueCompletion({
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      periodKey: "daily:2026-07-16",
+      completed: true
+    });
+
+    await session.configure({ enabled: false, pollingEnabled: false, requestedSheetId: null });
+    expect(session.snapshot()).toMatchObject({ data: null, hasPendingWrites: true });
+    await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
+    expect(getBootstrap).toHaveBeenCalledTimes(1);
+    expect(session.snapshot().data?.completions).toHaveLength(1);
+
+    session.dispose();
+    expect(session.snapshot()).toMatchObject({
+      userId: null,
+      data: null,
+      activeSheetId: null,
+      hasPendingWrites: false,
+      pendingWriteError: null
+    });
+  });
+
+  it("does not restart polling when an older bootstrap finishes after the session is disabled", async () => {
+    const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    let resolveBootstrap!: (payload: BoardBootstrapPayload) => void;
+    const bootstrap = new Promise<BoardBootstrapPayload>((resolve) => {
+      resolveBootstrap = resolve;
+    });
+    const runtime = createFakeBoardPollingRuntime();
+    const api: BoardDataApi = {
+      getBootstrap: () => bootstrap,
+      getSheet: async () => sheetPayload("sheet-1"),
+      getVersions: vi.fn(async () => versionSummary([sheet1]))
+    };
+    const session = createBoardSession({
+      userId: "user-1",
+      api,
+      runtime: runtime.runtime,
+      sourceId: "source-1"
+    });
+
+    const enabling = session.configure({
+      enabled: true,
+      pollingEnabled: true,
+      requestedSheetId: null
+    });
+    await Promise.resolve();
+    await session.configure({
+      enabled: false,
+      pollingEnabled: false,
+      requestedSheetId: null
+    });
+    resolveBootstrap(bootstrapPayload(sheetPayload("sheet-1"), [sheet1]));
+    await enabling;
+
+    expect(runtime.channelNames).toEqual([]);
+    expect(runtime.listenerCount()).toBe(0);
+    expect(api.getVersions).not.toHaveBeenCalled();
+    session.dispose();
+  });
+
+  it("forces active-sheet logout recovery after versions while preserving pending overlays", async () => {
+    const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const calls: string[] = [];
+    const session = createBoardSession({
+      userId: "user-1",
+      api: {
+        getBootstrap: async () => bootstrapPayload(sheetPayload("sheet-1"), [sheet1]),
+        getSheet: async () => {
+          calls.push("sheet:sheet-1");
+          return sheetPayload("sheet-1");
+        },
+        getVersions: async () => {
+          calls.push("versions");
+          return versionSummary([sheet1]);
+        }
+      },
+      runtime: null
+    });
+    await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
+    session.enqueueCompletion({
+      tableId: "table-1",
+      rowItemId: "pending-row",
+      columnItemId: "column-1",
+      periodKey: "daily:2026-07-16",
+      completed: true
+    });
+
+    await session.reconcileAfterLogoutFailure();
+
+    expect(calls).toEqual(["versions", "sheet:sheet-1"]);
+    expect(session.snapshot().data?.completions).toEqual([
+      expect.objectContaining({ row_item_id: "pending-row", completed: 1 })
+    ]);
+    session.dispose();
+  });
+});
+
+describe("v2 board polling runtime", () => {
+  it("uses exact user-scoped names and rejects malformed, wrong-user, and same-source messages", () => {
+    const sheet = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const valid = {
+      protocolVersion: 2 as const,
+      userId: "user-1",
+      sourceId: "tab-b",
+      summary: versionSummary([sheet])
+    };
+
+    expect(getBoardPollingStorageKey("user /한글")).toBe("riceark-board-polling:v2:user /한글");
+    expect(getBoardPollingChannelName("user /한글")).toBe("riceark-board-polling:v2:user /한글");
+    expect(parseBoardPollingMessage(valid, "user-1", "tab-a")).toEqual(valid);
+    expect(parseBoardPollingMessage({ ...valid, protocolVersion: 1 }, "user-1", "tab-a")).toBeNull();
+    expect(parseBoardPollingMessage({ ...valid, userId: "user-2" }, "user-1", "tab-a")).toBeNull();
+    expect(parseBoardPollingMessage({ ...valid, sourceId: "tab-a" }, "user-1", "tab-a")).toBeNull();
+    expect(parseBoardPollingMessage({ ...valid, summary: { ...valid.summary, sheets: [{ id: "sheet-1", version: 1 }] } }, "user-1", "tab-a")).toBeNull();
+    expect(parseBoardPollingMessage(null, "user-1", "tab-a")).toBeNull();
+  });
+
+  it("starts after the active interval, backs off when idle, and lets only the leader fetch versions", async () => {
+    const sheet = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const leaderRuntime = createFakeBoardPollingRuntime();
+    const leaderCalls: string[] = [];
+    const leader = createBoardSession({
+      userId: "user-1",
+      sourceId: "tab-a",
+      runtime: leaderRuntime.runtime,
+      api: {
+        getBootstrap: async () => {
+          leaderCalls.push("bootstrap");
+          return bootstrapPayload(sheetPayload("sheet-1"), [sheet]);
+        },
+        getSheet: async () => sheetPayload("sheet-1"),
+        getVersions: async () => {
+          leaderCalls.push("versions");
+          return versionSummary([sheet]);
+        }
+      }
+    });
+
+    await leader.configure({ enabled: true, pollingEnabled: true, requestedSheetId: null });
+    expect(leaderCalls).toEqual(["bootstrap"]);
+    expect(leaderRuntime.pendingDelays()).toContain(BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS);
+    expect(leaderRuntime.pendingDueAt(BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS)).toBe(
+      BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS
+    );
+    leaderRuntime.setNow(BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS / 2);
+    await leaderRuntime.emit("activity");
+    expect(leaderRuntime.pendingDueAt(BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS)).toBe(
+      BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS
+    );
+
+    await leaderRuntime.fireTimer(BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS);
+    expect(leaderCalls).toEqual(["bootstrap", "versions"]);
+    leaderRuntime.setNow(6 * 60_000);
+    await leaderRuntime.fireTimer(BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS, true);
+    expect(leaderCalls).toEqual(["bootstrap", "versions", "versions"]);
+    expect(leaderRuntime.pendingDelays()).toContain(BOARD_VERSION_IDLE_CHECK_INTERVAL_MS);
+    await leaderRuntime.emit("activity");
+    expect(leaderRuntime.pendingDelays()).toContain(BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS);
+
+    const followerStorage = new Map<string, string>([[
+      getBoardPollingStorageKey("user-1"),
+      JSON.stringify({ id: "tab-a", expiresAt: 1_000_000 })
+    ]]);
+    const followerRuntime = createFakeBoardPollingRuntime({ storageValues: followerStorage });
+    const followerVersions = vi.fn(async () => versionSummary([sheet]));
+    const follower = createBoardSession({
+      userId: "user-1",
+      sourceId: "tab-b",
+      runtime: followerRuntime.runtime,
+      api: {
+        getBootstrap: async () => bootstrapPayload(sheetPayload("sheet-1"), [sheet]),
+        getSheet: async () => sheetPayload("sheet-1"),
+        getVersions: followerVersions
+      }
+    });
+    await follower.configure({ enabled: true, pollingEnabled: true, requestedSheetId: null });
+    await followerRuntime.fireTimer(BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS);
+    expect(followerVersions).not.toHaveBeenCalled();
+
+    leader.dispose();
+    follower.dispose();
+  });
+
+  it("does no hidden fetch, checks immediately on focus/visible/view return, and cleans up", async () => {
+    const sheet = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const fake = createFakeBoardPollingRuntime({ visible: false });
+    const calls: string[] = [];
+    const session = createBoardSession({
+      userId: "user-1",
+      sourceId: "tab-a",
+      runtime: fake.runtime,
+      api: {
+        getBootstrap: async () => {
+          calls.push("bootstrap");
+          return bootstrapPayload(sheetPayload("sheet-1"), [sheet]);
+        },
+        getSheet: async () => sheetPayload("sheet-1"),
+        getVersions: async () => {
+          calls.push("versions");
+          return versionSummary([sheet]);
+        }
+      }
+    });
+
+    await session.configure({ enabled: true, pollingEnabled: true, requestedSheetId: null });
+    expect(calls).toEqual(["bootstrap"]);
+    expect(fake.pendingDelays()).not.toContain(BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS);
+    await fake.emit("focus");
+    expect(calls).toEqual(["bootstrap"]);
+
+    fake.setVisible(true);
+    await fake.emit("visibilitychange");
+    await vi.waitFor(() => expect(calls).toEqual(["bootstrap", "versions"]));
+    expect(fake.channelNames).toEqual([getBoardPollingChannelName("user-1")]);
+    await fake.emit("focus");
+    await vi.waitFor(() => expect(calls).toEqual(["bootstrap", "versions", "versions"]));
+
+    fake.setVisible(false);
+    await fake.emit("visibilitychange");
+    expect(fake.storageValues.has(getBoardPollingStorageKey("user-1"))).toBe(false);
+    expect(fake.pendingDelays()).not.toContain(BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS);
+
+    await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
+    expect(fake.listenerCount()).toBe(0);
+    expect(fake.pendingDelays()).toEqual([]);
+    const returning = session.configure({ enabled: true, pollingEnabled: true, requestedSheetId: null });
+    expect(session.snapshot().data).not.toBeNull();
+    fake.setVisible(true);
+    await returning;
+    await vi.waitFor(() => expect(calls).toEqual(["bootstrap", "versions", "versions", "versions"]));
+
+    session.dispose();
+    expect(fake.listenerCount()).toBe(0);
+    expect(fake.pendingDelays()).toEqual([]);
+    expect(fake.closedChannels).toBe(2);
+  });
+
+  it("applies follower summaries without versions GETs and fetches only a changed active sheet", async () => {
+    const sheet1v1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const sheet1v2 = manifestSheet("sheet-1", 2, { is_default: 1 });
+    const sheet2v1 = manifestSheet("sheet-2", 1, { sort_order: 1 });
+    const sheet2v2 = manifestSheet("sheet-2", 2, { sort_order: 1 });
+    const fake = createFakeBoardPollingRuntime();
+    const calls: string[] = [];
+    const session = createBoardSession({
+      userId: "user-1",
+      sourceId: "tab-a",
+      runtime: fake.runtime,
+      api: {
+        getBootstrap: async () => bootstrapPayload(sheetPayload("sheet-1"), [sheet1v1, sheet2v1]),
+        getSheet: async (sheetId) => {
+          calls.push(`sheet:${sheetId}`);
+          return sheetPayload("sheet-1", 2, {
+            sheet: { ...sheet1v2, content_version: 2 }
+          });
+        },
+        getVersions: async () => {
+          calls.push("versions");
+          return versionSummary([sheet1v2, sheet2v2], 2);
+        }
+      }
+    });
+    await session.configure({ enabled: true, pollingEnabled: true, requestedSheetId: null });
+    const message = (summary: BoardVersionSummary, overrides: Record<string, unknown> = {}) => ({
+      protocolVersion: 2,
+      userId: "user-1",
+      sourceId: "tab-b",
+      summary,
+      ...overrides
+    });
+
+    await fake.receive(message(versionSummary([sheet1v1, sheet2v2], 2)));
+    expect(calls).toEqual([]);
+    expect(session.snapshot().data?.sheets.find((sheet) => sheet.id === "sheet-2")).toMatchObject({ version: 2 });
+
+    await fake.receive(message(versionSummary([sheet1v2, sheet2v2], 2)));
+    await vi.waitFor(() => expect(calls).toEqual(["sheet:sheet-1"]));
+    expect(session.snapshot().data?.sheets.find((sheet) => sheet.id === "sheet-1")).toMatchObject({ version: 2 });
+
+    await fake.receive(message(versionSummary([sheet1v2, sheet2v2], 2), { protocolVersion: 1 }));
+    await fake.receive(message(versionSummary([sheet1v2, sheet2v2], 2), { userId: "user-2" }));
+    await fake.receive(message(versionSummary([sheet1v2, sheet2v2], 2), { sourceId: "tab-a" }));
+    expect(calls).toEqual(["sheet:sheet-1"]);
+    session.dispose();
+  });
+
+  it("ignores broadcasts off the owner view and performs one leader revalidation on return", async () => {
+    const sheet1v1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const sheet1v2 = manifestSheet("sheet-1", 2, { is_default: 1 });
+    const fake = createFakeBoardPollingRuntime();
+    const calls: string[] = [];
+    const session = createBoardSession({
+      userId: "user-1",
+      sourceId: "tab-a",
+      runtime: fake.runtime,
+      api: {
+        getBootstrap: async () => bootstrapPayload(sheetPayload("sheet-1"), [sheet1v1]),
+        getSheet: async () => {
+          calls.push("sheet");
+          return sheetPayload("sheet-1", 2, { sheet: { ...sheet1v2, content_version: 2 } });
+        },
+        getVersions: async () => {
+          calls.push("versions");
+          return versionSummary([sheet1v1]);
+        }
+      }
+    });
+    await session.configure({ enabled: true, pollingEnabled: true, requestedSheetId: null });
+    await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
+
+    await fake.receive({
+      protocolVersion: 2,
+      userId: "user-1",
+      sourceId: "tab-b",
+      summary: versionSummary([sheet1v2], 2)
+    });
+    expect(calls).toEqual([]);
+
+    await session.configure({ enabled: true, pollingEnabled: true, requestedSheetId: null });
+    await vi.waitFor(() => expect(calls).toEqual(["versions"]));
+    session.dispose();
+  });
+
+  it("coalesces mutation invalidations into one full canonical v2 summary", async () => {
+    const sheet = manifestSheet("sheet-1", 1, { name: "Main", is_default: 1 });
+    const fake = createFakeBoardPollingRuntime();
+    const patch = vi.fn(async () => ({
+      ok: true as const,
+      versions: { manifestVersion: 2, sheets: [{ id: "sheet-1", version: 2 }] }
+    }));
+    const session = createBoardSession({
+      userId: "user-1",
+      sourceId: "tab-a",
+      runtime: fake.runtime,
+      api: {
+        getBootstrap: async () => bootstrapPayload(sheetPayload("sheet-1"), [sheet]),
+        getSheet: async () => sheetPayload("sheet-1", 2),
+        getVersions: async () => versionSummary([{ ...sheet, version: 2 }], 2)
+      },
+      writeCoordinatorOptions: { attachLifecycle: false, patch }
+    });
+    await session.configure({ enabled: true, pollingEnabled: true, requestedSheetId: null });
+    session.enqueueCompletion({
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      periodKey: "daily:2026-07-16",
+      completed: true
+    });
+    session.enqueueCellState({
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      markType: "fixed",
+      markIcon: "pin",
+      memo: "memo"
+    });
+    await session.flushPendingWrites();
+
+    expect(fake.pendingDelays().filter((delay) => delay === BOARD_WRITE_INVALIDATION_COALESCE_MS)).toHaveLength(1);
+    await fake.fireTimer(BOARD_WRITE_INVALIDATION_COALESCE_MS);
+    expect(fake.posted).toEqual([{
+      protocolVersion: 2,
+      userId: "user-1",
+      sourceId: "tab-a",
+      summary: {
+        manifestVersion: 2,
+        sheets: [{ ...sheet, version: 2 }],
+        periodFingerprint: "",
+        settings: boardSettings
+      }
+    }]);
+    session.dispose();
+  });
+
+  it("refetches only the active sheet at a visible local period boundary", async () => {
+    const start = Date.parse("2026-07-15T20:59:00.000Z");
+    const fake = createFakeBoardPollingRuntime({ nowMs: start });
+    const sheet = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const axisItem = {
+      id: "task-1",
+      table_id: "table-1",
+      axis: "row" as const,
+      kind: "task" as const,
+      label: "Daily",
+      character_id: null,
+      task_id: "daily-task",
+      task_color: null,
+      size_px: null,
+      sort_order: 0,
+      visible: 1,
+      task_reset_rule_json: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}'
+    };
+    const makePayload = () => {
+      const payload = sheetPayload("sheet-1", 1, { axisItems: [axisItem] });
+      return {
+        ...payload,
+        periodFingerprint: buildLocalBoardPeriodFingerprint(payload, new Date(fake.nowMs()))
+      };
+    };
+    const calls: string[] = [];
+    const session = createBoardSession({
+      userId: "user-1",
+      sourceId: "tab-a",
+      runtime: fake.runtime,
+      api: {
+        getBootstrap: async () => bootstrapPayload(makePayload(), [sheet]),
+        getSheet: async () => {
+          calls.push("sheet");
+          return makePayload();
+        },
+        getVersions: async () => {
+          calls.push("versions");
+          return versionSummary([sheet]);
+        }
+      }
+    });
+    await session.configure({ enabled: true, pollingEnabled: true, requestedSheetId: null });
+    const boundaryDelay = fake.pendingDelays().find(
+      (delay) => delay !== 15_000 && delay !== BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS
+    );
+    expect(boundaryDelay).toBeDefined();
+
+    await fake.fireTimer(boundaryDelay!);
+    await vi.waitFor(() => expect(calls).toEqual(["sheet"]));
+    session.dispose();
+  });
+
+  it("defers a hidden period boundary until visible without a broad read", async () => {
+    const start = Date.parse("2026-07-15T20:59:00.000Z");
+    const storageValues = new Map<string, string>([[
+      getBoardPollingStorageKey("user-1"),
+      JSON.stringify({ id: "other-tab", expiresAt: start + 10 * 60_000 })
+    ]]);
+    const fake = createFakeBoardPollingRuntime({ nowMs: start, visible: false, storageValues });
+    const sheet = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const axisItem = {
+      id: "task-1",
+      table_id: "table-1",
+      axis: "row" as const,
+      kind: "task" as const,
+      label: "Daily",
+      character_id: null,
+      task_id: "daily-task",
+      task_color: null,
+      size_px: null,
+      sort_order: 0,
+      visible: 1,
+      task_reset_rule_json: '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}'
+    };
+    const makePayload = () => {
+      const payload = sheetPayload("sheet-1", 1, { axisItems: [axisItem] });
+      return {
+        ...payload,
+        periodFingerprint: buildLocalBoardPeriodFingerprint(payload, new Date(fake.nowMs()))
+      };
+    };
+    const calls: string[] = [];
+    const session = createBoardSession({
+      userId: "user-1",
+      sourceId: "tab-a",
+      runtime: fake.runtime,
+      api: {
+        getBootstrap: async () => bootstrapPayload(makePayload(), [sheet]),
+        getSheet: async () => {
+          calls.push("sheet");
+          return makePayload();
+        },
+        getVersions: async () => {
+          calls.push("versions");
+          return versionSummary([sheet]);
+        }
+      }
+    });
+    await session.configure({ enabled: true, pollingEnabled: true, requestedSheetId: null });
+    fake.setNow(start + 2 * 60_000);
+    expect(calls).toEqual([]);
+
+    fake.setVisible(true);
+    await fake.emit("visibilitychange");
+    await vi.waitFor(() => expect(calls).toEqual(["sheet"]));
+    session.dispose();
+  });
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -76,20 +1048,6 @@ describe("formatBoardError", () => {
     expect(reportBoardReloadErrorIfCurrent(currentCoordinator, currentCoordinator, new Error("current failure"), report))
       .toBe(true);
     expect(report).toHaveBeenCalledWith("current failure");
-  });
-
-  it("checks lightweight board versions on focus and visibility changes", () => {
-    const source = readFileSync(new URL("./useBoard.ts", import.meta.url), "utf-8");
-
-    expect(source).toContain("/api/board/versions");
-    expect(source).toContain("buildBoardVersionKey");
-    expect(source).toContain("pollingEnabled");
-    expect(source).toContain("BroadcastChannel");
-    expect(source).toContain("localStorage");
-    expect(source).toContain("getNextBoardPeriodBoundaryMs");
-    expect(source).toContain('window.addEventListener("focus", handleFocus);');
-    expect(source).toContain('document.addEventListener("visibilitychange", handleVisibilityChange);');
-    expect(source).toContain("BOARD_VERSION_CHECK_INTERVAL_MS");
   });
 
   it("builds reset period fingerprints locally from the loaded board payload", () => {
@@ -801,213 +1759,5 @@ describe("BoardWriteCoordinator", () => {
 
     await expect(flushing).rejects.toThrow("offline");
     coordinator.discardAndDispose();
-  });
-});
-
-describe("board cross-tab invalidation", () => {
-  it("reloads for a changed polling version announcement without reloading the same version", () => {
-    expect(shouldReloadForBoardBroadcast("board-version-key", "v4", "v5", true)).toBe(true);
-    expect(shouldReloadForBoardBroadcast("board-version-key", "v5", "v5", true)).toBe(false);
-    expect(shouldReloadForBoardBroadcast("board-version-key", null, "v5", false)).toBe(false);
-    expect(shouldReloadForBoardBroadcast("board-reload", null, "v5", false)).toBe(true);
-  });
-
-  it("coalesces a sender burst and publishes only the highest merged versions", async () => {
-    vi.useFakeTimers();
-    const postMessage = vi.fn();
-    const publisher = createBoardInvalidationPublisher({
-      sourceId: "tab-a",
-      userId: "user-1",
-      postMessage,
-      versionKeyFor: (summary) => JSON.stringify(summary)
-    });
-
-    publisher.schedule({ manifestVersion: 2, sheets: [{ id: "sheet-1", version: 4 }], periodFingerprint: "" });
-    publisher.schedule({ manifestVersion: 3, sheets: [{ id: "sheet-1", version: 6 }], periodFingerprint: "" });
-    publisher.schedule({ manifestVersion: 2, sheets: [{ id: "sheet-1", version: 5 }], periodFingerprint: "" });
-    await vi.advanceTimersByTimeAsync(BOARD_WRITE_INVALIDATION_COALESCE_MS - 1);
-    expect(postMessage).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(1);
-
-    expect(postMessage).toHaveBeenCalledTimes(1);
-    expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
-      sourceId: "tab-a",
-      userId: "user-1",
-      type: "board-reload",
-      summary: {
-        manifestVersion: 3,
-        sheets: [{ id: "sheet-1", version: 6 }],
-        periodFingerprint: ""
-      }
-    }));
-    publisher.dispose();
-    vi.useRealTimers();
-  });
-
-  it("cancels a scheduled sender invalidation when disposed", async () => {
-    vi.useFakeTimers();
-    const postMessage = vi.fn();
-    const publisher = createBoardInvalidationPublisher({
-      sourceId: "tab-a",
-      userId: "user-1",
-      postMessage,
-      versionKeyFor: (summary) => JSON.stringify(summary)
-    });
-    publisher.schedule({ manifestVersion: 2, sheets: [], periodFingerprint: "" });
-
-    publisher.dispose();
-    await vi.advanceTimersByTimeAsync(BOARD_WRITE_INVALIDATION_COALESCE_MS);
-
-    expect(postMessage).not.toHaveBeenCalled();
-    vi.useRealTimers();
-  });
-
-  it("deduplicates same-version reload messages", async () => {
-    const active = deferred<void>();
-    const reload = vi.fn(() => active.promise);
-    const gate = createBoardReloadGate({ userId: "user-1", reload });
-    const message = {
-      sourceId: "tab-a",
-      userId: "user-1",
-      type: "board-reload" as const,
-      summary: { manifestVersion: 2, sheets: [{ id: "sheet-1", version: 4 }], periodFingerprint: "" },
-      versionKey: "v4"
-    };
-
-    gate.receive(message);
-    gate.receive(message);
-    expect(reload).toHaveBeenCalledTimes(1);
-    active.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    gate.receive(message);
-
-    expect(reload).toHaveBeenCalledTimes(1);
-    gate.dispose();
-  });
-
-  it("runs at most one active reload and one necessary newer trailing reload", async () => {
-    const first = deferred<void>();
-    const second = deferred<void>();
-    let activeCount = 0;
-    let maximumActive = 0;
-    const reload = vi.fn(async () => {
-      activeCount += 1;
-      maximumActive = Math.max(maximumActive, activeCount);
-      await (reload.mock.calls.length === 1 ? first.promise : second.promise);
-      activeCount -= 1;
-    });
-    const gate = createBoardReloadGate({ userId: "user-1", reload });
-    const message = (version: number) => ({
-      sourceId: "tab-a",
-      userId: "user-1",
-      type: "board-reload" as const,
-      summary: { manifestVersion: version, sheets: [{ id: "sheet-1", version }], periodFingerprint: "" },
-      versionKey: `v${version}`
-    });
-
-    gate.receive(message(4));
-    gate.receive(message(5));
-    gate.receive(message(6));
-    expect(reload).toHaveBeenCalledTimes(1);
-
-    first.resolve();
-    await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(2));
-    expect(maximumActive).toBe(1);
-    second.resolve();
-    await Promise.resolve();
-    gate.dispose();
-  });
-
-  it("ignores invalidations for another user", () => {
-    const reload = vi.fn(async () => undefined);
-    const gate = createBoardReloadGate({ userId: "user-1", reload });
-
-    gate.receive({
-      sourceId: "tab-b",
-      userId: "user-2",
-      type: "board-reload",
-      summary: { manifestVersion: 9, sheets: [], periodFingerprint: "" },
-      versionKey: "v9"
-    });
-
-    expect(reload).not.toHaveBeenCalled();
-    gate.dispose();
-  });
-
-  it("contains a reload rejection and allows the same invalidation to retry later", async () => {
-    const reload = vi.fn()
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce(undefined);
-    const gate = createBoardReloadGate({ userId: "user-1", reload });
-    const message = {
-      sourceId: "tab-a",
-      userId: "user-1",
-      type: "board-reload" as const,
-      summary: { manifestVersion: 2, sheets: [], periodFingerprint: "" },
-      versionKey: "v2"
-    };
-
-    gate.receive(message);
-    await Promise.resolve();
-    await Promise.resolve();
-    gate.receive(message);
-
-    expect(reload).toHaveBeenCalledTimes(2);
-    gate.dispose();
-  });
-
-  it("keeps a failed version-key catch-up unapplied, retries it, then deduplicates it", async () => {
-    const tracker = createBoardVersionTracker();
-    tracker.apply({ manifestVersion: 1, sheets: [], periodFingerprint: "" });
-    const appliedVersionKey = () => {
-      const applied = tracker.getState().applied;
-      return applied ? buildBoardVersionKey(applied, emptyBoard) : null;
-    };
-    const reload = vi.fn()
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce(undefined);
-    const gate = createBoardReloadGate({
-      userId: "user-1",
-      reload,
-      onApplied: (message) => {
-        tracker.apply(message.summary);
-      }
-    });
-    const announcement = {
-      sourceId: "tab-a",
-      userId: "user-1",
-      type: "board-version-key" as const,
-      summary: { manifestVersion: 2, sheets: [], periodFingerprint: "" },
-      versionKey: "v2"
-    };
-    const receive = () => {
-      const observed = tracker.observe(announcement.summary);
-      const observedVersionKey = buildBoardVersionKey(observed, emptyBoard);
-      if (shouldReloadForBoardBroadcast(announcement.type, appliedVersionKey(), observedVersionKey, true)) {
-        gate.receive({ ...announcement, type: "board-reload", summary: observed, versionKey: observedVersionKey });
-      }
-    };
-
-    receive();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(tracker.getState().applied?.manifestVersion).toBe(1);
-
-    receive();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(tracker.getState().applied?.manifestVersion).toBe(2);
-
-    receive();
-    tracker.apply({ manifestVersion: 3, sheets: [{ id: "sheet-1", version: 5 }] });
-    receive();
-    expect(tracker.getState().applied).toMatchObject({
-      manifestVersion: 3,
-      sheets: [{ id: "sheet-1", version: 5 }]
-    });
-    expect(reload).toHaveBeenCalledTimes(2);
-    gate.dispose();
   });
 });

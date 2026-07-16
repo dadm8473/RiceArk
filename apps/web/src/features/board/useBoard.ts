@@ -3,13 +3,47 @@ import { getPeriodKey, type ResetRule } from "@riceark/core";
 import { ApiClientError, apiGet } from "../../api/client";
 import { applyBoardCompletionPatch, type BoardCompletionPatch } from "./completions";
 import { applyBoardCellStatePatch, type BoardCellStatePatch } from "./cellStates";
-import { buildLocalBoardPeriodFingerprint } from "./boardSheetCache";
-import type { BoardDisplaySettings, BoardMutationVersions, BoardPayload } from "./types";
+import {
+  buildLocalBoardPeriodFingerprint,
+  composeActiveBoardView,
+  getBoardSheetCacheEntry
+} from "./boardSheetCache";
+import type {
+  BoardBootstrapPayload,
+  BoardDisplaySettings,
+  BoardMutationVersions,
+  BoardPayload,
+  BoardSheetPayload,
+  BoardVersionSummary
+} from "./types";
+import {
+  createBoardDataController,
+  type BoardDataApi,
+  type BoardDataEffect,
+  type BoardDataState
+} from "./boardDataController";
 import { attachBoardQueueLifecycle, createBoardCompletionQueue, type BoardPatchApi } from "./useBoardCompletionQueue";
 import { createBoardCellStateQueue } from "./useBoardCellStateQueue";
 import { ReliablePatchQueueFlushError } from "./reliablePatchQueue";
 
 export { buildLocalBoardPeriodFingerprint };
+export type { BoardVersionSummary } from "./types";
+
+type BoardApiGet = (path: string) => Promise<unknown>;
+
+export function createBoardDataApi(get: BoardApiGet = apiGet): BoardDataApi {
+  return {
+    getBootstrap: (sheetId) =>
+      get(
+        sheetId === undefined
+          ? "/api/board/bootstrap"
+          : `/api/board/bootstrap?sheetId=${encodeURIComponent(sheetId)}`
+      ) as Promise<BoardBootstrapPayload>,
+    getSheet: (sheetId) =>
+      get(`/api/board/sheets/${encodeURIComponent(sheetId)}`) as Promise<BoardSheetPayload>,
+    getVersions: () => get("/api/board/versions") as Promise<BoardVersionSummary>
+  };
+}
 
 export const BOARD_VERSION_CHECK_INTERVAL_MS = 120_000;
 export const BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS = BOARD_VERSION_CHECK_INTERVAL_MS;
@@ -17,30 +51,28 @@ export const BOARD_VERSION_IDLE_CHECK_INTERVAL_MS = 5 * 60_000;
 export const BOARD_WRITE_INVALIDATION_COALESCE_MS = 150;
 export const BOARD_RECOVERY_READ_TIMEOUT_MS = 10_000;
 const BOARD_VERSION_IDLE_AFTER_MS = 5 * 60_000;
-const BOARD_VERSION_LEADER_STORAGE_KEY = "riceark-board-polling-leader";
 const BOARD_VERSION_LEADER_TTL_MS = 45_000;
 const BOARD_VERSION_LEADER_HEARTBEAT_MS = 15_000;
-const BOARD_VERSION_BROADCAST_CHANNEL = "riceark-board-polling";
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_TIMEOUT_MS = 2_147_483_647;
-
-export interface BoardVersionSummary {
-  manifestVersion: number;
-  sheets: Array<{ id: string; version: number }>;
-  periodFingerprint: string;
-  settings?: BoardDisplaySettings | undefined;
-}
 
 type BoardVersionUpdate = Pick<BoardMutationVersions, "sheets" | "manifestVersion"> & {
   periodFingerprint?: string | undefined;
   settings?: BoardDisplaySettings | undefined;
 };
 
+export interface BoardTrackedVersionSummary {
+  manifestVersion: number;
+  sheets: Array<{ id: string; version: number }>;
+  periodFingerprint: string;
+  settings?: BoardDisplaySettings | undefined;
+}
+
 export function mergeBoardVersionSummary(
-  current: BoardVersionSummary | null,
+  current: BoardTrackedVersionSummary | null,
   incoming: BoardVersionUpdate
-): BoardVersionSummary {
+): BoardTrackedVersionSummary {
   const sheetVersions = new Map(current?.sheets.map(({ id, version }) => [id, version]) ?? []);
   for (const sheet of incoming.sheets) {
     sheetVersions.set(sheet.id, Math.max(sheetVersions.get(sheet.id) ?? 0, sheet.version));
@@ -58,19 +90,19 @@ export function mergeBoardVersionSummary(
 }
 
 export interface BoardVersionTrackerState {
-  observed: BoardVersionSummary | null;
-  applied: BoardVersionSummary | null;
+  observed: BoardTrackedVersionSummary | null;
+  applied: BoardTrackedVersionSummary | null;
 }
 
 export interface BoardVersionTracker {
-  observe: (summary: BoardVersionUpdate) => BoardVersionSummary;
-  apply: (summary: BoardVersionUpdate) => BoardVersionSummary;
+  observe: (summary: BoardVersionUpdate) => BoardTrackedVersionSummary;
+  apply: (summary: BoardVersionUpdate) => BoardTrackedVersionSummary;
   getState: () => BoardVersionTrackerState;
 }
 
 export function createBoardVersionTracker(): BoardVersionTracker {
-  let observed: BoardVersionSummary | null = null;
-  let applied: BoardVersionSummary | null = null;
+  let observed: BoardTrackedVersionSummary | null = null;
+  let applied: BoardTrackedVersionSummary | null = null;
 
   return {
     observe: (summary) => {
@@ -251,7 +283,7 @@ interface BoardQueueControl<T> {
   getRejectedSnapshot: () => T[];
 }
 
-interface BoardWriteCoordinatorOptions {
+export interface BoardWriteCoordinatorOptions {
   attachLifecycle?: boolean | undefined;
   onChange?: ((snapshot: BoardWriteSnapshot) => void) | undefined;
   onBeforeAccepted?: (() => void) | undefined;
@@ -516,151 +548,6 @@ interface BoardPollingLeaderRecord {
   expiresAt: number;
 }
 
-export interface BoardPollingBroadcastMessage {
-  sourceId: string;
-  userId: string;
-  type: "board-version-key" | "board-reload";
-  summary: BoardVersionSummary;
-  versionKey: string;
-}
-
-export function shouldReloadForBoardBroadcast(
-  type: BoardPollingBroadcastMessage["type"],
-  previousVersionKey: string | null,
-  nextVersionKey: string,
-  hasLoadedBoard: boolean
-): boolean {
-  return type === "board-reload" || (hasLoadedBoard && previousVersionKey !== nextVersionKey);
-}
-
-interface BoardInvalidationPublisher {
-  schedule: (summary: BoardVersionSummary) => void;
-  dispose: () => void;
-}
-
-export function createBoardInvalidationPublisher(options: {
-  sourceId: string;
-  userId: string;
-  postMessage: (message: BoardPollingBroadcastMessage) => void;
-  versionKeyFor: (summary: BoardVersionSummary) => string;
-}): BoardInvalidationPublisher {
-  let pendingSummary: BoardVersionSummary | null = null;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let disposed = false;
-
-  return {
-    schedule: (summary) => {
-      if (disposed) return;
-      pendingSummary = mergeBoardVersionSummary(pendingSummary, summary);
-      if (timer !== null) return;
-      timer = setTimeout(() => {
-        timer = null;
-        const nextSummary = pendingSummary;
-        pendingSummary = null;
-        if (disposed || !nextSummary) return;
-        options.postMessage({
-          sourceId: options.sourceId,
-          userId: options.userId,
-          type: "board-reload",
-          summary: nextSummary,
-          versionKey: options.versionKeyFor(nextSummary)
-        });
-      }, BOARD_WRITE_INVALIDATION_COALESCE_MS);
-    },
-    dispose: () => {
-      disposed = true;
-      pendingSummary = null;
-      if (timer !== null) clearTimeout(timer);
-      timer = null;
-    }
-  };
-}
-
-function invalidationAdvances(
-  candidate: BoardPollingBroadcastMessage,
-  baseline: BoardPollingBroadcastMessage
-): boolean {
-  if (candidate.summary.manifestVersion > baseline.summary.manifestVersion) return true;
-  const baselineSheets = new Map(baseline.summary.sheets.map(({ id, version }) => [id, version]));
-  if (candidate.summary.sheets.some(({ id, version }) => version > (baselineSheets.get(id) ?? 0))) return true;
-  return candidate.versionKey !== baseline.versionKey
-    && candidate.summary.manifestVersion >= baseline.summary.manifestVersion
-    && candidate.summary.sheets.every(({ id, version }) => version >= (baselineSheets.get(id) ?? 0));
-}
-
-function mergeBoardInvalidations(
-  current: BoardPollingBroadcastMessage,
-  incoming: BoardPollingBroadcastMessage
-): BoardPollingBroadcastMessage {
-  const useIncomingVersionKey = invalidationAdvances(incoming, current);
-  return {
-    ...current,
-    summary: mergeBoardVersionSummary(current.summary, incoming.summary),
-    versionKey: useIncomingVersionKey ? incoming.versionKey : current.versionKey
-  };
-}
-
-export function createBoardReloadGate(options: {
-  userId: string;
-  reload: (message: BoardPollingBroadcastMessage) => Promise<unknown>;
-  onApplied?: ((message: BoardPollingBroadcastMessage) => void) | undefined;
-}): { receive: (message: BoardPollingBroadcastMessage) => void; dispose: () => void } {
-  let active: BoardPollingBroadcastMessage | null = null;
-  let trailing: BoardPollingBroadcastMessage | null = null;
-  let completed: BoardPollingBroadcastMessage | null = null;
-  let disposed = false;
-
-  const start = (message: BoardPollingBroadcastMessage) => {
-    if (disposed) return;
-    active = message;
-    let reloadPromise: Promise<unknown>;
-    try {
-      reloadPromise = Promise.resolve(options.reload(message));
-    } catch (error) {
-      reloadPromise = Promise.reject(error);
-    }
-    reloadPromise.then(
-      () => finish(message, true),
-      () => finish(message, false)
-    );
-  };
-
-  const finish = (message: BoardPollingBroadcastMessage, succeeded: boolean) => {
-    if (disposed || active !== message) return;
-    if (succeeded) {
-      try {
-        options.onApplied?.(message);
-      } catch {
-        // Applied-state observers must not turn a completed reload into another request.
-      }
-      completed = completed ? mergeBoardInvalidations(completed, message) : message;
-    }
-    active = null;
-    const next = trailing;
-    trailing = null;
-    if (next && (!completed || invalidationAdvances(next, completed))) start(next);
-  };
-
-  return {
-    receive: (message) => {
-      if (disposed || message.userId !== options.userId || message.type !== "board-reload") return;
-      if (active) {
-        if (!invalidationAdvances(message, active)) return;
-        trailing = trailing ? mergeBoardInvalidations(trailing, message) : message;
-        return;
-      }
-      if (completed && !invalidationAdvances(message, completed)) return;
-      start(message);
-    },
-    dispose: () => {
-      disposed = true;
-      active = null;
-      trailing = null;
-      completed = null;
-    }
-  };
-}
-
 export function getBoardPollingDelayMs(lastActivityAtMs: number, nowMs = Date.now()): number {
   return nowMs - lastActivityAtMs >= BOARD_VERSION_IDLE_AFTER_MS
     ? BOARD_VERSION_IDLE_CHECK_INTERVAL_MS
@@ -690,38 +577,6 @@ export function canClaimBoardPollingLeadership(
 function createBoardPollingClientId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   return `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function readBoardPollingLeader(storage: Storage | null | undefined): BoardPollingLeaderRecord | null {
-  try {
-    return parseBoardPollingLeaderRecord(storage?.getItem(BOARD_VERSION_LEADER_STORAGE_KEY));
-  } catch {
-    return null;
-  }
-}
-
-function claimBoardPollingLeadership(storage: Storage | null | undefined, clientId: string, nowMs = Date.now()): boolean {
-  if (!storage) return true;
-  try {
-    const current = readBoardPollingLeader(storage);
-    if (!canClaimBoardPollingLeadership(current, clientId, nowMs)) return false;
-    storage.setItem(
-      BOARD_VERSION_LEADER_STORAGE_KEY,
-      JSON.stringify({ id: clientId, expiresAt: nowMs + BOARD_VERSION_LEADER_TTL_MS })
-    );
-    return readBoardPollingLeader(storage)?.id === clientId;
-  } catch {
-    return true;
-  }
-}
-
-function releaseBoardPollingLeadership(storage: Storage | null | undefined, clientId: string): void {
-  if (!storage) return;
-  try {
-    if (readBoardPollingLeader(storage)?.id === clientId) storage.removeItem(BOARD_VERSION_LEADER_STORAGE_KEY);
-  } catch {
-    // If storage is unavailable, the tab simply falls back to local polling.
-  }
 }
 
 function getBrowserLocalStorage(): Storage | null {
@@ -837,7 +692,7 @@ export function reportBoardReloadErrorIfCurrent(
 }
 
 export function buildBoardVersionKey(
-  summary: BoardVersionSummary,
+  summary: BoardTrackedVersionSummary,
   board: BoardPeriodFingerprintSource | null | undefined,
   now = new Date()
 ): string {
@@ -847,414 +702,1020 @@ export function buildBoardVersionKey(
   });
 }
 
-interface BoardReadContext {
-  refreshVersion: boolean;
-  lowerBoundSummary?: BoardVersionSummary | null | undefined;
+export interface BoardPollingStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 }
 
-interface BoardReadScope {
+export interface BoardPollingChannelPort {
+  postMessage(message: BoardPollingV2Message): void;
+  close(): void;
+}
+
+export type BoardPollingRuntimeEvent = "focus" | "visibilitychange" | "activity";
+
+export interface BoardPollingRuntime {
+  nowMs(): number;
+  isVisible(): boolean;
+  storage: BoardPollingStorage | null;
+  setTimeout(callback: () => void, delayMs: number): unknown;
+  clearTimeout(timer: unknown): void;
+  addEventListener(event: BoardPollingRuntimeEvent, callback: () => void): () => void;
+  openChannel(
+    name: string,
+    onMessage: (message: unknown) => void
+  ): BoardPollingChannelPort | null;
+}
+
+export interface BoardPollingV2Message {
+  protocolVersion: 2;
   userId: string;
-  coordinator: BoardWriteCoordinator;
-  owner: BoardRecoveryReadOwner<BoardReadContext>;
+  sourceId: string;
+  summary: BoardVersionSummary;
+}
+
+export function getBoardPollingStorageKey(userId: string): string {
+  return `riceark-board-polling:v2:${userId}`;
+}
+
+export function getBoardPollingChannelName(userId: string): string {
+  return `riceark-board-polling:v2:${userId}`;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isBoardDisplaySettings(value: unknown): value is BoardDisplaySettings {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const settings = value as Partial<BoardDisplaySettings>;
+  return (
+    isFiniteNumber(settings.show_display_name) &&
+    isFiniteNumber(settings.show_server_name) &&
+    isFiniteNumber(settings.show_class_name) &&
+    isFiniteNumber(settings.show_item_level) &&
+    isFiniteNumber(settings.show_combat_power)
+  );
+}
+
+function isBoardVersionSummary(value: unknown): value is BoardVersionSummary {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const summary = value as Partial<BoardVersionSummary>;
+  if (
+    !isFiniteNumber(summary.manifestVersion) ||
+    typeof summary.periodFingerprint !== "string" ||
+    !Array.isArray(summary.sheets) ||
+    (summary.settings !== undefined && !isBoardDisplaySettings(summary.settings))
+  ) {
+    return false;
+  }
+  const ids = new Set<string>();
+  for (const candidate of summary.sheets) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const sheet = candidate as Partial<BoardVersionSummary["sheets"][number]>;
+    if (
+      typeof sheet.id !== "string" ||
+      typeof sheet.name !== "string" ||
+      !isFiniteNumber(sheet.sort_order) ||
+      !isFiniteNumber(sheet.is_default) ||
+      !isFiniteNumber(sheet.version) ||
+      ids.has(sheet.id)
+    ) {
+      return false;
+    }
+    ids.add(sheet.id);
+  }
+  return true;
+}
+
+export function parseBoardPollingMessage(
+  value: unknown,
+  expectedUserId: string,
+  ownSourceId: string
+): BoardPollingV2Message | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const message = value as Partial<BoardPollingV2Message>;
+  if (
+    message.protocolVersion !== 2 ||
+    message.userId !== expectedUserId ||
+    typeof message.sourceId !== "string" ||
+    message.sourceId === ownSourceId ||
+    !isBoardVersionSummary(message.summary)
+  ) {
+    return null;
+  }
+  return message as BoardPollingV2Message;
+}
+
+function readBoardPollingLeaderForKey(
+  storage: BoardPollingStorage | null,
+  key: string
+): BoardPollingLeaderRecord | null {
+  if (!storage) return null;
+  try {
+    return parseBoardPollingLeaderRecord(storage.getItem(key));
+  } catch {
+    return null;
+  }
+}
+
+function claimBoardPollingLeadershipForKey(
+  storage: BoardPollingStorage | null,
+  key: string,
+  sourceId: string,
+  nowMs: number
+): boolean {
+  if (!storage) return true;
+  try {
+    const current = readBoardPollingLeaderForKey(storage, key);
+    if (!canClaimBoardPollingLeadership(current, sourceId, nowMs)) return false;
+    storage.setItem(
+      key,
+      JSON.stringify({ id: sourceId, expiresAt: nowMs + BOARD_VERSION_LEADER_TTL_MS })
+    );
+    return readBoardPollingLeaderForKey(storage, key)?.id === sourceId;
+  } catch {
+    return true;
+  }
+}
+
+function releaseBoardPollingLeadershipForKey(
+  storage: BoardPollingStorage | null,
+  key: string,
+  sourceId: string
+): void {
+  if (!storage) return;
+  try {
+    if (readBoardPollingLeaderForKey(storage, key)?.id === sourceId) storage.removeItem(key);
+  } catch {
+    // Storage failure falls back to independent polling without breaking the board.
+  }
+}
+
+function mergeCanonicalBoardVersionSummary(
+  current: BoardVersionSummary | null,
+  incoming: BoardVersionSummary
+): BoardVersionSummary {
+  if (current === null) return incoming;
+  const metadataSource =
+    incoming.manifestVersion >= current.manifestVersion ? incoming : current;
+  const versions = new Map(current.sheets.map((sheet) => [sheet.id, sheet.version]));
+  for (const sheet of incoming.sheets) {
+    versions.set(sheet.id, Math.max(versions.get(sheet.id) ?? 0, sheet.version));
+  }
+  return {
+    manifestVersion: Math.max(current.manifestVersion, incoming.manifestVersion),
+    sheets: metadataSource.sheets.map((sheet) => ({
+      ...sheet,
+      version: Math.max(sheet.version, versions.get(sheet.id) ?? 0)
+    })),
+    periodFingerprint: incoming.periodFingerprint,
+    ...(incoming.settings !== undefined
+      ? { settings: incoming.settings }
+      : current.settings !== undefined
+        ? { settings: current.settings }
+        : {})
+  };
+}
+
+interface BoardPollingOwner {
+  start(immediate: boolean): void;
+  stop(): void;
+  publish(summary: BoardVersionSummary): void;
+  isRunning(): boolean;
+}
+
+function createBoardPollingOwner(options: {
+  runtime: BoardPollingRuntime;
+  userId: string;
+  sourceId: string;
+  revalidate: () => Promise<void>;
+  applyRemoteSummary: (summary: BoardVersionSummary) => Promise<void>;
+  getSummary: () => BoardVersionSummary | null;
+  onVisible: () => void;
+  onHidden: () => void;
+}): BoardPollingOwner {
+  const leaderKey = getBoardPollingStorageKey(options.userId);
+  let running = false;
+  let generation = 0;
+  let lastActivityAtMs = options.runtime.nowMs();
+  let pollingTimer: unknown = null;
+  let pollingDueAtMs: number | null = null;
+  let heartbeatTimer: unknown = null;
+  let invalidationTimer: unknown = null;
+  let pendingInvalidation: BoardVersionSummary | null = null;
+  let channel: BoardPollingChannelPort | null = null;
+  let activeCheck: Promise<void> | null = null;
+  let removeListeners: Array<() => void> = [];
+
+  const clearTimer = (timer: unknown) => {
+    if (timer !== null) options.runtime.clearTimeout(timer);
+  };
+
+  const postSummary = (summary: BoardVersionSummary) => {
+    channel?.postMessage({
+      protocolVersion: 2,
+      userId: options.userId,
+      sourceId: options.sourceId,
+      summary
+    });
+  };
+
+  const check = (): Promise<void> => {
+    if (!running || !options.runtime.isVisible()) return Promise.resolve();
+    if (activeCheck) return activeCheck;
+    if (
+      !claimBoardPollingLeadershipForKey(
+        options.runtime.storage,
+        leaderKey,
+        options.sourceId,
+        options.runtime.nowMs()
+      )
+    ) {
+      return Promise.resolve();
+    }
+    const checkGeneration = generation;
+    activeCheck = options
+      .revalidate()
+      .then(() => {
+        if (
+          !running ||
+          checkGeneration !== generation ||
+          !options.runtime.isVisible()
+        ) {
+          return;
+        }
+        const summary = options.getSummary();
+        if (summary) postSummary(summary);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        activeCheck = null;
+      });
+    return activeCheck;
+  };
+
+  const scheduleNextCheck = () => {
+    clearTimer(pollingTimer);
+    pollingTimer = null;
+    pollingDueAtMs = null;
+    if (!running || !options.runtime.isVisible()) return;
+    const nowMs = options.runtime.nowMs();
+    const delay = getBoardPollingDelayMs(lastActivityAtMs, nowMs);
+    pollingDueAtMs = nowMs + delay;
+    pollingTimer = options.runtime.setTimeout(() => {
+      pollingTimer = null;
+      pollingDueAtMs = null;
+      void check().finally(scheduleNextCheck);
+    }, delay);
+  };
+
+  const runCheckAndReschedule = () => {
+    clearTimer(pollingTimer);
+    pollingTimer = null;
+    pollingDueAtMs = null;
+    if (!running || !options.runtime.isVisible()) return;
+    void check().finally(scheduleNextCheck);
+  };
+
+  const scheduleHeartbeat = () => {
+    clearTimer(heartbeatTimer);
+    heartbeatTimer = null;
+    if (!running) return;
+    heartbeatTimer = options.runtime.setTimeout(() => {
+      heartbeatTimer = null;
+      if (!running) return;
+      if (options.runtime.isVisible()) {
+        claimBoardPollingLeadershipForKey(
+          options.runtime.storage,
+          leaderKey,
+          options.sourceId,
+          options.runtime.nowMs()
+        );
+      } else {
+        releaseBoardPollingLeadershipForKey(
+          options.runtime.storage,
+          leaderKey,
+          options.sourceId
+        );
+      }
+      scheduleHeartbeat();
+    }, BOARD_VERSION_LEADER_HEARTBEAT_MS);
+  };
+
+  const stop = () => {
+    if (!running && channel === null && removeListeners.length === 0) return;
+    running = false;
+    generation += 1;
+    clearTimer(pollingTimer);
+    clearTimer(heartbeatTimer);
+    clearTimer(invalidationTimer);
+    pollingTimer = null;
+    pollingDueAtMs = null;
+    heartbeatTimer = null;
+    invalidationTimer = null;
+    pendingInvalidation = null;
+    for (const removeListener of removeListeners) removeListener();
+    removeListeners = [];
+    channel?.close();
+    channel = null;
+    releaseBoardPollingLeadershipForKey(
+      options.runtime.storage,
+      leaderKey,
+      options.sourceId
+    );
+  };
+
+  return {
+    start: (immediate) => {
+      if (running) {
+        if (immediate) runCheckAndReschedule();
+        return;
+      }
+      running = true;
+      generation += 1;
+      lastActivityAtMs = options.runtime.nowMs();
+      channel = options.runtime.openChannel(
+        getBoardPollingChannelName(options.userId),
+        (value) => {
+          const message = parseBoardPollingMessage(
+            value,
+            options.userId,
+            options.sourceId
+          );
+          if (!message || !running || !options.runtime.isVisible()) return;
+          void options.applyRemoteSummary(message.summary).catch(() => undefined);
+        }
+      );
+      removeListeners = [
+        options.runtime.addEventListener("focus", () => {
+          if (!running || !options.runtime.isVisible()) return;
+          lastActivityAtMs = options.runtime.nowMs();
+          runCheckAndReschedule();
+        }),
+        options.runtime.addEventListener("visibilitychange", () => {
+          if (!running) return;
+          if (!options.runtime.isVisible()) {
+            clearTimer(pollingTimer);
+            pollingTimer = null;
+            pollingDueAtMs = null;
+            releaseBoardPollingLeadershipForKey(
+              options.runtime.storage,
+              leaderKey,
+              options.sourceId
+            );
+            options.onHidden();
+            return;
+          }
+          lastActivityAtMs = options.runtime.nowMs();
+          options.onVisible();
+          runCheckAndReschedule();
+        }),
+        options.runtime.addEventListener("activity", () => {
+          if (!running) return;
+          lastActivityAtMs = options.runtime.nowMs();
+          const activeDueAtMs = lastActivityAtMs + BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS;
+          if (pollingDueAtMs === null || pollingDueAtMs > activeDueAtMs) {
+            scheduleNextCheck();
+          }
+        })
+      ];
+      scheduleHeartbeat();
+      if (!options.runtime.isVisible()) {
+        options.onHidden();
+        releaseBoardPollingLeadershipForKey(
+          options.runtime.storage,
+          leaderKey,
+          options.sourceId
+        );
+      } else if (immediate) {
+        runCheckAndReschedule();
+      } else {
+        scheduleNextCheck();
+      }
+    },
+    stop,
+    publish: (summary) => {
+      if (!running) return;
+      pendingInvalidation = mergeCanonicalBoardVersionSummary(
+        pendingInvalidation,
+        summary
+      );
+      if (invalidationTimer !== null) return;
+      invalidationTimer = options.runtime.setTimeout(() => {
+        invalidationTimer = null;
+        const pending = pendingInvalidation;
+        pendingInvalidation = null;
+        if (running && pending) postSummary(pending);
+      }, BOARD_WRITE_INVALIDATION_COALESCE_MS);
+    },
+    isRunning: () => running
+  };
+}
+
+export interface BoardSessionSnapshot {
+  userId: string | null;
+  data: BoardPayload | null;
+  error: string | null;
+  activeSheetId: string | null;
+  loading: boolean;
+  hasPendingWrites: boolean;
+  pendingWriteError: string | null;
+}
+
+export interface BoardSessionConfiguration {
+  enabled: boolean;
+  pollingEnabled: boolean;
+  requestedSheetId: string | null;
+  onReplaceSheetId?: ((sheetId: string | null) => void) | undefined;
+}
+
+export interface BoardSession {
+  configure(configuration: BoardSessionConfiguration): Promise<void>;
+  snapshot(): BoardSessionSnapshot;
+  subscribe(listener: (snapshot: BoardSessionSnapshot) => void): () => void;
+  reload(options?: {
+    refreshVersion?: boolean | undefined;
+    onApplied?: ((payload: BoardPayload) => void) | undefined;
+  }): Promise<BoardPayload | null>;
+  reconcileAfterLogoutFailure(): Promise<BoardPayload | null>;
+  selectSheet(sheetId: string): Promise<void>;
+  markSheetStale(sheetId: string): Promise<void>;
+  enqueueCompletion(patch: BoardCompletionPatch): void;
+  enqueueCellState(patch: BoardCellStatePatch): void;
+  flushPendingWrites(): Promise<void>;
+  retryPendingWrites(): void;
+  discardPendingWrites(): void;
+  dispose(): void;
+}
+
+export interface CreateBoardSessionOptions {
+  userId: string;
+  api?: BoardDataApi | undefined;
+  runtime?: BoardPollingRuntime | null | undefined;
+  sourceId?: string | undefined;
+  writeCoordinatorOptions?: BoardWriteCoordinatorOptions | undefined;
+}
+
+function compareBoardSheetLabels(
+  left: { id: string; name: string; sort_order: number },
+  right: { id: string; name: string; sort_order: number }
+): number {
+  const nameComparison = left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
+  const idComparison = left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+  return (
+    left.sort_order - right.sort_order ||
+    nameComparison ||
+    idComparison
+  );
+}
+
+function getDefaultBoardSheetId(state: BoardDataState): string | null {
+  const sorted = [...state.manifest].sort(compareBoardSheetLabels);
+  return sorted.find((sheet) => sheet.is_default === 1)?.id ?? sorted[0]?.id ?? null;
+}
+
+function getActiveBoardSheetPayload(state: BoardDataState): BoardSheetPayload | null {
+  if (state.userId === null || state.activeSheetId === null) return null;
+  return getBoardSheetCacheEntry(state.cache, state.userId, state.activeSheetId)?.payload ?? null;
+}
+
+function buildCanonicalBoardVersionSummary(state: BoardDataState): BoardVersionSummary | null {
+  if (state.userId === null || state.settings === null) return null;
+  return {
+    manifestVersion: state.manifestVersion,
+    sheets: state.manifest,
+    periodFingerprint: getActiveBoardSheetPayload(state)?.periodFingerprint ?? "",
+    settings: state.settings
+  };
+}
+
+export function createBoardSession(options: CreateBoardSessionOptions): BoardSession {
+  const runtime = options.runtime ?? null;
+  const sourceId = options.sourceId ?? createBoardPollingClientId();
+  const controller = createBoardDataController(options.api ?? createBoardDataApi(), {
+    userId: options.userId,
+    ...(runtime
+      ? {
+          now: () => new Date(runtime.nowMs()),
+          nowMs: () => runtime.nowMs()
+        }
+      : {})
+  });
+  const listeners = new Set<(snapshot: BoardSessionSnapshot) => void>();
+  let disposed = false;
+  let configurationGeneration = 0;
+  let enabled = false;
+  let bootstrapped = false;
+  let bootstrapPromise: Promise<void> | null = null;
+  let requestedSheetId: string | null = null;
+  let hasRequestedSheetId = false;
+  let invalidReplacementSent = false;
+  let onReplaceSheetId: ((sheetId: string | null) => void) | undefined;
+  let controllerState = controller.snapshot();
+  let activePayloadIdentity: BoardSheetPayload | null = null;
+  let activePayloadSheetId: string | null = null;
+  let pollingOwner: BoardPollingOwner | null = null;
+  let boundaryTimer: unknown = null;
+  let coordinatorSnapshot: BoardWriteSnapshot = {
+    data: null,
+    hasPendingWrites: false,
+    pendingWriteError: null
+  };
+
+  const buildSnapshot = (): BoardSessionSnapshot => {
+    if (disposed) {
+      return {
+        userId: null,
+        data: null,
+        error: null,
+        activeSheetId: null,
+        loading: false,
+        hasPendingWrites: false,
+        pendingWriteError: null
+      };
+    }
+    const activePayload = getActiveBoardSheetPayload(controllerState);
+    const canShowCoordinatorData =
+      enabled &&
+      activePayload !== null &&
+      activePayload === activePayloadIdentity &&
+      controllerState.activeSheetId === activePayloadSheetId;
+    return {
+      userId: options.userId,
+      data: canShowCoordinatorData ? coordinatorSnapshot.data : null,
+      error: enabled ? controllerState.error : null,
+      activeSheetId: controllerState.activeSheetId,
+      loading: enabled ? controllerState.loading : false,
+      hasPendingWrites: coordinatorSnapshot.hasPendingWrites,
+      pendingWriteError: coordinatorSnapshot.pendingWriteError
+    };
+  };
+
+  const publishSnapshot = () => {
+    if (disposed) return;
+    const next = buildSnapshot();
+    for (const listener of [...listeners]) {
+      try {
+        listener(next);
+      } catch {
+        // A React observer cannot interrupt controller or queue progress.
+      }
+    }
+  };
+
+  const clearBoundaryTimer = () => {
+    if (runtime && boundaryTimer !== null) runtime.clearTimeout(boundaryTimer);
+    boundaryTimer = null;
+  };
+
+  const scheduleBoundary = () => {
+    clearBoundaryTimer();
+    if (
+      disposed ||
+      !runtime ||
+      !pollingOwner?.isRunning() ||
+      !runtime.isVisible()
+    ) {
+      return;
+    }
+    const activePayload = getActiveBoardSheetPayload(controllerState);
+    const boundaryMs = getNextBoardPeriodBoundaryMs(
+      activePayload,
+      new Date(runtime.nowMs())
+    );
+    if (boundaryMs === null) return;
+    const delay = Math.max(
+      1_000,
+      Math.min(boundaryMs - runtime.nowMs() + 1_000, MAX_TIMEOUT_MS)
+    );
+    boundaryTimer = runtime.setTimeout(() => {
+      boundaryTimer = null;
+      if (
+        disposed ||
+        !pollingOwner?.isRunning() ||
+        !runtime.isVisible()
+      ) {
+        return;
+      }
+      const activeSheetId = controller.snapshot().activeSheetId;
+      if (activeSheetId !== null) {
+        void controller.invalidatePeriod(activeSheetId).catch(() => undefined);
+      }
+    }, delay);
+  };
+
+  const reconcileVisiblePeriod = () => {
+    if (disposed || !runtime || !pollingOwner?.isRunning()) return;
+    const state = controller.snapshot();
+    const activePayload = getActiveBoardSheetPayload(state);
+    if (
+      state.activeSheetId !== null &&
+      activePayload !== null &&
+      activePayload.periodFingerprint !==
+        buildLocalBoardPeriodFingerprint(activePayload, new Date(runtime.nowMs()))
+    ) {
+      void controller
+        .invalidatePeriod(state.activeSheetId)
+        .catch(() => undefined)
+        .finally(scheduleBoundary);
+      return;
+    }
+    scheduleBoundary();
+  };
+
+  const suppliedCoordinatorOptions = options.writeCoordinatorOptions;
+  const coordinator = createBoardWriteCoordinator(options.userId, {
+    ...suppliedCoordinatorOptions,
+    onChange: (next) => {
+      coordinatorSnapshot = next;
+      suppliedCoordinatorOptions?.onChange?.(next);
+      publishSnapshot();
+    },
+    onBeforeAccepted: suppliedCoordinatorOptions?.onBeforeAccepted,
+    onVersions: (versions) => {
+      controller.applyMutationVersions(versions);
+      const summary = buildCanonicalBoardVersionSummary(controller.snapshot());
+      if (summary) pollingOwner?.publish(summary);
+      suppliedCoordinatorOptions?.onVersions?.(versions);
+    }
+  });
+  coordinatorSnapshot = coordinator.getSnapshot();
+
+  const applyControllerState = (next: BoardDataState, effect?: BoardDataEffect) => {
+    if (disposed) return;
+    controllerState = next;
+    if (effect?.type === "replace-url-with-sheet") {
+      onReplaceSheetId?.(effect.replaceUrlWithSheetId);
+    }
+    scheduleBoundary();
+
+    const activePayload = getActiveBoardSheetPayload(next);
+    if (activePayload === null || next.settings === null || next.userId === null) {
+      activePayloadIdentity = null;
+      activePayloadSheetId = next.activeSheetId;
+      publishSnapshot();
+      return;
+    }
+
+    const samePayload =
+      activePayload === activePayloadIdentity && next.activeSheetId === activePayloadSheetId;
+    activePayloadIdentity = activePayload;
+    activePayloadSheetId = next.activeSheetId;
+    if (samePayload) {
+      const authoritative = coordinator.getAuthoritativeBase();
+      if (authoritative) {
+        coordinator.setAuthoritativeBase({
+          ...authoritative,
+          userId: next.userId,
+          settings: next.settings,
+          sheets: next.manifest
+        });
+        return;
+      }
+    }
+    coordinator.setAuthoritativeBase(
+      composeActiveBoardView(next.userId, next.settings, next.manifest, activePayload)
+    );
+  };
+
+  const unsubscribeController = controller.subscribe(applyControllerState);
+  if (runtime) {
+    pollingOwner = createBoardPollingOwner({
+      runtime,
+      userId: options.userId,
+      sourceId,
+      revalidate: () => controller.revalidate("poll"),
+      applyRemoteSummary: (summary) => controller.applyRemoteSummary(summary, "broadcast"),
+      getSummary: () => buildCanonicalBoardVersionSummary(controller.snapshot()),
+      onVisible: reconcileVisiblePeriod,
+      onHidden: clearBoundaryTimer
+    });
+  }
+
+  const reconcileRequestedRoute = async (routeChanged: boolean) => {
+    if (disposed || !enabled || !bootstrapped) return;
+    const state = controller.snapshot();
+    const fallbackId = getDefaultBoardSheetId(state);
+    const targetId =
+      requestedSheetId === null
+        ? fallbackId
+        : state.manifest.some((sheet) => sheet.id === requestedSheetId)
+          ? requestedSheetId
+          : fallbackId;
+
+    if (targetId !== null && state.activeSheetId !== targetId) {
+      await controller.selectSheet(targetId);
+    }
+    if (requestedSheetId !== null && targetId !== requestedSheetId && !invalidReplacementSent) {
+      invalidReplacementSent = true;
+      onReplaceSheetId?.(targetId);
+    } else if (routeChanged && requestedSheetId === null) {
+      invalidReplacementSent = false;
+    }
+  };
+
+  const configure = async (configuration: BoardSessionConfiguration) => {
+    if (disposed) return;
+    const generation = ++configurationGeneration;
+    const hadBootstrapped = bootstrapped;
+    const wasPolling = pollingOwner?.isRunning() ?? false;
+    const shouldPoll = configuration.enabled && configuration.pollingEnabled;
+    if (!shouldPoll) {
+      pollingOwner?.stop();
+      clearBoundaryTimer();
+    }
+    const routeChanged =
+      !hasRequestedSheetId || requestedSheetId !== configuration.requestedSheetId;
+    if (routeChanged) invalidReplacementSent = false;
+    requestedSheetId = configuration.requestedSheetId;
+    hasRequestedSheetId = true;
+    onReplaceSheetId = configuration.onReplaceSheetId;
+    enabled = configuration.enabled;
+    publishSnapshot();
+    if (!enabled) return;
+
+    if (!bootstrapped) {
+      if (bootstrapPromise === null) {
+        bootstrapPromise = controller
+          .bootstrap(requestedSheetId ?? undefined)
+          .then(() => {
+            if (!disposed) bootstrapped = true;
+          })
+          .finally(() => {
+            bootstrapPromise = null;
+          });
+      }
+      await bootstrapPromise;
+    }
+    if (disposed || generation !== configurationGeneration || !enabled) return;
+    await reconcileRequestedRoute(routeChanged);
+    if (disposed || generation !== configurationGeneration || !enabled) return;
+    if (shouldPoll && pollingOwner && !wasPolling) {
+      pollingOwner.start(hadBootstrapped);
+      scheduleBoundary();
+    }
+  };
+
+  const reload = async (reloadOptions: {
+    refreshVersion?: boolean | undefined;
+    onApplied?: ((payload: BoardPayload) => void) | undefined;
+  } = {}) => {
+    void reloadOptions.refreshVersion;
+    if (disposed || !enabled || !bootstrapped) return buildSnapshot().data;
+    await controller.revalidate("reload");
+    const payload = buildSnapshot().data;
+    if (payload) reloadOptions.onApplied?.(payload);
+    return payload;
+  };
+
+  return {
+    configure,
+    snapshot: buildSnapshot,
+    subscribe: (listener) => {
+      if (disposed) return () => undefined;
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    reload,
+    reconcileAfterLogoutFailure: async () => {
+      if (disposed || !bootstrapped) return buildSnapshot().data;
+      const before = getActiveBoardSheetPayload(controller.snapshot());
+      await controller.revalidate("logout-recovery");
+      const afterState = controller.snapshot();
+      const after = getActiveBoardSheetPayload(afterState);
+      if (afterState.activeSheetId !== null && before === after) {
+        await controller.markSheetStale(afterState.activeSheetId);
+      }
+      return buildSnapshot().data;
+    },
+    selectSheet: (sheetId) => controller.selectSheet(sheetId),
+    markSheetStale: (sheetId) => controller.markSheetStale(sheetId),
+    enqueueCompletion: (patch) => coordinator.enqueueCompletion(patch),
+    enqueueCellState: (patch) => coordinator.enqueueCellState(patch),
+    flushPendingWrites: () => coordinator.flushPendingWrites(),
+    retryPendingWrites: () => coordinator.retryPendingWrites(),
+    discardPendingWrites: () => coordinator.discardPendingWrites(),
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      enabled = false;
+      pollingOwner?.stop();
+      clearBoundaryTimer();
+      unsubscribeController();
+      controller.dispose();
+      coordinator.discardAndDispose();
+      controllerState = {
+        userId: null,
+        settings: null,
+        manifestVersion: 0,
+        manifest: [],
+        activeSheetId: null,
+        cache: new Map(),
+        loading: false,
+        error: null
+      };
+      activePayloadIdentity = null;
+      activePayloadSheetId = null;
+      coordinatorSnapshot = {
+        data: null,
+        hasPendingWrites: false,
+        pendingWriteError: null
+      };
+      listeners.clear();
+    }
+  };
+}
+
+export function createBrowserBoardPollingRuntime(): BoardPollingRuntime | null {
+  if (typeof window === "undefined" || typeof document === "undefined") return null;
+  const storage = getBrowserLocalStorage();
+
+  return {
+    nowMs: () => Date.now(),
+    isVisible: () => document.visibilityState !== "hidden",
+    storage,
+    setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
+    clearTimeout: (timer) => {
+      if (typeof timer === "number") window.clearTimeout(timer);
+    },
+    addEventListener: (event, callback) => {
+      if (event === "focus") {
+        window.addEventListener("focus", callback);
+        return () => window.removeEventListener("focus", callback);
+      }
+      if (event === "visibilitychange") {
+        document.addEventListener("visibilitychange", callback);
+        return () => document.removeEventListener("visibilitychange", callback);
+      }
+
+      const activityEvents: Array<keyof WindowEventMap> = [
+        "pointerdown",
+        "keydown",
+        "wheel",
+        "touchstart"
+      ];
+      for (const activityEvent of activityEvents) {
+        window.addEventListener(activityEvent, callback, { passive: true });
+      }
+      return () => {
+        for (const activityEvent of activityEvents) {
+          window.removeEventListener(activityEvent, callback);
+        }
+      };
+    },
+    openChannel: (name, onMessage) => {
+      if (typeof BroadcastChannel === "undefined") return null;
+      const channel = new BroadcastChannel(name);
+      channel.onmessage = (event: MessageEvent<unknown>) => onMessage(event.data);
+      return {
+        postMessage: (message) => channel.postMessage(message),
+        close: () => channel.close()
+      };
+    }
+  };
+}
+
+function emptyBoardSessionSnapshot(): BoardSessionSnapshot {
+  return {
+    userId: null,
+    data: null,
+    error: null,
+    activeSheetId: null,
+    loading: false,
+    hasPendingWrites: false,
+    pendingWriteError: null
+  };
+}
+
+export interface UseBoardOptions {
+  enabled?: boolean | undefined;
+  pollingEnabled?: boolean | undefined;
+  userId?: string | null | undefined;
+  requestedSheetId?: string | null | undefined;
+  onReplaceSheetId?: ((sheetId: string | null) => void) | undefined;
 }
 
 export function useBoard({
   enabled = true,
   pollingEnabled = enabled,
-  userId = null
-}: { enabled?: boolean | undefined; pollingEnabled?: boolean | undefined; userId?: string | null | undefined } = {}) {
-  const [data, setData] = useState<BoardPayload | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [hasPendingWrites, setHasPendingWrites] = useState(false);
-  const [pendingWriteError, setPendingWriteError] = useState<string | null>(null);
-  const dataRef = useRef<BoardPayload | null>(null);
-  const enabledRef = useRef(enabled);
-  const coordinatorRef = useRef<BoardWriteCoordinator | null>(null);
-  const boardReadScopeRef = useRef<BoardReadScope | null>(null);
-  const appliedVersionKeyRef = useRef<string | null>(null);
-  const versionTrackerRef = useRef<BoardVersionTracker>(createBoardVersionTracker());
-  const lastActivityAtRef = useRef(Date.now());
-  const pollingClientIdRef = useRef<string | null>(null);
-  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
-  const invalidationPublisherRef = useRef<BoardInvalidationPublisher | null>(null);
-  enabledRef.current = enabled;
-
-  function setBoardData(payload: BoardPayload | null) {
-    dataRef.current = payload;
-    setData(payload);
-  }
-
-  const handleMutationVersions = useCallback((versions: BoardMutationVersions) => {
-    const summary = versionTrackerRef.current.apply(versions);
-    const versionKey = buildBoardVersionKey(summary, dataRef.current);
-    appliedVersionKeyRef.current = versionKey;
-    invalidationPublisherRef.current?.schedule(summary);
-  }, []);
+  userId = null,
+  requestedSheetId = null,
+  onReplaceSheetId
+}: UseBoardOptions = {}) {
+  const [snapshot, setSnapshot] = useState<BoardSessionSnapshot>(
+    emptyBoardSessionSnapshot
+  );
+  const sessionRef = useRef<{
+    userId: string;
+    session: BoardSession;
+  } | null>(null);
 
   useEffect(() => {
-    boardReadScopeRef.current?.owner.dispose();
-    boardReadScopeRef.current = null;
-    const previous = coordinatorRef.current;
-    if (previous) {
-      previous.discardAndDispose();
-      coordinatorRef.current = null;
-    }
-    invalidationPublisherRef.current?.dispose();
-    invalidationPublisherRef.current = null;
-    setBoardData(null);
-    setHasPendingWrites(false);
-    setPendingWriteError(null);
-    appliedVersionKeyRef.current = null;
-    const versionTracker = createBoardVersionTracker();
-    versionTrackerRef.current = versionTracker;
+    sessionRef.current?.session.dispose();
+    sessionRef.current = null;
+    setSnapshot(emptyBoardSessionSnapshot());
     if (!userId) return;
 
-    const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
-    pollingClientIdRef.current = clientId;
-    const invalidationPublisher = createBoardInvalidationPublisher({
-      sourceId: clientId,
+    const session = createBoardSession({
       userId,
-      postMessage: (message) => broadcastChannelRef.current?.postMessage(message),
-      versionKeyFor: (summary) => buildBoardVersionKey(summary, dataRef.current)
+      runtime: createBrowserBoardPollingRuntime()
     });
-    invalidationPublisherRef.current = invalidationPublisher;
-    let readGate: BoardReadGate<BoardReadContext> | null = null;
-    const coordinator = createBoardWriteCoordinator(userId, {
-      onChange: (snapshot) => {
-        setHasPendingWrites(snapshot.hasPendingWrites);
-        setPendingWriteError(snapshot.pendingWriteError);
-        setBoardData(enabledRef.current ? snapshot.data : null);
-      },
-      onBeforeAccepted: () => readGate?.invalidate(),
-      onVersions: handleMutationVersions
+    sessionRef.current = { userId, session };
+    setSnapshot(session.snapshot());
+    const unsubscribe = session.subscribe((next) => {
+      if (sessionRef.current?.session === session) setSnapshot(next);
     });
-    coordinatorRef.current = coordinator;
-    readGate = createBoardReadGate<BoardReadContext>({
-      prepare: async (context) => {
-        if (!context.refreshVersion) return { ...context, lowerBoundSummary: null };
-        try {
-          const summary = await apiGet<BoardVersionSummary>("/api/board/versions");
-          versionTracker.observe(summary);
-          return { ...context, lowerBoundSummary: summary };
-        } catch {
-          return { ...context, lowerBoundSummary: null };
-        }
-      },
-      read: () => apiGet<BoardPayload>("/api/board"),
-      onApplied: (payload, context) => {
-        coordinator.setAuthoritativeBase(payload);
-        if (context.lowerBoundSummary) {
-          const applied = versionTracker.apply(context.lowerBoundSummary);
-          appliedVersionKeyRef.current = buildBoardVersionKey(applied, payload);
-        }
-      },
-      onFailure: (readError) => {
-        setError(formatBoardError(readError));
-      }
-    });
-    const readOwner = createBoardRecoveryReadOwner({
-      gate: readGate,
-      onTimeout: (recoveryError) => {
-        reportBoardReloadErrorIfCurrent(coordinatorRef.current, coordinator, recoveryError, setError);
-      }
-    });
-    const readScope = { userId, coordinator, owner: readOwner };
-    boardReadScopeRef.current = readScope;
+
     return () => {
-      if (boardReadScopeRef.current === readScope) boardReadScopeRef.current = null;
-      readOwner.dispose();
-      if (coordinatorRef.current === coordinator) coordinatorRef.current = null;
-      if (invalidationPublisherRef.current === invalidationPublisher) {
-        invalidationPublisherRef.current = null;
-      }
-      invalidationPublisher.dispose();
-      coordinator.discardAndDispose();
+      unsubscribe();
+      if (sessionRef.current?.session === session) sessionRef.current = null;
+      session.dispose();
     };
-  }, [handleMutationVersions, userId]);
-
-  const reload = useCallback(async (options: {
-    refreshVersion?: boolean;
-    onApplied?: ((payload: BoardPayload) => void) | undefined;
-  } = {}) => {
-    const coordinator = coordinatorRef.current;
-    const readScope = boardReadScopeRef.current;
-    if (
-      !enabled ||
-      !coordinator ||
-      coordinator.userId !== userId ||
-      !readScope ||
-      readScope.userId !== userId ||
-      readScope.coordinator !== coordinator
-    ) return dataRef.current;
-    setError(null);
-    const result = await readScope.owner.load({ refreshVersion: options.refreshVersion ?? pollingEnabled });
-    if (result.type === "failed") throw result.error;
-    if (result.type === "applied") options.onApplied?.(result.payload);
-    return coordinator.getVisibleData();
-  }, [enabled, pollingEnabled, userId]);
-
-  const reconcileAfterLogoutFailure = useCallback(async () => {
-    const coordinator = coordinatorRef.current;
-    const readScope = boardReadScopeRef.current;
-    if (
-      !userId ||
-      !coordinator ||
-      coordinator.userId !== userId ||
-      !readScope ||
-      readScope.userId !== userId ||
-      readScope.coordinator !== coordinator
-    ) {
-      throw new Error("로그아웃 복구를 위한 보드 상태를 찾지 못했습니다.");
-    }
-
-    setError(null);
-    try {
-      await readScope.owner.reconcile({ refreshVersion: true });
-      return coordinator.getVisibleData();
-    } catch (recoveryError) {
-      reportBoardReloadErrorIfCurrent(coordinatorRef.current, coordinator, recoveryError, setError);
-      throw recoveryError;
-    }
   }, [userId]);
 
-  const reloadBoardForInvalidation = useCallback(async () => {
-    let appliedPayload: BoardPayload | null = null;
-    await reload({
-      refreshVersion: false,
-      onApplied: (payload) => {
-        appliedPayload = payload;
-      }
-    });
-    if (!appliedPayload) throw new Error("Board reload was superseded before it could apply");
-    return appliedPayload;
-  }, [reload]);
-
   useEffect(() => {
-    setError(null);
-    const coordinator = coordinatorRef.current;
-    const readScope = boardReadScopeRef.current;
-    if (
-      !enabled ||
-      !userId ||
-      !coordinator ||
-      coordinator.userId !== userId ||
-      !readScope ||
-      readScope.userId !== userId ||
-      readScope.coordinator !== coordinator
-    ) {
-      readScope?.owner.invalidate();
-      setBoardData(null);
-      return;
+    const current = sessionRef.current;
+    if (!current || current.userId !== userId) return;
+    void current.session
+      .configure({
+        enabled,
+        pollingEnabled,
+        requestedSheetId,
+        ...(onReplaceSheetId ? { onReplaceSheetId } : {})
+      })
+      .catch(() => undefined);
+  }, [enabled, onReplaceSheetId, pollingEnabled, requestedSheetId, userId]);
+
+  const getCurrentSession = useCallback(() => {
+    const current = sessionRef.current;
+    return current && current.userId === userId ? current.session : null;
+  }, [userId]);
+
+  const reload = useCallback(
+    (options: Parameters<BoardSession["reload"]>[0] = {}) =>
+      getCurrentSession()?.reload(options) ?? Promise.resolve(null),
+    [getCurrentSession]
+  );
+  const reconcileAfterLogoutFailure = useCallback(() => {
+    const current = getCurrentSession();
+    if (!current) {
+      return Promise.reject(
+        new Error("로그아웃 복구를 위한 보드 상태를 찾지 못했습니다.")
+      );
     }
-    setBoardData(coordinator.getVisibleData());
-    void readScope.owner.load({ refreshVersion: pollingEnabled });
-  }, [enabled, pollingEnabled, userId]);
+    return current.reconcileAfterLogoutFailure();
+  }, [getCurrentSession]);
+  const selectSheet = useCallback(
+    (sheetId: string) =>
+      getCurrentSession()?.selectSheet(sheetId) ?? Promise.resolve(),
+    [getCurrentSession]
+  );
+  const markSheetStale = useCallback(
+    (sheetId: string) =>
+      getCurrentSession()?.markSheetStale(sheetId) ?? Promise.resolve(),
+    [getCurrentSession]
+  );
+  const enqueueCompletion = useCallback(
+    (patch: BoardCompletionPatch) => getCurrentSession()?.enqueueCompletion(patch),
+    [getCurrentSession]
+  );
+  const enqueueCellState = useCallback(
+    (patch: BoardCellStatePatch) => getCurrentSession()?.enqueueCellState(patch),
+    [getCurrentSession]
+  );
+  const flushPendingWrites = useCallback(
+    () => getCurrentSession()?.flushPendingWrites() ?? Promise.resolve(),
+    [getCurrentSession]
+  );
+  const retryPendingWrites = useCallback(
+    () => getCurrentSession()?.retryPendingWrites(),
+    [getCurrentSession]
+  );
+  const discardPendingWrites = useCallback(
+    () => getCurrentSession()?.discardPendingWrites(),
+    [getCurrentSession]
+  );
 
-  useEffect(() => {
-    if (!enabled || !pollingEnabled || !userId) return;
-    if (typeof window === "undefined") return;
-    const currentUserId = userId;
-    let active = true;
-    let timer: number | null = null;
-    const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
-    pollingClientIdRef.current = clientId;
-    const storage = getBrowserLocalStorage();
-    const versionTracker = versionTrackerRef.current;
-
-    function clearTimer() {
-      if (timer !== null) {
-        window.clearTimeout(timer);
-        timer = null;
-      }
-    }
-
-    function postBoardPollingMessage(message: Omit<BoardPollingBroadcastMessage, "sourceId" | "userId">) {
-      broadcastChannelRef.current?.postMessage({
-        ...message,
-        sourceId: clientId,
-        userId: currentUserId
-      } satisfies BoardPollingBroadcastMessage);
-    }
-
-    async function checkForRemoteChanges() {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      if (!claimBoardPollingLeadership(storage, clientId)) return;
-      try {
-        const responseSummary = await apiGet<BoardVersionSummary>("/api/board/versions");
-        if (!active) return;
-        const summary = versionTracker.observe(responseSummary);
-        const nextVersionKey = buildBoardVersionKey(summary, dataRef.current);
-        if (dataRef.current && appliedVersionKeyRef.current !== nextVersionKey) {
-          postBoardPollingMessage({ type: "board-reload", summary, versionKey: nextVersionKey });
-          const payload = await reloadBoardForInvalidation();
-          if (!active) return;
-          const applied = versionTracker.apply(summary);
-          appliedVersionKeyRef.current = buildBoardVersionKey(applied, payload);
-          return;
-        }
-        postBoardPollingMessage({ type: "board-version-key", summary, versionKey: nextVersionKey });
-      } catch {
-        // Keep the current board visible; manual refresh/login handling remains available.
-      }
-    }
-
-    function scheduleNextCheck() {
-      clearTimer();
-      if (!active) return;
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      timer = window.setTimeout(() => {
-        void checkForRemoteChanges().finally(scheduleNextCheck);
-      }, getBoardPollingDelayMs(lastActivityAtRef.current));
-    }
-
-    function runCheckAndReschedule() {
-      clearTimer();
-      void checkForRemoteChanges().finally(scheduleNextCheck);
-    }
-
-    function handleFocus() {
-      lastActivityAtRef.current = Date.now();
-      runCheckAndReschedule();
-    }
-
-    function handleVisibilityChange() {
-      if (document.visibilityState === "visible") {
-        lastActivityAtRef.current = Date.now();
-        runCheckAndReschedule();
-      } else {
-        clearTimer();
-        releaseBoardPollingLeadership(storage, clientId);
-      }
-    }
-
-    function handleUserActivity() {
-      lastActivityAtRef.current = Date.now();
-      scheduleNextCheck();
-    }
-
-    window.addEventListener("focus", handleFocus);
-    window.addEventListener("pointerdown", handleUserActivity);
-    window.addEventListener("keydown", handleUserActivity);
-    window.addEventListener("wheel", handleUserActivity, { passive: true });
-    window.addEventListener("touchstart", handleUserActivity, { passive: true });
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    runCheckAndReschedule();
-
-    return () => {
-      active = false;
-      clearTimer();
-      releaseBoardPollingLeadership(storage, clientId);
-      window.removeEventListener("focus", handleFocus);
-      window.removeEventListener("pointerdown", handleUserActivity);
-      window.removeEventListener("keydown", handleUserActivity);
-      window.removeEventListener("wheel", handleUserActivity);
-      window.removeEventListener("touchstart", handleUserActivity);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [enabled, pollingEnabled, reloadBoardForInvalidation, userId]);
-
-  useEffect(() => {
-    if (!userId) return;
-    if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") return;
-    const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
-    pollingClientIdRef.current = clientId;
-    const versionTracker = versionTrackerRef.current;
-    const channel = new BroadcastChannel(BOARD_VERSION_BROADCAST_CHANNEL);
-    const reloadGate = createBoardReloadGate({
-      userId,
-      reload: reloadBoardForInvalidation,
-      onApplied: (message) => {
-        const applied = versionTracker.apply(message.summary);
-        appliedVersionKeyRef.current = buildBoardVersionKey(applied, dataRef.current);
-      }
-    });
-    broadcastChannelRef.current = channel;
-    channel.onmessage = (event: MessageEvent<BoardPollingBroadcastMessage>) => {
-      const message = event.data;
-      if (!message || message.sourceId === clientId || message.userId !== userId) return;
-      const previousVersionKey = appliedVersionKeyRef.current;
-      const hasLoadedBoard = dataRef.current !== null;
-      const summary = versionTracker.observe(message.summary);
-      const nextVersionKey = buildBoardVersionKey(summary, dataRef.current);
-      if (shouldReloadForBoardBroadcast(message.type, previousVersionKey, nextVersionKey, hasLoadedBoard)) {
-        reloadGate.receive({ ...message, type: "board-reload", summary, versionKey: nextVersionKey });
-      }
-    };
-    return () => {
-      if (broadcastChannelRef.current === channel) broadcastChannelRef.current = null;
-      reloadGate.dispose();
-      channel.close();
-    };
-  }, [reloadBoardForInvalidation, userId]);
-
-  useEffect(() => {
-    if (!enabled || !pollingEnabled) return;
-    if (typeof window === "undefined") return;
-    const clientId = pollingClientIdRef.current ?? createBoardPollingClientId();
-    pollingClientIdRef.current = clientId;
-    const storage = getBrowserLocalStorage();
-    const heartbeat = window.setInterval(() => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-        releaseBoardPollingLeadership(storage, clientId);
-        return;
-      }
-      void claimBoardPollingLeadership(storage, clientId);
-    }, BOARD_VERSION_LEADER_HEARTBEAT_MS);
-    return () => {
-      window.clearInterval(heartbeat);
-      releaseBoardPollingLeadership(storage, clientId);
-    };
-  }, [enabled, pollingEnabled]);
-
-  useEffect(() => {
-    if (!enabled || !data) return;
-    if (typeof window === "undefined") return;
-    const boundaryMs = getNextBoardPeriodBoundaryMs(data);
-    if (boundaryMs === null) return;
-    const delay = Math.max(1_000, Math.min(boundaryMs - Date.now() + 1_000, MAX_TIMEOUT_MS));
-    const timer = window.setTimeout(() => {
-      const current = dataRef.current;
-      if (!current) return;
-      const appliedSummary = versionTrackerRef.current.getState().applied;
-      if (appliedSummary) {
-        appliedVersionKeyRef.current = buildBoardVersionKey(appliedSummary, current);
-      }
-      setBoardData({ ...current });
-    }, delay);
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [enabled, data]);
-
-  const enqueueCompletion = useCallback((patch: BoardCompletionPatch) => {
-    coordinatorRef.current?.enqueueCompletion(patch);
-  }, []);
-  const enqueueCellState = useCallback((patch: BoardCellStatePatch) => {
-    coordinatorRef.current?.enqueueCellState(patch);
-  }, []);
-  const flushPendingWrites = useCallback(async () => {
-    await coordinatorRef.current?.flushPendingWrites();
-  }, []);
-  const retryPendingWrites = useCallback(() => {
-    coordinatorRef.current?.retryPendingWrites();
-  }, []);
-  const discardPendingWrites = useCallback(() => {
-    coordinatorRef.current?.discardPendingWrites();
-  }, []);
-
-  const matchesCurrentUser = Boolean(userId && coordinatorRef.current?.userId === userId);
+  const matchesCurrentUser =
+    userId !== null && snapshot.userId === userId && sessionRef.current?.userId === userId;
 
   return {
-    data: matchesCurrentUser ? data : null,
-    error,
+    data: matchesCurrentUser ? snapshot.data : null,
+    error: matchesCurrentUser ? snapshot.error : null,
+    activeSheetId: matchesCurrentUser ? snapshot.activeSheetId : null,
+    loading: matchesCurrentUser ? snapshot.loading : false,
     reload,
     reconcileAfterLogoutFailure,
+    selectSheet,
+    markSheetStale,
     enqueueCompletion,
     enqueueCellState,
     flushPendingWrites,
     retryPendingWrites,
     discardPendingWrites,
-    hasPendingWrites: matchesCurrentUser ? hasPendingWrites : false,
-    pendingWriteError: matchesCurrentUser ? pendingWriteError : null
+    hasPendingWrites: matchesCurrentUser ? snapshot.hasPendingWrites : false,
+    pendingWriteError: matchesCurrentUser ? snapshot.pendingWriteError : null
   };
 }

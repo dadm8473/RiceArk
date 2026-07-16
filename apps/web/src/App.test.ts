@@ -24,6 +24,7 @@ const hooks = vi.hoisted(() => ({
     callback: () => void | (() => void);
     dependencies: readonly unknown[] | undefined;
   }>,
+  stateUpdates: [] as unknown[],
   useBoard: vi.fn(),
   BoardOverview: vi.fn(),
   SharedRiceBinPanel: vi.fn(),
@@ -36,6 +37,13 @@ vi.mock("react", async (importOriginal) => {
     ...actual,
     useEffect: (callback: () => void | (() => void), dependencies?: readonly unknown[]) => {
       hooks.effects.push({ callback, dependencies });
+    },
+    useState: <T,>(initial: T | (() => T)) => {
+      const [value, setValue] = actual.useState(initial);
+      return [value, (next: T | ((current: T) => T)) => {
+        hooks.stateUpdates.push(next);
+        setValue(next);
+      }] as const;
     }
   };
 });
@@ -90,11 +98,13 @@ const board = {
 
 function installBrowserWindow(href: string) {
   const url = new URL(href);
+  const addEventListener = vi.fn<(event: string, callback: () => void) => void>();
   const replaceState = vi.fn();
+  const pushState = vi.fn();
   vi.stubGlobal("window", {
-    addEventListener: vi.fn(),
+    addEventListener,
     history: {
-      pushState: vi.fn(),
+      pushState,
       replaceState,
       state: null
     },
@@ -111,7 +121,7 @@ function installBrowserWindow(href: string) {
     },
     removeEventListener: vi.fn()
   });
-  return { replaceState };
+  return { addEventListener, pushState, replaceState };
 }
 
 function runLatestEffect() {
@@ -439,6 +449,7 @@ describe("runDurableLogout", () => {
 describe("App", () => {
   beforeEach(() => {
     hooks.effects.length = 0;
+    hooks.stateUpdates.length = 0;
     hooks.useBoard.mockClear();
     hooks.BoardOverview.mockClear();
     hooks.SharedRiceBinPanel.mockClear();
@@ -630,13 +641,25 @@ describe("App", () => {
 
     renderToStaticMarkup(createElement(App));
 
-    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: false, pollingEnabled: false, userId: null });
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({
+      enabled: false,
+      pollingEnabled: false,
+      userId: null,
+      requestedSheetId: null,
+      onReplaceSheetId: expect.any(Function)
+    });
   });
 
   it("disables the owner board read and polling for anonymous sessions", () => {
     renderToStaticMarkup(createElement(App));
 
-    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: false, pollingEnabled: false, userId: null });
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({
+      enabled: false,
+      pollingEnabled: false,
+      userId: null,
+      requestedSheetId: null,
+      onReplaceSheetId: expect.any(Function)
+    });
   });
 
   it("renders a neutral session state instead of board loading while checking", () => {
@@ -681,7 +704,77 @@ describe("App", () => {
 
     renderToStaticMarkup(createElement(App));
 
-    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: true, pollingEnabled: true, userId: "user-1" });
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({
+      enabled: true,
+      pollingEnabled: true,
+      userId: "user-1",
+      requestedSheetId: null,
+      onReplaceSheetId: expect.any(Function)
+    });
+  });
+
+  it("passes the authenticated user and requested route sheet into useBoard", () => {
+    installBrowserWindow("https://riceark.pages.dev/?foo=1&sheet=sheet-2#memo");
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-1", displayName: "RiceArk", avatarUrl: null, isAdmin: false },
+      error: null
+    });
+
+    renderToStaticMarkup(createElement(App));
+
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({
+      enabled: true,
+      pollingEnabled: true,
+      userId: "user-1",
+      requestedSheetId: "sheet-2",
+      onReplaceSheetId: expect.any(Function)
+    });
+  });
+
+  it("updates the popstate model with the sheet id", () => {
+    const browser = installBrowserWindow("https://riceark.pages.dev/?sheet=sheet-1");
+    vi.stubGlobal("document", {
+      documentElement: { dataset: {} }
+    });
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-1", displayName: "RiceArk", avatarUrl: null, isAdmin: false },
+      error: null
+    });
+    renderToStaticMarkup(createElement(App));
+    for (const effect of hooks.effects) effect.callback();
+    const popstate = browser.addEventListener.mock.calls.find(([event]) => event === "popstate")?.[1];
+    expect(popstate).toBeTypeOf("function");
+    const next = new URL("https://riceark.pages.dev/?foo=1&sheet=sheet-3#memo");
+    Object.assign(window.location, {
+      hash: next.hash,
+      href: next.href,
+      pathname: next.pathname,
+      search: next.search
+    });
+
+    popstate?.();
+
+    expect(hooks.stateUpdates).toContain("sheet-3");
+  });
+
+  it("replaces an invalid route sheet while preserving unrelated URL state", () => {
+    const browser = installBrowserWindow("https://riceark.pages.dev/?foo=1&sheet=missing#memo");
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-1", displayName: "RiceArk", avatarUrl: null, isAdmin: false },
+      error: null
+    });
+    renderToStaticMarkup(createElement(App));
+    const boardOptions = hooks.useBoard.mock.lastCall?.[0] as {
+      onReplaceSheetId?: (sheetId: string | null) => void;
+    };
+
+    boardOptions.onReplaceSheetId?.("sheet-1");
+
+    expect(browser.replaceState).toHaveBeenCalledWith(expect.any(Object), "", "/?foo=1&sheet=sheet-1#memo");
+    expect(browser.pushState).not.toHaveBeenCalled();
   });
 
   it("retains the authenticated owner read without polling on the shared view", () => {
@@ -694,7 +787,13 @@ describe("App", () => {
 
     renderToStaticMarkup(createElement(App));
 
-    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: true, pollingEnabled: false, userId: "user-1" });
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({
+      enabled: true,
+      pollingEnabled: false,
+      userId: "user-1",
+      requestedSheetId: null,
+      onReplaceSheetId: expect.any(Function)
+    });
   });
 
   it("waits for session resolution before redirecting a non-admin direct admin route", () => {
@@ -736,7 +835,13 @@ describe("App", () => {
     const html = renderToStaticMarkup(createElement(App));
     runLatestEffect();
 
-    expect(hooks.useBoard).toHaveBeenLastCalledWith({ enabled: false, pollingEnabled: false, userId: "user-admin" });
+    expect(hooks.useBoard).toHaveBeenLastCalledWith({
+      enabled: false,
+      pollingEnabled: false,
+      userId: "user-admin",
+      requestedSheetId: null,
+      onReplaceSheetId: expect.any(Function)
+    });
     expect(browser.replaceState).not.toHaveBeenCalled();
     expect(html).toContain("admin dashboard");
     expect(html).not.toContain("shared rice bin panel");
