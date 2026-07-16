@@ -1108,7 +1108,7 @@ describe("board db defaults", () => {
             },
             async first() {
               if (sql.includes("FROM board_shares") && sql.includes("share_id = ?")) {
-                return { owner_user_id: "owner-1", sheet_id: "sheet-1" };
+                return { owner_user_id: "owner-1", sheet_id: "sheet-1", content_version: 7 };
               }
               if (sql.includes("FROM user_settings")) return null;
               return null;
@@ -1158,6 +1158,7 @@ describe("board db defaults", () => {
     await expect(loadSharedBoard(env, "share-1", new Date("2026-06-05T03:00:00.000Z"))).resolves.toMatchObject({
       shareId: "share-1",
       readOnly: true,
+      version: 7,
       userId: "owner-1",
       sheets: [{ id: "sheet-1", name: "숙제" }],
       tables: [{ id: "table-1", sheet_id: "sheet-1" }],
@@ -1165,6 +1166,36 @@ describe("board db defaults", () => {
     });
     expect(preparedSql.some((sql) => sql.includes("SELECT checklist_orientation"))).toBe(false);
     expect(preparedSql.some((sql) => sql.includes("INSERT INTO board_tables"))).toBe(false);
+  });
+
+  it("returns null when a shared sheet is stopped, missing, deleted, or no longer owned by the sharer", async () => {
+    const preparedSql: string[] = [];
+    const env = {
+      DB: {
+        prepare(sql: string) {
+          preparedSql.push(sql);
+          return {
+            sql,
+            values: [] as unknown[],
+            bind(...values: unknown[]) {
+              return { ...this, values };
+            },
+            async first() {
+              if (sql.includes("FROM board_shares") && sql.includes("JOIN sheets")) return null;
+              if (sql.includes("FROM user_settings")) throw new Error("missing shares should stop before loading settings");
+              return null;
+            },
+            async all() {
+              throw new Error("missing shares should stop before loading detail tables");
+            }
+          };
+        }
+      }
+    } as unknown as Parameters<typeof loadSharedBoard>[0];
+
+    await expect(loadSharedBoard(env, "StoppedShareABCDEF1234", new Date("2026-06-05T03:00:00.000Z"))).resolves.toBeNull();
+    expect(preparedSql).toHaveLength(1);
+    expect(preparedSql[0]).toContain("JOIN sheets");
   });
 
   it("loads owner board manifest metadata without scanning axis items on every poll", async () => {

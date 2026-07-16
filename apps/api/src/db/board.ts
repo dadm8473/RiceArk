@@ -192,6 +192,7 @@ export interface BoardShareFavoriteSummary extends BoardShareSummary {
 export interface SharedBoardPayload extends BoardPayload {
   shareId: string;
   readOnly: true;
+  version: number;
 }
 
 export interface SharedBoardVersionSummary {
@@ -1531,12 +1532,17 @@ export async function listBoardShareFavorites(env: Env, userId: string): Promise
 
 export async function loadSharedBoard(env: Env, shareId: string, now = new Date()): Promise<SharedBoardPayload | null> {
   const share = await env.DB.prepare(
-    `SELECT owner_user_id, sheet_id
+    `SELECT board_shares.owner_user_id,
+            board_shares.sheet_id,
+            sheets.content_version
      FROM board_shares
+     JOIN sheets
+       ON sheets.id = board_shares.sheet_id
+      AND sheets.user_id = board_shares.owner_user_id
      WHERE share_id = ?`
   )
     .bind(shareId)
-    .first<{ owner_user_id: string; sheet_id: string }>();
+    .first<{ owner_user_id: string; sheet_id: string; content_version: number }>();
   if (!share) return null;
 
   const [sheets, tables, notes, settings] = await Promise.all([
@@ -1616,6 +1622,7 @@ export async function loadSharedBoard(env: Env, shareId: string, now = new Date(
   return {
     shareId,
     readOnly: true,
+    version: share.content_version,
     userId: share.owner_user_id,
     settings: settings ?? DEFAULT_BOARD_DISPLAY_SETTINGS,
     sheets: sheets.results,

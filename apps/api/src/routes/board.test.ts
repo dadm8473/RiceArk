@@ -2182,8 +2182,12 @@ describe("board share routes", () => {
                 const shareId = String(this.values.at(-1) ?? "");
                 return { favorite: shareId === "AbCdEfGhIjKlMnOpQrStUv" ? 1 : 0 };
               }
-              if (sql.includes("FROM board_shares") && sql.includes("share_id = ?")) {
-                return { owner_user_id: "user-1", sheet_id: "sheet-1", content_version: 0 };
+              if (sql.includes("FROM board_shares") && sql.includes("JOIN sheets") && sql.includes("share_id = ?")) {
+                const shareId = String(this.values[0] ?? "");
+                if (shareId === "AbCdEfGhIjKlMnOpQrStUv") {
+                  return { owner_user_id: "user-1", sheet_id: "sheet-1", content_version: 7 };
+                }
+                return null;
               }
               if (sql.includes("FROM user_settings")) return null;
               return null;
@@ -2303,15 +2307,35 @@ describe("board share routes", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("vary")?.split(",").map((value) => value.trim())).toEqual(["Origin"]);
-    expect(await response.json()).toMatchObject({
+    const payload = (await response.json()) as {
+      shareId: string;
+      readOnly: boolean;
+      version: number;
+      userId: string;
+      sheets: Array<Record<string, unknown>>;
+    };
+    expect(payload).toMatchObject({
       shareId: "AbCdEfGhIjKlMnOpQrStUv",
       readOnly: true,
+      version: 7,
       userId: "user-1",
       sheets: [{ id: "sheet-1", name: "숙제" }]
     });
+    expect(payload.sheets[0]).not.toHaveProperty("version");
 
     const mutation = await app.request("/api/shared-rice-bins/AbCdEfGhIjKlMnOpQrStUv", { method: "POST" }, env);
     expect(mutation.status).not.toBe(200);
+  });
+
+  it.each([
+    "/api/shared-rice-bins/StoppedShareABCDEF1234",
+    "/api/shared-rice-bins/DeletedShareABCDEF1234",
+    "/api/shared-rice-bins/ZYXWVUTSRQPONMLKJIHGFE"
+  ])("returns 404 for unavailable public shared rice bins at %s", async (path) => {
+    const { env } = createShareRouteEnv();
+    const response = await app.request(path, {}, env);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBeNull();
   });
 
   it("lists owner shares and manages authenticated share favorites", async () => {
@@ -2447,8 +2471,19 @@ describe("board share routes", () => {
     expect(await shared.json()).toEqual({
       shareId: "AbCdEfGhIjKlMnOpQrStUv",
       sheetId: "sheet-1",
-      version: 0,
+      version: 7,
       periodFingerprint: ""
     });
+  });
+
+  it.each([
+    "/api/shared-rice-bins/StoppedShareABCDEF1234/version",
+    "/api/shared-rice-bins/DeletedShareABCDEF1234/version",
+    "/api/shared-rice-bins/ZYXWVUTSRQPONMLKJIHGFE/version"
+  ])("keeps public shared version 404 semantics for unavailable shares at %s", async (path) => {
+    const { env } = createShareRouteEnv();
+    const response = await app.request(path, {}, env);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBeNull();
   });
 });
