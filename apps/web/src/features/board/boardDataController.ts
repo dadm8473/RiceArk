@@ -37,7 +37,7 @@ export interface BoardDataState {
 
 export type BoardDataEffect = {
   type: "replace-url-with-sheet";
-  replaceUrlWithSheetId: string;
+  replaceUrlWithSheetId: string | null;
 };
 
 export type BoardDataListener = (state: BoardDataState, effect?: BoardDataEffect) => void;
@@ -91,6 +91,41 @@ function callApi<T>(request: () => Promise<T>): Promise<T> {
   } catch (error) {
     return Promise.reject(error);
   }
+}
+
+function validateBootstrapIdentity(payload: BoardBootstrapPayload): BoardSheetManifestItem {
+  const manifestIds = new Set<string>();
+  for (const sheet of payload.manifest.sheets) {
+    if (manifestIds.has(sheet.id)) {
+      throw new Error(`Board bootstrap manifest contains duplicate sheet id "${sheet.id}"`);
+    }
+    manifestIds.add(sheet.id);
+  }
+
+  const active = payload.activeSheet.sheet;
+  const manifestMatches = payload.manifest.sheets.filter((sheet) => sheet.id === active.id);
+  if (manifestMatches.length !== 1) {
+    throw new Error(
+      `Board bootstrap active sheet "${active.id}" must appear exactly once in its manifest`
+    );
+  }
+  const manifestItem = manifestMatches[0]!;
+  if (
+    active.name !== manifestItem.name ||
+    active.sort_order !== manifestItem.sort_order ||
+    active.is_default !== manifestItem.is_default
+  ) {
+    throw new Error(`Board bootstrap active sheet "${active.id}" metadata does not match its manifest`);
+  }
+  if (active.content_version !== manifestItem.version) {
+    throw new Error(`Board bootstrap active sheet "${active.id}" version does not match its manifest`);
+  }
+  return manifestItem;
+}
+
+interface BoardSheetRequestResult {
+  payload: BoardSheetPayload;
+  joinedExisting: boolean;
 }
 
 export function createBoardDataController(
@@ -209,10 +244,12 @@ export function createBoardDataController(
     return true;
   };
 
-  const requestSheet = (userId: string, sheetId: string): Promise<BoardSheetPayload> => {
+  const requestSheet = (userId: string, sheetId: string): Promise<BoardSheetRequestResult> => {
     const key = `${userId}:${sheetId}`;
     const existing = sheetRequests.get(key);
-    if (existing) return existing;
+    if (existing) {
+      return existing.then((payload) => ({ payload, joinedExisting: true }));
+    }
 
     let request!: Promise<BoardSheetPayload>;
     request = callApi(() => api.getSheet(sheetId))
@@ -228,19 +265,50 @@ export function createBoardDataController(
         if (sheetRequests.get(key) === request) sheetRequests.delete(key);
       });
     sheetRequests.set(key, request);
-    return request;
+    return request.then((payload) => ({ payload, joinedExisting: false }));
   };
+
+  const isStoredSheetReusable = (userId: string, sheetId: string): boolean =>
+    isReusableBoardSheet(
+      getBoardSheetCacheEntry(state.cache, userId, sheetId),
+      state.manifest.find((sheet) => sheet.id === sheetId),
+      now()
+    );
 
   const loadSheetForOperation = async (
     userId: string,
     sheetId: string,
     generation: number,
-    operation: number
+    operation: number,
+    options: { ensureReusable?: boolean | undefined } = {}
   ): Promise<void> => {
     try {
-      const payload = await requestSheet(userId, sheetId);
+      let result = await requestSheet(userId, sheetId);
       if (!owns(generation, userId)) return;
-      const stored = storeSheetPayload(userId, sheetId, payload);
+      let stored = storeSheetPayload(userId, sheetId, result.payload);
+      const isCurrentOperation = () =>
+        operation === operationGeneration && state.activeSheetId === sheetId;
+
+      if (options.ensureReusable && isCurrentOperation()) {
+        if (!isStoredSheetReusable(userId, sheetId) && result.joinedExisting) {
+          result = await requestSheet(userId, sheetId);
+          if (!owns(generation, userId)) return;
+          stored = storeSheetPayload(userId, sheetId, result.payload) || stored;
+          if (!isCurrentOperation()) {
+            if (stored) emit();
+            return;
+          }
+        }
+
+        if (!isStoredSheetReusable(userId, sheetId)) {
+          state = {
+            ...state,
+            cache: markBoardSheetCacheEntryStale(state.cache, userId, sheetId)
+          };
+          throw new Error(`Board sheet "${sheetId}" remained stale after refresh`);
+        }
+      }
+
       if (operation === operationGeneration && state.activeSheetId === sheetId) {
         finishOperation(generation, operation);
       } else if (stored) {
@@ -255,7 +323,8 @@ export function createBoardDataController(
 
   const applyVersionSummary = (
     incoming: BoardVersionSummary,
-    userId: string
+    userId: string,
+    allowSettings: boolean
   ): {
     activeChanged: boolean;
     effect: BoardDataEffect | undefined;
@@ -295,7 +364,7 @@ export function createBoardDataController(
     const activeWasDeleted =
       priorActiveSheetId !== null && !manifest.some((sheet) => sheet.id === priorActiveSheetId);
     const effect =
-      activeWasDeleted && reconciliation.nextActiveSheetId !== null
+      activeWasDeleted
         ? {
             type: "replace-url-with-sheet" as const,
             replaceUrlWithSheetId: reconciliation.nextActiveSheetId
@@ -305,7 +374,10 @@ export function createBoardDataController(
 
     state = {
       ...state,
-      settings: summary.settings === undefined ? state.settings : { ...summary.settings },
+      settings:
+        allowSettings && acceptsMetadata && summary.settings !== undefined
+          ? { ...summary.settings }
+          : state.settings,
       manifestVersion: Math.max(state.manifestVersion, summary.manifestVersion),
       manifest,
       activeSheetId: reconciliation.nextActiveSheetId,
@@ -353,9 +425,7 @@ export function createBoardDataController(
 
         const payload = cloneOwned(incoming);
         const activeSheetId = payload.activeSheet.sheet.id;
-        if (!payload.manifest.sheets.some((sheet) => sheet.id === activeSheetId)) {
-          throw new Error(`Board bootstrap active sheet "${activeSheetId}" is missing from its manifest`);
-        }
+        validateBootstrapIdentity(payload);
         knownSheetVersions = new Map(
           payload.manifest.sheets.map((sheet) => [sheet.id, sheet.version])
         );
@@ -366,13 +436,6 @@ export function createBoardDataController(
           payload.activeSheet,
           nowMs()
         );
-        const activeManifestItem = payload.manifest.sheets.find((sheet) => sheet.id === activeSheetId);
-        if (
-          activeManifestItem &&
-          payload.activeSheet.sheet.content_version < activeManifestItem.version
-        ) {
-          cache = markBoardSheetCacheEntryStale(cache, payload.userId, activeSheetId);
-        }
         cache = evictBoardSheetLru(
           cache,
           payload.userId,
@@ -459,7 +522,12 @@ export function createBoardDataController(
       }
       if (!owns(generation, userId)) return;
 
-      const { activeChanged, effect, needsActiveSheet } = applyVersionSummary(summary, userId);
+      const operationIsCurrent = operation === operationGeneration;
+      const { activeChanged, effect, needsActiveSheet } = applyVersionSummary(
+        summary,
+        userId,
+        operationIsCurrent
+      );
       if (operation !== operationGeneration) {
         if (!activeChanged && !needsActiveSheet) {
           emit(effect);
@@ -480,7 +548,8 @@ export function createBoardDataController(
           userId,
           activeSheetId,
           generation,
-          reconciliationOperation
+          reconciliationOperation,
+          { ensureReusable: true }
         );
         return;
       }
@@ -492,7 +561,9 @@ export function createBoardDataController(
 
       const activeSheetId = state.activeSheetId;
       emit(effect);
-      await loadSheetForOperation(userId, activeSheetId, generation, operation);
+      await loadSheetForOperation(userId, activeSheetId, generation, operation, {
+        ensureReusable: true
+      });
     })().finally(() => {
       if (versionRequests.get(userId) === request) versionRequests.delete(userId);
     });
