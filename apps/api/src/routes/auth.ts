@@ -21,6 +21,12 @@ import { safeText } from "../http/input";
 
 export const authRoutes = new Hono<{ Bindings: Env }>();
 
+authRoutes.use("*", async (c, next) => {
+  c.header("Cache-Control", "private, no-store");
+  c.header("Vary", "Cookie");
+  await next();
+});
+
 export const updateProfileSchema = z.object({
   displayName: safeText({ allowEmoji: true, maxChars: 12, maxBytes: 48 })
 }).strict();

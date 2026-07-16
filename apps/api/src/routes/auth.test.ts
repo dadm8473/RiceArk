@@ -38,6 +38,8 @@ describe("auth routes", () => {
     const res = await app.request("/api/auth/google/start", {}, env);
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toContain("accounts.google.com");
+    expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(res.headers.get("Vary")?.split(/,\s*/)).toContain("Cookie");
   });
 
   it("rejects unknown providers", async () => {
@@ -91,6 +93,32 @@ describe("auth routes", () => {
     expect(res.headers.get("location")).toBe("http://127.0.0.1:5173");
   });
 
+  it("keeps authenticated session responses private and uncached", async () => {
+    const sessionDb = {
+      prepare(sql: string) {
+        return {
+          bind: () => ({
+            first: async () =>
+              sql.includes("FROM sessions")
+                ? { id: "user-1", display_name: "쌀먹도사", avatar_url: null }
+                : null,
+            all: async () => ({ results: [] })
+          })
+        };
+      }
+    };
+
+    const res = await app.request(
+      "/api/session",
+      { headers: { cookie: "riceark_session=test-session" } },
+      { ...env, DB: sessionDb }
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(res.headers.get("Vary")?.split(/,\s*/)).toContain("Cookie");
+  });
+
   it("updates the profile display name for the logged-in user", async () => {
     const updates: Array<{ sql: string; binds: unknown[] }> = [];
     const profileDb = {
@@ -125,6 +153,8 @@ describe("auth routes", () => {
     );
 
     expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(res.headers.get("Vary")?.split(/,\s*/)).toContain("Cookie");
     await expect(res.json()).resolves.toMatchObject({
       user: { id: "user-1", displayName: "열두글자닉네임테스트12" }
     });
