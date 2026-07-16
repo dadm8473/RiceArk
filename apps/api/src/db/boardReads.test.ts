@@ -805,6 +805,7 @@ describe("sheet-aware board reads", () => {
       ]);
       expect(payload?.periodFingerprint).toBe("daily:2026-06-05|weekly:2026-06-03");
 
+      expect(statements).toHaveLength(7);
       expect(statements.some((statement) => statement.sql.includes("FROM user_settings"))).toBe(false);
       expect(statements.map((statement) => statement.sql).join("\n")).not.toMatch(/SELECT\s+\*/i);
       for (const tableName of [
@@ -821,9 +822,13 @@ describe("sheet-aware board reads", () => {
 
       const completionStatements = statements.filter((statement) => statement.sql.includes("FROM board_cell_completions"));
       expect(completionStatements).toHaveLength(1);
+      expect(completionStatements[0]?.sql).toMatch(
+        /board_cell_completions\.table_id IN \(SELECT value FROM json_each\(\?3\)\)/
+      );
       expect(completionStatements[0]?.values).toEqual([
         "user-1",
         "sheet-active",
+        JSON.stringify(["table-active"]),
         JSON.stringify(["daily:2026-06-05", "weekly:2026-06-03"])
       ]);
 
@@ -1247,7 +1252,7 @@ describe("sheet-aware board reads", () => {
     }
   });
 
-  it("binds 300 unique completion periods as one JSON value in new and legacy reads", async () => {
+  it("binds owned table IDs and 300 unique completion periods as JSON values in new reads", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
     await withEstablishedBoard(async ({ database, env, statements }) => {
@@ -1272,8 +1277,10 @@ describe("sheet-aware board reads", () => {
         statement.sql.includes("FROM board_cell_completions") && statement.sql.includes("sheets.id = ?2")
       );
       expect(sheetCompletionRead?.values.length).toBeLessThan(100);
-      expect(sheetCompletionRead?.values).toHaveLength(3);
+      expect(sheetCompletionRead?.values).toHaveLength(4);
+      expect(sheetCompletionRead?.values[2]).toBe(JSON.stringify(["table-active"]));
       expect(sheetCompletionRead?.sql).toContain("json_each(?3)");
+      expect(sheetCompletionRead?.sql).toContain("json_each(?4)");
 
       statements.length = 0;
       await loadBoard(env, "user-1");

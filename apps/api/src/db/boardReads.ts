@@ -389,8 +389,9 @@ async function loadBoardSheetAttempt(
   ]);
 
   const periodKeys = getCurrentBoardCompletionPeriodKeys(axisItems.results, now).sort();
+  const tableIds = (tables.results as Array<{ id: string }>).map((table) => table.id);
   const completions =
-    periodKeys.length === 0
+    tableIds.length === 0 || periodKeys.length === 0
       ? { results: [] }
       : await env.DB.prepare(
           `SELECT board_cell_completions.table_id,
@@ -407,13 +408,14 @@ async function loadBoardSheetAttempt(
             AND sheets.user_id = ?1
            WHERE board_cell_completions.user_id = ?1
              AND sheets.id = ?2
-             AND board_cell_completions.period_key IN (SELECT value FROM json_each(?3))
+             AND board_cell_completions.table_id IN (SELECT value FROM json_each(?3))
+             AND board_cell_completions.period_key IN (SELECT value FROM json_each(?4))
            ORDER BY board_cell_completions.table_id,
                     board_cell_completions.row_item_id,
                     board_cell_completions.column_item_id,
                     board_cell_completions.period_key`
         )
-          .bind(userId, sheetId, JSON.stringify(periodKeys))
+          .bind(userId, sheetId, JSON.stringify(tableIds), JSON.stringify(periodKeys))
           .all();
 
   return {
