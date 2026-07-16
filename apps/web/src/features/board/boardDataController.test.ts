@@ -682,6 +682,178 @@ describe("remote summary application budgets", () => {
       error: null
     });
   });
+
+  it("follows a replacement bootstrap and applies after it settles without waiting for the obsolete request", async () => {
+    const api = new FakeBoardApi();
+    const firstBootstrap = deferred<BoardBootstrapPayload>();
+    const replacementBootstrap = deferred<BoardBootstrapPayload>();
+    const summarySheet = deferred<BoardSheetPayload>();
+    const replacementSettings = { ...defaultSettings, show_class_name: 1 };
+    const summaryManifest = [manifestItem("sheet-3", 3, { is_default: 1 })];
+    const effects: BoardDataEffect[] = [];
+    api.getBootstrapImpl = (sheetId) =>
+      sheetId === "sheet-1" ? firstBootstrap.promise : replacementBootstrap.promise;
+    api.getSheetImpl = () => summarySheet.promise;
+    const controller = createBoardDataController(api, { userId: "user-1" });
+    controller.subscribe((_state, effect) => {
+      if (effect) effects.push(effect);
+    });
+
+    void controller.bootstrap("sheet-1");
+    const applying = controller.applyRemoteSummary(
+      versionSummary(summaryManifest, { manifestVersion: 3 }),
+      "cross-tab"
+    );
+    const replacing = controller.bootstrap("sheet-2");
+    const replacementManifest = [manifestItem("sheet-2", 2, { is_default: 1 })];
+    replacementBootstrap.resolve(
+      bootstrapPayload("sheet-2", replacementManifest, {
+        settings: replacementSettings,
+        manifest: { version: 2, sheets: replacementManifest },
+        activeSheet: sheetPayload("sheet-2", 2, {
+          sheet: {
+            id: "sheet-2",
+            name: "sheet-2",
+            sort_order: 2,
+            is_default: 1,
+            content_version: 2
+          }
+        })
+      })
+    );
+    await replacing;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "bootstrap:sheet-2",
+      "sheet:sheet-3"
+    ]);
+    summarySheet.resolve(
+      sheetPayload("sheet-3", 3, {
+        sheet: {
+          id: "sheet-3",
+          name: "sheet-3",
+          sort_order: 3,
+          is_default: 1,
+          content_version: 3
+        }
+      })
+    );
+    await applying;
+
+    expect(controller.snapshot()).toMatchObject({
+      settings: replacementSettings,
+      manifestVersion: 3,
+      manifest: summaryManifest,
+      activeSheetId: "sheet-3",
+      loading: false,
+      error: null
+    });
+    expect(effects).toEqual([
+      { type: "replace-url-with-sheet", replaceUrlWithSheetId: "sheet-3" }
+    ]);
+    controller.dispose();
+  });
+
+  it("wakes a deferred summary on account change without mutating the replacement account", async () => {
+    const api = new FakeBoardApi();
+    const pendingBootstrap = deferred<BoardBootstrapPayload>();
+    api.getBootstrapImpl = () => pendingBootstrap.promise;
+    const controller = createBoardDataController(api, { userId: "user-1" });
+
+    void controller.bootstrap("sheet-1");
+    const applying = controller.applyRemoteSummary(
+      versionSummary([manifestItem("sheet-2", 2, { is_default: 1 })], {
+        manifestVersion: 2
+      }),
+      "cross-tab"
+    );
+    controller.setUser("user-2");
+    const summaryOutcome = await Promise.race([
+      applying.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => {
+        setTimeout(() => resolve("pending"), 0);
+      })
+    ]);
+
+    expect(summaryOutcome).toBe("settled");
+    expect(api.calls).toEqual(["bootstrap:sheet-1"]);
+    expect(controller.snapshot()).toMatchObject({
+      userId: "user-2",
+      settings: null,
+      manifestVersion: 0,
+      manifest: [],
+      activeSheetId: null,
+      loading: false,
+      error: null
+    });
+    expect(controller.snapshot().cache.size).toBe(0);
+  });
+
+  it("wakes a deferred summary on dispose without applying it", async () => {
+    const api = new FakeBoardApi();
+    const pendingBootstrap = deferred<BoardBootstrapPayload>();
+    api.getBootstrapImpl = () => pendingBootstrap.promise;
+    const controller = createBoardDataController(api, { userId: "user-1" });
+
+    void controller.bootstrap("sheet-1");
+    const applying = controller.applyRemoteSummary(
+      versionSummary([manifestItem("sheet-2", 2, { is_default: 1 })], {
+        manifestVersion: 2
+      }),
+      "cross-tab"
+    );
+    const beforeDispose = controller.snapshot();
+    controller.dispose();
+    const summaryOutcome = await Promise.race([
+      applying.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => {
+        setTimeout(() => resolve("pending"), 0);
+      })
+    ]);
+
+    expect(summaryOutcome).toBe("settled");
+    expect(api.calls).toEqual(["bootstrap:sheet-1"]);
+    expect(controller.snapshot()).toEqual(beforeDispose);
+  });
+
+  it("wakes a deferred summary when a sheet operation supersedes its bootstrap", async () => {
+    const manifest = [
+      manifestItem("sheet-1"),
+      manifestItem("sheet-2", 1, { is_default: 0 })
+    ];
+    const { api, controller } = createHarness({ manifest });
+    await controller.bootstrap("sheet-1");
+    await controller.selectSheet("sheet-2");
+    await controller.selectSheet("sheet-1");
+    const pendingBootstrap = deferred<BoardBootstrapPayload>();
+    api.getBootstrapImpl = () => pendingBootstrap.promise;
+
+    void controller.bootstrap("sheet-1");
+    const applying = controller.applyRemoteSummary(versionSummary(manifest), "cross-tab");
+    await controller.selectSheet("sheet-2");
+    const summaryOutcome = await Promise.race([
+      applying.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => {
+        setTimeout(() => resolve("pending"), 0);
+      })
+    ]);
+
+    expect(summaryOutcome).toBe("settled");
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "sheet:sheet-2",
+      "bootstrap:sheet-1"
+    ]);
+    expect(controller.snapshot()).toMatchObject({
+      activeSheetId: "sheet-2",
+      loading: false,
+      error: null
+    });
+    controller.dispose();
+  });
 });
 
 describe("deduplication and retry", () => {
@@ -704,6 +876,115 @@ describe("deduplication and retry", () => {
 
     await controller.bootstrap("sheet-1");
     expect(api.calls).toEqual(["bootstrap:sheet-1", "bootstrap:sheet-1"]);
+  });
+
+  it("starts a fresh same-key bootstrap after another key supersedes its prior request", async () => {
+    const api = new FakeBoardApi();
+    const firstA = deferred<BoardBootstrapPayload>();
+    const pendingB = deferred<BoardBootstrapPayload>();
+    const secondA = deferred<BoardBootstrapPayload>();
+    let requestCount = 0;
+    api.getBootstrapImpl = () => {
+      requestCount += 1;
+      if (requestCount === 1) return firstA.promise;
+      if (requestCount === 2) return pendingB.promise;
+      if (requestCount === 3) return secondA.promise;
+      const retryManifest = [manifestItem("sheet-1", 4)];
+      return Promise.resolve(
+        bootstrapPayload("sheet-1", retryManifest, {
+          manifest: { version: 4, sheets: retryManifest },
+          activeSheet: sheetPayload("sheet-1", 4)
+        })
+      );
+    };
+    const controller = createBoardDataController(api, { userId: "user-1" });
+
+    const bootA1 = controller.bootstrap("sheet-1");
+    const bootB = controller.bootstrap("sheet-2");
+    const bootA2 = controller.bootstrap("sheet-1");
+
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "bootstrap:sheet-2",
+      "bootstrap:sheet-1"
+    ]);
+
+    firstA.resolve(bootstrapPayload());
+    await bootA1;
+    expect(controller.snapshot()).toMatchObject({
+      settings: null,
+      manifestVersion: 0,
+      manifest: [],
+      activeSheetId: null,
+      loading: true,
+      error: null
+    });
+    const joinedA2 = controller.bootstrap("sheet-1");
+    expect(joinedA2).toBe(bootA2);
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "bootstrap:sheet-2",
+      "bootstrap:sheet-1"
+    ]);
+
+    const appliedSettings = { ...defaultSettings, show_server_name: 1 };
+    const appliedManifest = [manifestItem("sheet-1", 3)];
+    secondA.resolve(
+      bootstrapPayload("sheet-1", appliedManifest, {
+        settings: appliedSettings,
+        manifest: { version: 3, sheets: appliedManifest },
+        activeSheet: sheetPayload("sheet-1", 3)
+      })
+    );
+    await Promise.all([bootA2, joinedA2]);
+    expect(controller.snapshot()).toMatchObject({
+      settings: appliedSettings,
+      manifestVersion: 3,
+      manifest: appliedManifest,
+      activeSheetId: "sheet-1",
+      loading: false,
+      error: null
+    });
+
+    const staleBManifest = [manifestItem("sheet-2", 2, { is_default: 1 })];
+    pendingB.resolve(
+      bootstrapPayload("sheet-2", staleBManifest, {
+        manifest: { version: 2, sheets: staleBManifest },
+        activeSheet: sheetPayload("sheet-2", 2, {
+          sheet: {
+            id: "sheet-2",
+            name: "sheet-2",
+            sort_order: 2,
+            is_default: 1,
+            content_version: 2
+          }
+        })
+      })
+    );
+    await bootB;
+    expect(controller.snapshot()).toMatchObject({
+      settings: appliedSettings,
+      manifestVersion: 3,
+      manifest: appliedManifest,
+      activeSheetId: "sheet-1",
+      loading: false,
+      error: null
+    });
+
+    await controller.bootstrap("sheet-1");
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "bootstrap:sheet-2",
+      "bootstrap:sheet-1",
+      "bootstrap:sheet-1"
+    ]);
+    expect(controller.snapshot()).toMatchObject({
+      manifestVersion: 4,
+      manifest: [manifestItem("sheet-1", 4)],
+      activeSheetId: "sheet-1",
+      loading: false,
+      error: null
+    });
   });
 
   it("deduplicates user and sheet reads and retries after a shared failure", async () => {

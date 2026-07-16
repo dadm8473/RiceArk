@@ -157,9 +157,12 @@ interface BoardDataOperation {
 }
 
 interface ActiveBoardBootstrap {
+  readonly key: string;
   readonly generation: number;
   readonly operation: BoardDataOperation;
   readonly promise: Promise<void>;
+  readonly ownershipChanged: Promise<void>;
+  readonly wakeOwnershipChange: () => void;
 }
 
 export function createBoardDataController(
@@ -189,7 +192,7 @@ export function createBoardDataController(
   let settingsManifestVersion = 0;
   let settingsOperationId = 0;
   const listeners = new Set<BoardDataListener>();
-  const bootstrapRequests = new Map<string, Promise<void>>();
+  const bootstrapRequests = new Map<string, ActiveBoardBootstrap>();
   const sheetRequests = new Map<string, Promise<BoardSheetPayload>>();
   const versionRequests = new Map<string, Promise<void>>();
 
@@ -223,6 +226,22 @@ export function createBoardDataController(
   const isCurrentOperation = (operation: BoardDataOperation): boolean =>
     currentOperation?.id === operation.id;
 
+  const setActiveBootstrap = (next: ActiveBoardBootstrap | null) => {
+    if (activeBootstrap === next) return;
+    const previous = activeBootstrap;
+    activeBootstrap = next;
+    if (previous && bootstrapRequests.get(previous.key) === previous) {
+      bootstrapRequests.delete(previous.key);
+    }
+    previous?.wakeOwnershipChange();
+  };
+
+  const clearBootstrapRequests = () => {
+    setActiveBootstrap(null);
+    for (const request of bootstrapRequests.values()) request.wakeOwnershipChange();
+    bootstrapRequests.clear();
+  };
+
   const beginOperation = (
     kind: BoardDataOperationKind,
     changes: Partial<BoardDataState> = {},
@@ -233,6 +252,7 @@ export function createBoardDataController(
       kind === "summary" && currentOperation?.kind === "bootstrap" && state.loading;
     if (bootstrapOwnsState) return operation;
 
+    setActiveBootstrap(null);
     currentOperation = operation;
     state = { ...state, ...changes, loading: true, error: null };
     emit(effect);
@@ -244,6 +264,7 @@ export function createBoardDataController(
     changes: Partial<BoardDataState>,
     effect?: BoardDataEffect
   ) => {
+    setActiveBootstrap(null);
     currentOperation = { id: ++nextOperationId, kind };
     state = { ...state, ...changes };
     emit(effect);
@@ -500,11 +521,23 @@ export function createBoardDataController(
     const generation = ownershipGeneration;
     const key = `${expectedUserId ?? ""}\u0000${requestedId ?? ""}`;
     const existing = bootstrapRequests.get(key);
-    if (existing) return existing;
+    if (
+      existing &&
+      existing.generation === generation &&
+      activeBootstrap === existing &&
+      isCurrentOperation(existing.operation)
+    ) {
+      return existing.promise;
+    }
+    existing?.wakeOwnershipChange();
     const operation = beginOperation("bootstrap");
 
     let request!: Promise<void>;
     let activeRequest!: ActiveBoardBootstrap;
+    let wakeOwnershipChange!: () => void;
+    const ownershipChanged = new Promise<void>((resolve) => {
+      wakeOwnershipChange = () => resolve();
+    });
     request = (async () => {
       try {
         const incoming = await callApi(() => api.getBootstrap(requestedId));
@@ -578,12 +611,20 @@ export function createBoardDataController(
         throw error;
       }
     })().finally(() => {
-      if (bootstrapRequests.get(key) === request) bootstrapRequests.delete(key);
-      if (activeBootstrap === activeRequest) activeBootstrap = null;
+      if (bootstrapRequests.get(key) === activeRequest) bootstrapRequests.delete(key);
+      if (activeBootstrap === activeRequest) setActiveBootstrap(null);
+      activeRequest.wakeOwnershipChange();
     });
-    activeRequest = { generation, operation, promise: request };
-    activeBootstrap = activeRequest;
-    bootstrapRequests.set(key, request);
+    activeRequest = {
+      key,
+      generation,
+      operation,
+      promise: request,
+      ownershipChanged,
+      wakeOwnershipChange
+    };
+    setActiveBootstrap(activeRequest);
+    bootstrapRequests.set(key, activeRequest);
     return request;
   };
 
@@ -647,7 +688,10 @@ export function createBoardDataController(
         return;
       }
       try {
-        await bootstrapRequest.promise;
+        await Promise.race([
+          bootstrapRequest.promise,
+          bootstrapRequest.ownershipChanged
+        ]);
       } catch {
         // A deferred summary can still reconcile after bootstrap fails.
       }
@@ -854,8 +898,7 @@ export function createBoardDataController(
     if (disposed || state.userId === userId) return;
     ownershipGeneration += 1;
     currentOperation = null;
-    activeBootstrap = null;
-    bootstrapRequests.clear();
+    clearBootstrapRequests();
     sheetRequests.clear();
     versionRequests.clear();
     knownManifestVersion = 0;
@@ -897,9 +940,8 @@ export function createBoardDataController(
       disposed = true;
       ownershipGeneration += 1;
       currentOperation = null;
-      activeBootstrap = null;
+      clearBootstrapRequests();
       listeners.clear();
-      bootstrapRequests.clear();
       sheetRequests.clear();
       versionRequests.clear();
       knownManifestVersion = 0;
