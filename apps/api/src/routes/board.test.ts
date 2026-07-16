@@ -2147,24 +2147,41 @@ describe("board owner read routes", () => {
 });
 
 describe("board share routes", () => {
+  function expectPrivateShareReadHeaders(response: Response) {
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Vary")?.split(",").map((value) => value.trim()).sort()).toEqual([
+      "Cookie",
+      "Origin"
+    ]);
+  }
+
   function createShareRouteEnv() {
     const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
     const runs: Array<{ sql: string; values: unknown[] }> = [];
+    const statements: Array<{ sql: string; values: unknown[] }> = [];
     const env = {
       ...routeEnv,
       DB: {
         prepare(sql: string) {
+          const captured = { sql, values: [] as unknown[] };
+          statements.push(captured);
           return {
             sql,
-            values: [] as unknown[],
+            values: captured.values,
             bind(...values: unknown[]) {
-              return { ...this, values };
+              captured.values = values;
+              this.values = values;
+              return this;
             },
             async first() {
               if (sql.includes("FROM sessions")) return { id: "user-1", display_name: "냠수", avatar_url: null };
               if (sql.includes("SELECT id FROM sheets WHERE id = ? AND user_id = ?")) return { id: "sheet-1" };
               if (sql.includes("SELECT share_id FROM board_shares WHERE owner_user_id = ?")) return { share_id: "share-old" };
               if (sql.includes("SELECT share_id FROM board_shares WHERE share_id = ?")) return { share_id: "AbCdEfGhIjKlMnOpQrStUv" };
+              if (sql.includes("AS favorite")) {
+                const shareId = String(this.values.at(-1) ?? "");
+                return { favorite: shareId === "AbCdEfGhIjKlMnOpQrStUv" ? 1 : 0 };
+              }
               if (sql.includes("FROM board_shares") && sql.includes("share_id = ?")) {
                 return { owner_user_id: "user-1", sheet_id: "sheet-1", content_version: 0 };
               }
@@ -2251,7 +2268,7 @@ describe("board share routes", () => {
         }
       }
     };
-    return { env, batches, runs };
+    return { env, batches, runs, statements };
   }
 
   it("starts and stops sharing for an authenticated owner sheet", async () => {
@@ -2338,6 +2355,72 @@ describe("board share routes", () => {
     expect(removeFavorite.status).toBe(204);
     expect(runs.some((statement) => statement.sql.includes("INSERT OR IGNORE INTO board_share_favorites"))).toBe(true);
     expect(runs.some((statement) => statement.sql.includes("DELETE FROM board_share_favorites"))).toBe(true);
+  });
+
+  it("serves the lightweight sharing overview without loading board payload tables", async () => {
+    const { env, statements } = createShareRouteEnv();
+    const response = await app.request("/api/board/sharing-overview", { headers: { Cookie: "riceark_session=test-token" } }, env);
+
+    expect(response.status).toBe(200);
+    expectPrivateShareReadHeaders(response);
+    expect(await response.json()).toEqual({
+      sheets: [{ id: "sheet-1", name: "숙제", sort_order: 0, is_default: 1, version: 0 }],
+      shares: [{ sheetId: "sheet-1", sheetName: "숙제", shareId: "AbCdEfGhIjKlMnOpQrStUv", createdAt: "2026-06-05 00:00:00" }],
+      favorites: [
+        {
+          shareId: "AbCdEfGhIjKlMnOpQrStUv",
+          sheetId: "sheet-1",
+          sheetName: "숙제",
+          ownerDisplayName: "냠수",
+          createdAt: "2026-06-05 00:00:00"
+        }
+      ]
+    });
+    expect(statements.filter((statement) => statement.sql.includes("FROM sessions"))).toHaveLength(1);
+    expect(statements).toHaveLength(4);
+    expect(statements.some((statement) => statement.sql.includes("FROM board_tables"))).toBe(false);
+    expect(statements.some((statement) => statement.sql.includes("FROM board_notes"))).toBe(false);
+    expect(statements.some((statement) => statement.sql.includes("FROM board_axis_items"))).toBe(false);
+    expect(statements.some((statement) => statement.sql.includes("FROM board_cell_states"))).toBe(false);
+    expect(statements.some((statement) => statement.sql.includes("FROM board_cell_completions"))).toBe(false);
+  });
+
+  it("returns favorite status for active shares and false for stopped or missing shares", async () => {
+    const { env } = createShareRouteEnv();
+
+    const active = await app.request(
+      "/api/board/share-favorites/AbCdEfGhIjKlMnOpQrStUv",
+      { headers: { Cookie: "riceark_session=test-token" } },
+      env
+    );
+    expect(active.status).toBe(200);
+    expectPrivateShareReadHeaders(active);
+    expect(await active.json()).toEqual({ favorite: true });
+
+    const stopped = await app.request(
+      "/api/board/share-favorites/StoppedShareABCDEF1234",
+      { headers: { Cookie: "riceark_session=test-token" } },
+      env
+    );
+    expect(stopped.status).toBe(200);
+    expect(await stopped.json()).toEqual({ favorite: false });
+
+    const missing = await app.request(
+      "/api/board/share-favorites/ZYXWVUTSRQPONMLKJIHGFE",
+      { headers: { Cookie: "riceark_session=test-token" } },
+      env
+    );
+    expect(missing.status).toBe(200);
+    expect(await missing.json()).toEqual({ favorite: false });
+  });
+
+  it.each([
+    "/api/board/sharing-overview",
+    "/api/board/share-favorites/AbCdEfGhIjKlMnOpQrStUv"
+  ])("rejects anonymous requests for %s", async (path) => {
+    const { env } = createShareRouteEnv();
+    const response = await app.request(path, {}, env);
+    expect(response.status).toBe(401);
   });
 
   it("serves lightweight owner and shared version summaries", async () => {

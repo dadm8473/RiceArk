@@ -1,4 +1,5 @@
 import type { Env } from "../env";
+import type { BoardShareFavoriteSummary, BoardShareSummary } from "./board";
 import { ensureDefaultBoard, getCurrentBoardCompletionPeriodKeys, resolveExpiredBoardCellStateRows } from "./board";
 
 export interface BoardSheetManifestItem {
@@ -52,6 +53,12 @@ export interface BoardVersionSummary {
   sheets: BoardSheetManifestItem[];
   periodFingerprint: "";
   settings: BoardDisplaySettings;
+}
+
+export interface BoardSharingOverview {
+  sheets: BoardSheetManifestItem[];
+  shares: BoardShareSummary[];
+  favorites: BoardShareFavoriteSummary[];
 }
 
 export class BoardSnapshotConflictError extends Error {
@@ -112,6 +119,17 @@ interface BoardCellStateRow {
 
 interface BoardManifestSnapshot extends BoardSheetManifest {
   settings: BoardDisplaySettings;
+}
+
+interface BoardShareSummaryRow {
+  sheet_id: string;
+  sheet_name: string;
+  share_id: string;
+  created_at: string;
+}
+
+interface BoardShareFavoriteSummaryRow extends BoardShareSummaryRow {
+  owner_display_name: string;
 }
 
 const DEFAULT_BOARD_DISPLAY_SETTINGS: BoardDisplaySettings = {
@@ -192,8 +210,97 @@ async function loadBoardManifestSnapshot(env: Env, userId: string): Promise<Boar
   return mapBoardManifestRows(rows.results);
 }
 
+async function loadBoardShareSummaries(env: Env, userId: string): Promise<BoardShareSummary[]> {
+  const rows = await env.DB.prepare(
+    `SELECT board_shares.sheet_id,
+            sheets.name AS sheet_name,
+            board_shares.share_id,
+            board_shares.created_at
+     FROM board_shares
+     JOIN sheets
+       ON sheets.id = board_shares.sheet_id
+      AND sheets.user_id = board_shares.owner_user_id
+     WHERE board_shares.owner_user_id = ?
+     ORDER BY sheets.sort_order, sheets.name`
+  )
+    .bind(userId)
+    .all<BoardShareSummaryRow>();
+
+  return rows.results.map((row) => ({
+    sheetId: row.sheet_id,
+    sheetName: row.sheet_name,
+    shareId: row.share_id,
+    createdAt: row.created_at
+  }));
+}
+
+async function loadBoardShareFavoriteSummaries(env: Env, userId: string): Promise<BoardShareFavoriteSummary[]> {
+  const rows = await env.DB.prepare(
+    `SELECT board_share_favorites.share_id,
+            board_shares.sheet_id,
+            sheets.name AS sheet_name,
+            users.display_name AS owner_display_name,
+            board_share_favorites.created_at
+     FROM board_share_favorites
+     JOIN board_shares
+       ON board_shares.share_id = board_share_favorites.share_id
+     JOIN sheets
+       ON sheets.id = board_shares.sheet_id
+      AND sheets.user_id = board_shares.owner_user_id
+     JOIN users
+       ON users.id = board_shares.owner_user_id
+     WHERE board_share_favorites.user_id = ?
+     ORDER BY board_share_favorites.created_at DESC`
+  )
+    .bind(userId)
+    .all<BoardShareFavoriteSummaryRow>();
+
+  return rows.results.map((row) => ({
+    shareId: row.share_id,
+    sheetId: row.sheet_id,
+    sheetName: row.sheet_name,
+    ownerDisplayName: row.owner_display_name,
+    createdAt: row.created_at
+  }));
+}
+
 export async function loadBoardManifest(env: Env, userId: string): Promise<BoardSheetManifest> {
   return toBoardManifest(await loadBoardManifestSnapshot(env, userId));
+}
+
+export async function loadBoardSharingOverview(env: Env, userId: string): Promise<BoardSharingOverview> {
+  const [manifest, shares, favorites] = await Promise.all([
+    loadBoardManifest(env, userId),
+    loadBoardShareSummaries(env, userId),
+    loadBoardShareFavoriteSummaries(env, userId)
+  ]);
+
+  return {
+    sheets: manifest.sheets,
+    shares,
+    favorites
+  };
+}
+
+export async function loadBoardShareFavoriteStatus(
+  env: Env,
+  userId: string,
+  shareId: string
+): Promise<{ favorite: boolean }> {
+  const row = await env.DB.prepare(
+    `SELECT EXISTS(
+       SELECT 1
+       FROM board_share_favorites
+       JOIN board_shares
+         ON board_shares.share_id = board_share_favorites.share_id
+       WHERE board_share_favorites.user_id = ?1
+         AND board_share_favorites.share_id = ?2
+     ) AS favorite`
+  )
+    .bind(userId, shareId)
+    .first<{ favorite: number }>();
+
+  return { favorite: row?.favorite === 1 };
 }
 
 function selectOwnedSheet(

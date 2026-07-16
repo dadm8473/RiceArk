@@ -7,6 +7,7 @@ import type { Env } from "../env";
 import type {
   BoardBootstrapPayload,
   BoardDisplaySettings,
+  BoardSharingOverview,
   BoardSheetManifest,
   BoardSheetManifestItem,
   BoardSheetPayload,
@@ -16,6 +17,8 @@ import type {
 import { loadBoard, loadBoardVersionSummary, type BoardVersionSummary as BoardModuleVersionSummary } from "./board";
 import {
   BoardSnapshotConflictError,
+  loadBoardShareFavoriteStatus,
+  loadBoardSharingOverview,
   loadBoardBootstrap,
   loadBoardManifest,
   loadBoardSheet
@@ -208,6 +211,19 @@ function createBoardReadDatabase(path = ":memory:"): DatabaseSync {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE (user_id, table_id, row_item_id, column_item_id, period_key)
     );
+    CREATE TABLE board_shares (
+      id TEXT PRIMARY KEY,
+      owner_user_id TEXT NOT NULL,
+      sheet_id TEXT NOT NULL,
+      share_id TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE board_share_favorites (
+      user_id TEXT NOT NULL,
+      share_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, share_id)
+    );
     CREATE TABLE completions (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -357,7 +373,9 @@ function insertAxisItem(
 }
 
 function seedEstablishedBoard(database: DatabaseSync): void {
-  database.prepare("INSERT INTO users (id, display_name) VALUES (?, ?), (?, ?)").run("user-1", "Owner", "user-2", "Other");
+  database
+    .prepare("INSERT INTO users (id, display_name) VALUES (?, ?), (?, ?), (?, ?)")
+    .run("user-1", "Owner", "user-2", "Other", "user-3", "Viewer");
   database
     .prepare(
       `INSERT INTO user_settings (
@@ -533,6 +551,38 @@ function seedEstablishedBoard(database: DatabaseSync): void {
       "daily:2026-06-05",
       1
     );
+  database
+    .prepare(
+      `INSERT INTO board_shares (
+         id, owner_user_id, sheet_id, share_id, created_at
+       ) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)`
+    )
+    .run(
+      "share-row-owned",
+      "user-1",
+      "sheet-active",
+      "AbCdEfGhIjKlMnOpQrStUv",
+      "2026-06-05 00:00:00",
+      "share-row-favorited",
+      "user-2",
+      "sheet-foreign",
+      "ZYXWVUTSRQPONMLKJIHGFE",
+      "2026-06-06 00:00:00"
+    );
+  database
+    .prepare(
+      `INSERT INTO board_share_favorites (
+         user_id, share_id, created_at
+       ) VALUES (?, ?, ?), (?, ?, ?)`
+    )
+    .run(
+      "user-1",
+      "ZYXWVUTSRQPONMLKJIHGFE",
+      "2026-06-06 01:00:00",
+      "user-1",
+      "StoppedShareABCDEF1234",
+      "2026-06-07 01:00:00"
+    );
 }
 
 function seedDefaultTasks(database: DatabaseSync): void {
@@ -667,6 +717,25 @@ describe("sheet-aware board read contracts", () => {
     expectTypeOf<BoardVersionSummary["settings"]>().toEqualTypeOf<BoardDisplaySettings>();
     expectTypeOf<BoardModuleVersionSummary>().toEqualTypeOf<BoardVersionSummary>();
     expectTypeOf<BoardVersionSummary["periodFingerprint"]>().toEqualTypeOf<"">();
+  });
+
+  it("defines the lightweight sharing overview contract without board payload fields", () => {
+    expectTypeOf<BoardSharingOverview>().toEqualTypeOf<{
+      sheets: BoardSheetManifestItem[];
+      shares: Array<{
+        sheetId: string;
+        sheetName: string;
+        shareId: string;
+        createdAt: string;
+      }>;
+      favorites: Array<{
+        shareId: string;
+        sheetId: string;
+        sheetName: string;
+        ownerDisplayName: string;
+        createdAt: string;
+      }>;
+    }>();
   });
 });
 
@@ -1354,6 +1423,66 @@ describe("sheet-aware board reads", () => {
       expect(statements[0]?.sql).toContain("WITH manifest AS");
       expect(statements[0]?.sql).toContain("user_settings");
       expect(statements[0]?.sql).not.toMatch(/SELECT\s+\*/i);
+    });
+  });
+
+  it("loads a lightweight sharing overview without board content payload tables", async () => {
+    await withEstablishedBoard(async ({ env, statements }) => {
+      const overview = await loadBoardSharingOverview(env, "user-1");
+
+      expect(overview).toEqual({
+        sheets: [
+          { id: "sheet-first", name: "First", sort_order: 0, is_default: 0, version: 2 },
+          { id: "sheet-default", name: "Default", sort_order: 10, is_default: 1, version: 4 },
+          { id: "sheet-active", name: "Active", sort_order: 20, is_default: 0, version: 7 }
+        ],
+        shares: [
+          {
+            sheetId: "sheet-active",
+            sheetName: "Active",
+            shareId: "AbCdEfGhIjKlMnOpQrStUv",
+            createdAt: "2026-06-05 00:00:00"
+          }
+        ],
+        favorites: [
+          {
+            shareId: "ZYXWVUTSRQPONMLKJIHGFE",
+            sheetId: "sheet-foreign",
+            sheetName: "Foreign",
+            ownerDisplayName: "Other",
+            createdAt: "2026-06-06 01:00:00"
+          }
+        ]
+      });
+      expect(statements).toHaveLength(3);
+      expect(statements.some((statement) => statement.sql.includes("WITH manifest AS"))).toBe(true);
+      expect(statements.some((statement) => statement.sql.includes("FROM board_tables"))).toBe(false);
+      expect(statements.some((statement) => statement.sql.includes("FROM board_notes"))).toBe(false);
+      expect(statements.some((statement) => statement.sql.includes("FROM board_axis_items"))).toBe(false);
+      expect(statements.some((statement) => statement.sql.includes("FROM board_cell_states"))).toBe(false);
+      expect(statements.some((statement) => statement.sql.includes("FROM board_cell_completions"))).toBe(false);
+    });
+  });
+
+  it("returns favorite status only for active shares and falls back to false for missing or stopped shares", async () => {
+    await withEstablishedBoard(async ({ env, statements }) => {
+      await expect(loadBoardShareFavoriteStatus(env, "user-1", "ZYXWVUTSRQPONMLKJIHGFE")).resolves.toEqual({
+        favorite: true
+      });
+
+      statements.length = 0;
+      await expect(loadBoardShareFavoriteStatus(env, "user-1", "StoppedShareABCDEF1234")).resolves.toEqual({
+        favorite: false
+      });
+      expect(statements).toHaveLength(1);
+      expect(statements[0]?.sql).toContain("FROM board_share_favorites");
+      expect(statements[0]?.sql).toContain("JOIN board_shares");
+
+      statements.length = 0;
+      await expect(loadBoardShareFavoriteStatus(env, "user-1", "MissingShareABCDEF12345")).resolves.toEqual({
+        favorite: false
+      });
+      expect(statements).toHaveLength(1);
     });
   });
 

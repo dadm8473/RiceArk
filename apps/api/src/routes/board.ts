@@ -41,7 +41,13 @@ import {
   type BoardCellStatePatch,
   type BoardCompletionPatch
 } from "../db/board";
-import { BoardSnapshotConflictError, loadBoardBootstrap, loadBoardSheet } from "../db/boardReads";
+import {
+  BoardSnapshotConflictError,
+  loadBoardBootstrap,
+  loadBoardShareFavoriteStatus,
+  loadBoardSharingOverview,
+  loadBoardSheet
+} from "../db/boardReads";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
 import { periodKeySchema, resourceIdSchema, safeText } from "../http/input";
@@ -370,11 +376,29 @@ boardRoutes.get("/board/shares", async (c) => {
   return c.json({ shares });
 });
 
+boardRoutes.get("/board/sharing-overview", privateBoardReadHeaders, async (c) => {
+  const user = await requireUser(c);
+  const overview = await loadBoardSharingOverview(c.env, user.id);
+  return c.json(overview);
+});
+
 boardRoutes.get("/board/share-favorites", async (c) => {
   const user = await requireUser(c);
   const favorites = await listBoardShareFavorites(c.env, user.id);
   return c.json({ favorites });
 });
+
+boardRoutes.get(
+  "/board/share-favorites/:shareId",
+  privateBoardReadHeaders,
+  zValidator("param", boardShareIdParamSchema),
+  async (c) => {
+    const user = await requireUser(c);
+    const { shareId } = c.req.valid("param");
+    const favorite = await loadBoardShareFavoriteStatus(c.env, user.id, shareId);
+    return c.json(favorite);
+  }
+);
 
 boardRoutes.post("/board/share-favorites", zValidator("json", boardShareFavoriteSchema), async (c) => {
   const user = await requireUser(c);
