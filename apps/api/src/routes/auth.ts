@@ -1,5 +1,5 @@
 import { zValidator } from "@hono/zod-validator";
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import { buildSessionCookie, clearSessionCookie, readSessionCookie } from "../auth/cookies";
 import {
@@ -21,11 +21,15 @@ import { safeText } from "../http/input";
 
 export const authRoutes = new Hono<{ Bindings: Env }>();
 
-authRoutes.use("*", async (c, next) => {
+const privateAuthHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   c.header("Cache-Control", "private, no-store");
   c.header("Vary", "Cookie");
   await next();
-});
+};
+
+authRoutes.use("/auth/*", privateAuthHeaders);
+authRoutes.use("/session", privateAuthHeaders);
+authRoutes.use("/profile", privateAuthHeaders);
 
 export const updateProfileSchema = z.object({
   displayName: safeText({ allowEmoji: true, maxChars: 12, maxBytes: 48 })
