@@ -1344,6 +1344,7 @@ export function createBoardSession(options: CreateBoardSessionOptions): BoardSes
     if (disposed) return;
     controllerState = next;
     if (effect?.type === "replace-url-with-sheet") {
+      invalidReplacementSent = true;
       onReplaceSheetId?.(effect.replaceUrlWithSheetId);
     }
     scheduleBoundary();
@@ -1450,15 +1451,25 @@ export function createBoardSession(options: CreateBoardSessionOptions): BoardSes
       await bootstrapPromise;
     }
     if (disposed || generation !== configurationGeneration || !enabled) return;
-    await reconcileRequestedRoute(routeChanged);
-    if (disposed || generation !== configurationGeneration || !enabled) return;
-    if (shouldRevalidateOnReturn) {
-      await controller.revalidate("view-return");
+    try {
+      if (shouldRevalidateOnReturn) {
+        await controller.revalidate("view-return");
+        if (disposed || generation !== configurationGeneration || !enabled) return;
+      }
+      await reconcileRequestedRoute(routeChanged);
       if (disposed || generation !== configurationGeneration || !enabled) return;
-    }
-    if (shouldPoll && pollingOwner && !wasPolling) {
-      pollingOwner.start(hadBootstrapped && !shouldRevalidateOnReturn);
-      scheduleBoundary();
+    } finally {
+      if (
+        !disposed &&
+        generation === configurationGeneration &&
+        enabled &&
+        shouldPoll &&
+        pollingOwner &&
+        !wasPolling
+      ) {
+        pollingOwner.start(hadBootstrapped && !shouldRevalidateOnReturn);
+        scheduleBoundary();
+      }
     }
   };
 

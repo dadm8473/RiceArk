@@ -593,6 +593,86 @@ describe("sheet-aware board session", () => {
     session.dispose();
   });
 
+  it("revalidates a stale manifest before selecting a route that was deleted while disabled", async () => {
+    const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const sheet2 = manifestSheet("sheet-2", 1, { sort_order: 1 });
+    let remoteManifest = [sheet1, sheet2];
+    const calls: string[] = [];
+    const replacements: Array<string | null> = [];
+    const session = createBoardSession({
+      userId: "user-1",
+      api: {
+        getBootstrap: async () => {
+          calls.push("bootstrap");
+          return bootstrapPayload(sheetPayload("sheet-1"), remoteManifest);
+        },
+        getSheet: async (sheetId) => {
+          calls.push(`sheet:${sheetId}`);
+          const item = remoteManifest.find((sheet) => sheet.id === sheetId);
+          if (!item) throw new Error("deleted sheet");
+          return sheetPayload(item.id, item.version, {
+            sheet: { ...item, content_version: item.version }
+          });
+        },
+        getVersions: async () => {
+          calls.push("versions");
+          return versionSummary(remoteManifest, 2);
+        }
+      },
+      runtime: null
+    });
+    await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
+    await session.selectSheet("sheet-2");
+    await session.configure({ enabled: false, pollingEnabled: false, requestedSheetId: null });
+    remoteManifest = [sheet1];
+
+    await session.configure({
+      enabled: true,
+      pollingEnabled: false,
+      requestedSheetId: "sheet-2",
+      onReplaceSheetId: (sheetId) => replacements.push(sheetId)
+    });
+
+    expect(calls).toEqual(["bootstrap", "sheet:sheet-2", "versions"]);
+    expect(replacements).toEqual(["sheet-1"]);
+    expect(session.snapshot()).toMatchObject({ activeSheetId: "sheet-1", error: null });
+    expect(session.snapshot().data?.sheets.map((sheet) => sheet.id)).toEqual(["sheet-1"]);
+    session.dispose();
+  });
+
+  it("restarts polling after a failed view-return revalidation", async () => {
+    const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const runtime = createFakeBoardPollingRuntime();
+    const getVersions = vi.fn(async () => {
+      throw new Error("versions unavailable");
+    });
+    const session = createBoardSession({
+      userId: "user-1",
+      sourceId: "source-1",
+      runtime: runtime.runtime,
+      api: {
+        getBootstrap: async () => bootstrapPayload(sheetPayload("sheet-1"), [sheet1]),
+        getSheet: async () => sheetPayload("sheet-1"),
+        getVersions
+      }
+    });
+    await session.configure({ enabled: true, pollingEnabled: true, requestedSheetId: null });
+    await session.configure({ enabled: false, pollingEnabled: false, requestedSheetId: null });
+
+    await expect(
+      session.configure({ enabled: true, pollingEnabled: true, requestedSheetId: null })
+    ).rejects.toThrow("versions unavailable");
+
+    expect(getVersions).toHaveBeenCalledTimes(1);
+    expect(runtime.channelNames).toEqual([
+      getBoardPollingChannelName("user-1"),
+      getBoardPollingChannelName("user-1")
+    ]);
+    expect(runtime.listenerCount()).toBe(3);
+    expect(runtime.pendingDelays()).toContain(BOARD_VERSION_ACTIVE_CHECK_INTERVAL_MS);
+    session.dispose();
+  });
+
   it("forces active-sheet logout recovery after versions while preserving pending overlays", async () => {
     const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
     const calls: string[] = [];

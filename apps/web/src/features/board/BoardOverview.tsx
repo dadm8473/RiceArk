@@ -2264,11 +2264,13 @@ export function BoardOverview({
 
   async function persistNoteLayout(noteId: string, patch: BoardNoteLayoutPatch) {
     return runMutation(async () => {
+      const currentNote = notes.find((note) => note.id === noteId);
+      if (!currentNote) return;
       try {
         await apiPatch("/api/board/notes/" + encodeURIComponent(noteId) + "/layout", patch);
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "메모 위치를 저장하지 못했습니다.");
-        await refreshBoard();
+        await recoverFailedBoardNoteMutation(currentNote.sheet_id, onBoardSheetStale, onBoardChanged);
         throw err;
       }
     });

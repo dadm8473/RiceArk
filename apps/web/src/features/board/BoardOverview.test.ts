@@ -2570,5 +2570,6 @@ describe("BoardOverview", () => {
     expect(source).toMatch(/handleCreateNote[\s\S]*?catch \(err\)[\s\S]*?recoverFailedBoardNoteMutation\(activeSheet\.id/);
     expect(source).toMatch(/handleNoteSave[\s\S]*?catch \(err\)[\s\S]*?recoverFailedBoardNoteMutation\(currentNote\.sheet_id/);
     expect(source).toMatch(/handleNoteDelete[\s\S]*?catch \(err\)[\s\S]*?recoverFailedBoardNoteMutation\(currentNote\.sheet_id/);
+    expect(source).toMatch(/persistNoteLayout[\s\S]*?catch \(err\)[\s\S]*?recoverFailedBoardNoteMutation\(currentNote\.sheet_id/);
   });
 });
