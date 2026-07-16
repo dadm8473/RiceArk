@@ -1,10 +1,13 @@
+import { withBoundedInFlight } from "../cache/boundedInFlight";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
+import { fetchExternal } from "../http/externalFetch";
 
 const BASE_URL = "https://developer-lostark.game.onstove.com";
 const CALENDAR_CACHE_KEY = "lostark:gamecontents:calendar:v1";
 const CALENDAR_STATUS_KEY = "lostark:gamecontents:calendar:status:v1";
 export const CALENDAR_CACHE_TTL_SECONDS = 60 * 15;
+const calendarInFlight = new Map<string, Promise<LostArkCalendarContent[]>>();
 
 export type LostArkCalendarStatus = {
   lastSuccessAt: string | null;
@@ -354,46 +357,61 @@ export async function fetchLostArkEventCalendarSummary(
     throw new ApiError(500, "lostark_key_missing", "Lost Ark API key is not configured");
   }
 
-  const cached = await env.CACHE.get(CALENDAR_CACHE_KEY, "json");
-  let raw: unknown = Array.isArray(cached) ? cached : null;
-  if (!raw) {
+  const raw = await withBoundedInFlight(calendarInFlight, "lostark-calendar", async () => {
+    const cached = await env.CACHE.get(CALENDAR_CACHE_KEY, "json");
+    if (Array.isArray(cached)) return cached as LostArkCalendarContent[];
+
     let response: Response;
     try {
-      response = await fetch(`${BASE_URL}/gamecontents/calendar`, {
+      response = await fetchExternal(`${BASE_URL}/gamecontents/calendar`, {
         headers: {
           accept: "application/json",
           authorization: `bearer ${env.LOSTARK_API_KEY}`
         }
       });
-    } catch (error) {
+    } catch {
       await writeCalendarStatus(env, {
         lastFailureAt: new Date().toISOString(),
         lastFailureCode: "lostark_fetch_failed"
       });
-      throw error;
+      throw new ApiError(502, "lostark_fetch_failed", "Lost Ark API request failed");
     }
     if (!response.ok) {
       await writeCalendarStatus(env, {
         lastFailureAt: new Date().toISOString(),
         lastFailureCode: "lostark_api_error"
       });
-      throw new ApiError(response.status, "lostark_api_error", "Lost Ark API request failed");
+      const retryAfter = response.status === 429 ? response.headers.get("Retry-After") : null;
+      throw new ApiError(
+        response.status,
+        "lostark_api_error",
+        "Lost Ark API request failed",
+        retryAfter ? { headers: { "Retry-After": retryAfter } } : {}
+      );
     }
-    raw = await readJsonOrNull(response);
-    if (!Array.isArray(raw)) raw = [];
-    await env.CACHE.put(CALENDAR_CACHE_KEY, JSON.stringify(raw), { expirationTtl: CALENDAR_CACHE_TTL_SECONDS });
-    await writeCalendarStatus(env, { lastSuccessAt: new Date().toISOString() });
-  }
 
-  return normalizeLostArkEventCalendar(raw as LostArkCalendarContent[], options);
+    const payload = await readJsonOrNull(response);
+    const contents = Array.isArray(payload) ? payload as LostArkCalendarContent[] : [];
+    await env.CACHE.put(CALENDAR_CACHE_KEY, JSON.stringify(contents), {
+      expirationTtl: CALENDAR_CACHE_TTL_SECONDS
+    });
+    await writeCalendarStatus(env, { lastSuccessAt: new Date().toISOString() });
+    return contents;
+  });
+
+  return normalizeLostArkEventCalendar(raw, options);
 }
 
 export function parseLostArkRewardFilters(value: string | null | undefined): LostArkEventRewardFilter[] {
   if (!value) return DEFAULT_REWARD_FILTERS;
-  const allowed = new Set<LostArkEventRewardFilter>(["gold", "card", "coin", "silver", "cardXp"]);
-  const filters = value
-    .split(",")
-    .map((item) => item.trim())
-    .filter((item): item is LostArkEventRewardFilter => allowed.has(item as LostArkEventRewardFilter));
-  return filters.length > 0 ? [...new Set(filters)] : DEFAULT_REWARD_FILTERS;
+  const selected = new Set(
+    value
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item): item is LostArkEventRewardFilter =>
+        DEFAULT_REWARD_FILTERS.includes(item as LostArkEventRewardFilter)
+      )
+  );
+  const filters = DEFAULT_REWARD_FILTERS.filter((filter) => selected.has(filter));
+  return filters.length > 0 ? filters : DEFAULT_REWARD_FILTERS;
 }

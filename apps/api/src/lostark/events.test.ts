@@ -1,7 +1,155 @@
-import { describe, expect, it } from "vitest";
-import { normalizeLostArkEventCalendar } from "./events";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Env } from "../env";
+import {
+  CALENDAR_CACHE_TTL_SECONDS,
+  fetchLostArkEventCalendarSummary,
+  normalizeLostArkEventCalendar,
+  parseLostArkRewardFilters
+} from "./events";
 
 const now = new Date("2026-06-07T17:38:00+09:00");
+const CALENDAR_CACHE_KEY = "lostark:gamecontents:calendar:v1";
+const CALENDAR_STATUS_KEY = "lostark:gamecontents:calendar:status:v1";
+
+type CalendarEnv = Env & {
+  cacheGets: string[];
+  cachePuts: Array<{ key: string; options: KVNamespacePutOptions | undefined; value: string }>;
+  cacheStore: Map<string, string>;
+};
+
+function createCalendarEnv(): CalendarEnv {
+  const cacheStore = new Map<string, string>();
+  const cacheGets: string[] = [];
+  const cachePuts: CalendarEnv["cachePuts"] = [];
+  return {
+    APP_ORIGIN: "http://127.0.0.1:5173",
+    CACHE: {
+      async get(key: string) {
+        cacheGets.push(key);
+        const value = cacheStore.get(key);
+        return value ? JSON.parse(value) : null;
+      },
+      async put(key: string, value: string, options?: KVNamespacePutOptions) {
+        cachePuts.push({ key, options, value });
+        cacheStore.set(key, value);
+      }
+    } as unknown as KVNamespace,
+    COOKIE_DOMAIN: "127.0.0.1",
+    ENVIRONMENT: "test",
+    LOSTARK_API_KEY: "lostark-key",
+    cacheGets,
+    cachePuts,
+    cacheStore
+  } as CalendarEnv;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("parseLostArkRewardFilters", () => {
+  it("deduplicates valid filters into the fixed public cache order", () => {
+    expect(parseLostArkRewardFilters("cardXp,gold,card,gold,coin,silver")).toEqual([
+      "gold",
+      "card",
+      "coin",
+      "silver",
+      "cardXp"
+    ]);
+    expect(parseLostArkRewardFilters("card, gold, card")).toEqual(["gold", "card"]);
+    expect(parseLostArkRewardFilters("unknown")).toEqual(["gold", "card", "coin", "silver", "cardXp"]);
+  });
+});
+
+describe("fetchLostArkEventCalendarSummary", () => {
+  it("uses one eight-second origin attempt and reuses the raw KV payload for fifteen minutes", async () => {
+    const timeout = new AbortController();
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json([]));
+    vi.stubGlobal("fetch", fetchMock);
+    const env = createCalendarEnv();
+
+    await fetchLostArkEventCalendarSummary(env, { now });
+    await fetchLostArkEventCalendarSummary(env, { now });
+
+    expect(timeoutSpy).toHaveBeenCalledTimes(1);
+    expect(timeoutSpy).toHaveBeenCalledWith(8_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+    expect(env.cacheGets.filter((key) => key === CALENDAR_CACHE_KEY)).toHaveLength(2);
+    expect(env.cachePuts.filter((entry) => entry.key === CALENDAR_CACHE_KEY)).toEqual([
+      expect.objectContaining({ options: { expirationTtl: CALENDAR_CACHE_TTL_SECONDS } })
+    ]);
+    expect(env.cachePuts.filter((entry) => entry.key === CALENDAR_STATUS_KEY)).toHaveLength(1);
+  });
+
+  it("deduplicates concurrent raw cache misses into one KV read, origin fetch, and KV write", async () => {
+    const response = deferred<Response>();
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => response.promise);
+    vi.stubGlobal("fetch", fetchMock);
+    const env = createCalendarEnv();
+
+    const first = fetchLostArkEventCalendarSummary(env, { now });
+    const second = fetchLostArkEventCalendarSummary(env, { now });
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    response.resolve(Response.json([]));
+    await Promise.all([first, second]);
+
+    expect(env.cacheGets.filter((key) => key === CALENDAR_CACHE_KEY)).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(env.cachePuts.filter((entry) => entry.key === CALENDAR_CACHE_KEY)).toHaveLength(1);
+  });
+
+  it("propagates upstream 429 Retry-After metadata without retrying or caching the failure", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response("rate limited", { status: 429, headers: { "Retry-After": "17" } })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const env = createCalendarEnv();
+
+    await expect(fetchLostArkEventCalendarSummary(env, { now })).rejects.toMatchObject({
+      status: 429,
+      code: "lostark_api_error",
+      options: { headers: { "Retry-After": "17" } }
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(env.cachePuts.filter((entry) => entry.key === CALENDAR_CACHE_KEY)).toHaveLength(0);
+    expect(env.cachePuts.filter((entry) => entry.key === CALENDAR_STATUS_KEY)).toHaveLength(1);
+  });
+
+  it("cleans up a failed in-flight origin attempt so the next request can recover", async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new DOMException("timed out", "TimeoutError"))
+      .mockResolvedValueOnce(Response.json([]));
+    vi.stubGlobal("fetch", fetchMock);
+    const env = createCalendarEnv();
+
+    await expect(fetchLostArkEventCalendarSummary(env, { now })).rejects.toMatchObject({
+      status: 502,
+      code: "lostark_fetch_failed"
+    });
+    await expect(fetchLostArkEventCalendarSummary(env, { now })).resolves.toMatchObject({
+      generatedAt: now.toISOString()
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(env.cachePuts.filter((entry) => entry.key === CALENDAR_CACHE_KEY)).toHaveLength(1);
+    expect(env.cachePuts.filter((entry) => entry.key === CALENDAR_STATUS_KEY)).toHaveLength(2);
+  });
+});
 
 describe("normalizeLostArkEventCalendar", () => {
   it("splits adventure island rewards into two claims only on days with a 09:00 reward window", () => {
