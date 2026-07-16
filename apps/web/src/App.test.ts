@@ -838,7 +838,7 @@ describe("App", () => {
     expect(browser.pushState).not.toHaveBeenCalled();
   });
 
-  it("retains the authenticated owner read without polling on the shared view", () => {
+  it("disables owner board reads and polling on the authenticated shared view", () => {
     installBrowserWindow("https://riceark.pages.dev/?view=shared");
     hooks.useSession.mockReturnValue({
       status: "authenticated",
@@ -849,12 +849,18 @@ describe("App", () => {
     renderToStaticMarkup(createElement(App));
 
     expect(hooks.useBoard).toHaveBeenLastCalledWith({
-      enabled: true,
+      enabled: false,
       pollingEnabled: false,
       userId: "user-1",
       requestedSheetId: null,
       onReplaceSheetId: expect.any(Function)
     });
+    expect(hooks.SharedRiceBinPanel).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        ownerBoard: expect.anything(),
+        onOwnerBoardChanged: expect.anything()
+      })
+    );
   });
 
   it("waits for session resolution before redirecting a non-admin direct admin route", () => {

@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildSharedRiceBinLink,
   extractSharedRiceBinId,
@@ -12,6 +12,44 @@ import {
 } from "./SharedRiceBinPanel";
 import { createBoardMutationBarrier } from "../board/mutationBarrier";
 import type { BoardPayload } from "../board/types";
+
+const hooks = vi.hoisted(() => ({
+  effects: [] as Array<{
+    callback: () => void | (() => void);
+    dependencies: readonly unknown[] | undefined;
+  }>,
+  stateUpdates: [] as unknown[]
+}));
+
+const api = vi.hoisted(() => ({
+  calls: [] as string[],
+  apiDelete: vi.fn(),
+  apiGet: vi.fn(),
+  apiPost: vi.fn()
+}));
+
+vi.mock("react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react")>();
+  return {
+    ...actual,
+    useEffect: (callback: () => void | (() => void), dependencies?: readonly unknown[]) => {
+      hooks.effects.push({ callback, dependencies });
+    },
+    useState: <T,>(initial: T | (() => T)) => {
+      const [value, setValue] = actual.useState(initial);
+      return [value, (next: T | ((current: T) => T)) => {
+        hooks.stateUpdates.push(next);
+        setValue(next);
+      }] as const;
+    }
+  };
+});
+
+vi.mock("../../api/client", () => ({
+  apiDelete: api.apiDelete,
+  apiGet: api.apiGet,
+  apiPost: api.apiPost
+}));
 
 const shareId = "AbCdEfGhIjKlMnOpQrStUv";
 
@@ -40,6 +78,51 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function flushPromises() {
+  return Promise.resolve().then(() => Promise.resolve());
+}
+
+function runCapturedEffects() {
+  for (const effect of hooks.effects) effect.callback();
+}
+
+function createSharedBoardPayload(id = shareId): BoardPayload & { shareId: string } {
+  return {
+    ...ownerBoard,
+    shareId: id
+  };
+}
+
+beforeEach(() => {
+  hooks.effects.length = 0;
+  hooks.stateUpdates.length = 0;
+  api.calls.length = 0;
+  api.apiDelete.mockReset();
+  api.apiGet.mockReset();
+  api.apiPost.mockReset();
+  api.apiGet.mockImplementation(async (path: string) => {
+    api.calls.push(path);
+    if (path === "/api/board/sharing-overview") {
+      return { sheets: ownerBoard.sheets, shares: [], favorites: [] };
+    }
+    if (path === `/api/shared-rice-bins/${shareId}`) {
+      return createSharedBoardPayload();
+    }
+    if (path === `/api/board/share-favorites/${shareId}`) {
+      return { favorite: true };
+    }
+    return {};
+  });
+  api.apiPost.mockImplementation(async (path: string) => {
+    api.calls.push(path);
+    return { shareId };
+  });
+  api.apiDelete.mockImplementation(async (path: string) => {
+    api.calls.push(path);
+    return undefined;
+  });
+});
+
 describe("extractSharedRiceBinId", () => {
   it("accepts raw ids and RiceArk share links", () => {
     expect(extractSharedRiceBinId(shareId)).toBe(shareId);
@@ -63,6 +146,85 @@ describe("shared rice bin links", () => {
 });
 
 describe("SharedRiceBinPanel", () => {
+  it("loads direct public detail before authenticated favorite status and skips owner overview requests", async () => {
+    const detail = deferred<BoardPayload & { shareId: string }>();
+    api.apiGet.mockImplementation(async (path: string) => {
+      api.calls.push(path);
+      if (path === `/api/shared-rice-bins/${shareId}`) return detail.promise;
+      if (path === `/api/board/share-favorites/${shareId}`) return { favorite: true };
+      return {};
+    });
+
+    renderToStaticMarkup(
+      createElement(SharedRiceBinPanel, {
+        initialShareId: shareId,
+        sessionStatus: "authenticated"
+      })
+    );
+    runCapturedEffects();
+
+    expect(api.calls).toEqual([`/api/shared-rice-bins/${shareId}`]);
+    expect(api.calls).not.toContain("/api/board/bootstrap");
+    expect(api.calls).not.toContain("/api/board/sharing-overview");
+    expect(api.calls).not.toContain("/api/board/shares");
+    expect(api.calls).not.toContain("/api/board/share-favorites");
+
+    detail.resolve(createSharedBoardPayload());
+    await flushPromises();
+
+    expect(api.calls).toEqual([
+      `/api/shared-rice-bins/${shareId}`,
+      `/api/board/share-favorites/${shareId}`
+    ]);
+    expect(hooks.stateUpdates).toContainEqual(expect.objectContaining({ shareId, readOnly: true }));
+  });
+
+  it("loads anonymous direct public detail without favorite, owner, or overview requests", async () => {
+    renderToStaticMarkup(
+      createElement(SharedRiceBinPanel, {
+        initialShareId: shareId,
+        sessionStatus: "anonymous"
+      })
+    );
+    runCapturedEffects();
+    await flushPromises();
+
+    expect(api.calls).toEqual([`/api/shared-rice-bins/${shareId}`]);
+    expect(api.calls).not.toContain("/api/board/bootstrap");
+    expect(api.calls).not.toContain("/api/board/sharing-overview");
+    expect(api.calls).not.toContain(`/api/board/share-favorites/${shareId}`);
+  });
+
+  it("loads exactly one authenticated sharing overview for the hub", async () => {
+    renderToStaticMarkup(createElement(SharedRiceBinPanel, { sessionStatus: "authenticated" }));
+    runCapturedEffects();
+    await flushPromises();
+
+    expect(api.calls).toEqual(["/api/board/sharing-overview"]);
+    expect(api.calls).not.toContain("/api/board/bootstrap");
+    expect(api.calls).not.toContain("/api/board/shares");
+    expect(api.calls).not.toContain("/api/board/share-favorites");
+  });
+
+  it("renders anonymous lookup hub without any overview request", async () => {
+    renderToStaticMarkup(createElement(SharedRiceBinPanel, { sessionStatus: "anonymous" }));
+    runCapturedEffects();
+    await flushPromises();
+
+    expect(api.calls).toEqual([]);
+  });
+
+  it("uses lightweight overview data and local mutation updates instead of owner board props or blanket refreshes", () => {
+    const source = readFileSync(new URL("./SharedRiceBinPanel.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("/api/board/sharing-overview");
+    expect(source).not.toContain("ownerBoard");
+    expect(source).not.toContain("onOwnerBoardChanged");
+    expect(source).not.toContain("/api/board/shares");
+    expect(source).not.toMatch(/apiGet<\{\s*favorites:/);
+    expect(source).not.toContain("refreshShares");
+  });
+
   it("owns controlled active-sheet state for shared read-only boards", () => {
     const source = readFileSync(new URL("./SharedRiceBinPanel.tsx", import.meta.url), "utf8");
 
@@ -123,10 +285,10 @@ describe("SharedRiceBinPanel", () => {
     expect(onSettled).toHaveBeenCalledTimes(1);
   });
 
-  it("disables owner share writes while logout reconciliation holds the lock", () => {
+  it("keeps overview share writes wired to the logout reconciliation lock", () => {
+    const source = readFileSync(new URL("./SharedRiceBinPanel.tsx", import.meta.url), "utf8");
     const html = renderToStaticMarkup(
       createElement(SharedRiceBinPanel, {
-        ownerBoard,
         sessionStatus: "authenticated",
         writeLocked: true
       })
@@ -134,7 +296,9 @@ describe("SharedRiceBinPanel", () => {
 
     expect(html).toContain('role="status"');
     expect(html).toContain("로그아웃 중에는 공유 설정을 변경할 수 없습니다.");
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>.*공유 시작/s);
+    expect(source).toContain("isSharedRiceBinWriteDisabled(writeLocked, pending, `share:${sheet.id}`)");
+    expect(source).toContain("handleShareStart(sheet.id)");
+    expect(source).toContain("handleShareStop(sheet.id)");
   });
 
   it("renders lookup controls for anonymous visitors", () => {
@@ -155,23 +319,18 @@ describe("SharedRiceBinPanel", () => {
     expect(html).not.toContain("내 쌀통 공유");
   });
 
-  it("renders owner share management when the user is logged in", () => {
-    const html = renderToStaticMarkup(
-      createElement(SharedRiceBinPanel, {
-        ownerBoard,
-        sessionStatus: "authenticated",
-        onOwnerBoardChanged: vi.fn()
-      })
-    );
+  it("renders owner share management from the authenticated sharing overview", () => {
+    const source = readFileSync(new URL("./SharedRiceBinPanel.tsx", import.meta.url), "utf-8");
 
-    expect(html).toContain("내 쌀통 공유");
-    expect(html).toContain("shared-rice-bin-share-panel");
-    expect(html).toContain("숙제");
-    expect(html).toContain("공유 시작");
-    expect(html).not.toContain("공유 시작 시 새 ID");
-    expect(html).toContain("즐겨찾기");
-    expect(html).toContain("즐겨찾기한 쌀통이 없습니다.");
-    expect(html).not.toContain("즐겨찾기한 공유 쌀통이 없습니다.");
+    expect(source).toContain("isAuthenticated && overview");
+    expect(source).toContain("내 쌀통 공유");
+    expect(source).toContain("shared-rice-bin-share-panel");
+    expect(source).toContain("sheets.map((sheet)");
+    expect(source).toContain("공유 시작");
+    expect(source).not.toContain("공유 시작 시 새 ID");
+    expect(source).toContain("즐겨찾기");
+    expect(source).toContain("즐겨찾기한 쌀통이 없습니다.");
+    expect(source).not.toContain("즐겨찾기한 공유 쌀통이 없습니다.");
   });
 
   it("uses a board-only layout once a shared rice bin is open", () => {

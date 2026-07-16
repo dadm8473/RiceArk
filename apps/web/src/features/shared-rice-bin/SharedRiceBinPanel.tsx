@@ -22,13 +22,25 @@ interface BoardShareFavoriteSummary extends BoardShareSummary {
   ownerDisplayName: string;
 }
 
+interface BoardSheetManifestSummary {
+  id: string;
+  name: string;
+  sort_order: number;
+  is_default: number;
+  version: number;
+}
+
+interface BoardSharingOverview {
+  sheets: BoardSheetManifestSummary[];
+  shares: BoardShareSummary[];
+  favorites: BoardShareFavoriteSummary[];
+}
+
 interface Props {
   initialShareId?: string | null | undefined;
-  ownerBoard?: BoardPayload | null | undefined;
   resetToLookupKey?: number | undefined;
   onSharedBoardClosed?: (() => void) | undefined;
   onSharedBoardOpened?: ((shareId: string) => void) | undefined;
-  onOwnerBoardChanged?: (() => Promise<BoardPayload | null> | void) | undefined;
   runMutation?: BoardMutationRunner | undefined;
   sessionStatus: SessionState["status"];
   writeLocked?: boolean | undefined;
@@ -110,11 +122,9 @@ export function openSharedRiceBinInNewTab(
 
 export function SharedRiceBinPanel({
   initialShareId,
-  ownerBoard,
   resetToLookupKey = 0,
   onSharedBoardClosed,
   onSharedBoardOpened,
-  onOwnerBoardChanged,
   runMutation = runBoardMutationDirect,
   sessionStatus,
   writeLocked = false
@@ -122,45 +132,67 @@ export function SharedRiceBinPanel({
   const [lookupValue, setLookupValue] = useState(initialShareId ?? "");
   const [sharedBoard, setSharedBoard] = useState<BoardPayload | null>(null);
   const [sharedActiveSheetId, setSharedActiveSheetId] = useState<string | null>(null);
-  const [shares, setShares] = useState<BoardShareSummary[]>([]);
-  const [favorites, setFavorites] = useState<BoardShareFavoriteSummary[]>([]);
+  const [overview, setOverview] = useState<BoardSharingOverview | null>(null);
+  const [sharedBoardFavorite, setSharedBoardFavorite] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const lastResetToLookupKeyRef = useRef(resetToLookupKey);
+  const lookupRequestRef = useRef(0);
+  const favoriteStatusRequestRef = useRef<string | null>(null);
   const isAuthenticated = sessionStatus === "authenticated";
+  const sheets = overview?.sheets ?? [];
+  const shares = overview?.shares ?? [];
+  const favorites = overview?.favorites ?? [];
   const shareBySheetId = useMemo(() => new Map(shares.map((share) => [share.sheetId, share])), [shares]);
   const favoriteShareIds = useMemo(() => new Set(favorites.map((favorite) => favorite.shareId)), [favorites]);
 
-  async function refreshShares() {
+  async function loadFavoriteStatus(shareId: string) {
     if (!isAuthenticated) return;
-    const [sharePayload, favoritePayload] = await Promise.all([
-      apiGet<{ shares: BoardShareSummary[] }>("/api/board/shares"),
-      apiGet<{ favorites: BoardShareFavoriteSummary[] }>("/api/board/share-favorites")
-    ]);
-    setShares(sharePayload.shares);
-    setFavorites(favoritePayload.favorites);
+    favoriteStatusRequestRef.current = shareId;
+    const payload = await apiGet<{ favorite: boolean }>("/api/board/share-favorites/" + encodeURIComponent(shareId));
+    if (favoriteStatusRequestRef.current === shareId) {
+      setSharedBoardFavorite(payload.favorite);
+    }
   }
 
   useEffect(() => {
     if (!isAuthenticated) {
-      setShares([]);
-      setFavorites([]);
+      favoriteStatusRequestRef.current = null;
+      setOverview(null);
+      setSharedBoardFavorite(false);
       return;
     }
+    if (initialShareId) return;
     let active = true;
-    refreshShares().catch((err) => {
-      if (active) setError(err instanceof Error ? err.message : "공유 쌀통 목록을 불러오지 못했습니다.");
-    });
+    apiGet<BoardSharingOverview>("/api/board/sharing-overview")
+      .then((payload) => {
+        if (active) setOverview(payload);
+      })
+      .catch((err) => {
+        if (active) setError(err instanceof Error ? err.message : "공유 쌀통 목록을 불러오지 못했습니다.");
+      });
     return () => {
       active = false;
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, initialShareId]);
+
+  const sharedBoardShareId = sharedBoard?.shareId ?? null;
+
+  useEffect(() => {
+    if (!isAuthenticated || !sharedBoardShareId) return;
+    if (favoriteStatusRequestRef.current === sharedBoardShareId) return;
+    void loadFavoriteStatus(sharedBoardShareId).catch((err) => {
+      setError(err instanceof Error ? err.message : "즐겨찾기 상태를 불러오지 못했습니다.");
+    });
+  }, [isAuthenticated, sharedBoardShareId]);
 
   useEffect(() => {
     if (!initialShareId) {
+      favoriteStatusRequestRef.current = null;
       setSharedBoard(null);
       setSharedActiveSheetId(null);
+      setSharedBoardFavorite(false);
       return;
     }
     if (sharedBoard?.shareId === initialShareId) return;
@@ -185,20 +217,27 @@ export function SharedRiceBinPanel({
     setPending("lookup");
     setError(null);
     setMessage(null);
+    favoriteStatusRequestRef.current = null;
+    const requestId = ++lookupRequestRef.current;
     try {
       const payload = await apiGet<BoardPayload>("/api/shared-rice-bins/" + encodeURIComponent(shareId));
+      if (requestId !== lookupRequestRef.current) return;
       setSharedBoard({ ...payload, readOnly: true });
       setSharedActiveSheetId(
         payload.sheets.find((sheet) => sheet.is_default === 1)?.id ?? payload.sheets[0]?.id ?? null
       );
+      setSharedBoardFavorite(favoriteShareIds.has(shareId));
       setLookupValue(shareId);
       if (options.syncHistory ?? true) onSharedBoardOpened?.(shareId);
+      await loadFavoriteStatus(shareId);
     } catch (err) {
+      if (requestId !== lookupRequestRef.current) return;
       setSharedBoard(null);
       setSharedActiveSheetId(null);
+      setSharedBoardFavorite(false);
       setError(err instanceof Error ? err.message : "공유 쌀통을 불러오지 못했습니다.");
     } finally {
-      setPending(null);
+      if (requestId === lookupRequestRef.current) setPending(null);
     }
   }
 
@@ -224,8 +263,21 @@ export function SharedRiceBinPanel({
         setPending(`share:${sheetId}`);
         setError(null);
         const created = await apiPost<{ shareId: string }>("/api/board/sheets/" + encodeURIComponent(sheetId) + "/share", {});
-        await refreshShares();
-        await onOwnerBoardChanged?.();
+        setOverview((current) => {
+          if (!current) return current;
+          const sheet = current.sheets.find((sheet) => sheet.id === sheetId);
+          if (!sheet) return current;
+          const nextShare: BoardShareSummary = {
+            sheetId,
+            sheetName: sheet.name,
+            shareId: created.shareId,
+            createdAt: new Date().toISOString()
+          };
+          return {
+            ...current,
+            shares: [...current.shares.filter((share) => share.sheetId !== sheetId), nextShare]
+          };
+        });
         setMessage("공유 아이디를 새로 만들었습니다.");
         await copyText(buildSharedRiceBinLink(created.shareId));
       },
@@ -241,8 +293,10 @@ export function SharedRiceBinPanel({
         setPending(`share:${sheetId}`);
         setError(null);
         await apiDelete("/api/board/sheets/" + encodeURIComponent(sheetId) + "/share");
-        await refreshShares();
-        await onOwnerBoardChanged?.();
+        setOverview((current) => current ? {
+          ...current,
+          shares: current.shares.filter((share) => share.sheetId !== sheetId)
+        } : current);
         setMessage("공유를 중단했습니다. 기존 링크는 더 이상 열리지 않습니다.");
       },
       (err) => setError(err instanceof Error ? err.message : "공유를 중단하지 못했습니다."),
@@ -257,12 +311,36 @@ export function SharedRiceBinPanel({
       async () => {
         setPending(`favorite:${shareId}`);
         setError(null);
-        if (favoriteShareIds.has(shareId)) {
+        const isFavorite = sharedBoard?.shareId === shareId ? sharedBoardFavorite : favoriteShareIds.has(shareId);
+        if (isFavorite) {
           await apiDelete("/api/board/share-favorites/" + encodeURIComponent(shareId));
+          setSharedBoardFavorite(false);
+          setOverview((current) => current ? {
+            ...current,
+            favorites: current.favorites.filter((favorite) => favorite.shareId !== shareId)
+          } : current);
         } else {
-          await apiPost("/api/board/share-favorites", { shareId });
+          const created = await apiPost<{ shareId: string }>("/api/board/share-favorites", { shareId });
+          setSharedBoardFavorite(true);
+          setOverview((current) => {
+            if (!current || current.favorites.some((favorite) => favorite.shareId === created.shareId)) return current;
+            const existingShare = current.shares.find((share) => share.shareId === created.shareId);
+            const defaultSheet = sharedBoard?.sheets.find((sheet) => sheet.is_default === 1) ?? sharedBoard?.sheets[0];
+            const favorite: BoardShareFavoriteSummary = existingShare
+              ? { ...existingShare, ownerDisplayName: "내 쌀통" }
+              : {
+                  shareId: created.shareId,
+                  sheetId: defaultSheet?.id ?? created.shareId,
+                  sheetName: defaultSheet?.name ?? "공유 쌀통",
+                  ownerDisplayName: "공유 쌀통",
+                  createdAt: new Date().toISOString()
+                };
+            return {
+              ...current,
+              favorites: [favorite, ...current.favorites]
+            };
+          });
         }
-        await refreshShares();
       },
       (err) => setError(err instanceof Error ? err.message : "즐겨찾기를 저장하지 못했습니다."),
       () => setPending(null)
@@ -275,12 +353,12 @@ export function SharedRiceBinPanel({
   }
 
   function handleSharedBoardClose() {
+    favoriteStatusRequestRef.current = null;
     setSharedBoard(null);
     setSharedActiveSheetId(null);
+    setSharedBoardFavorite(false);
     onSharedBoardClosed?.();
   }
-
-  const sharedBoardShareId = sharedBoard?.shareId ?? null;
 
   if (sharedBoard) {
     return (
@@ -315,7 +393,7 @@ export function SharedRiceBinPanel({
                     }}
                   >
                     <Heart aria-hidden="true" size={15} />
-                    {sharedBoardShareId && favoriteShareIds.has(sharedBoardShareId) ? "즐겨찾기 해제" : "즐겨찾기"}
+                    {sharedBoardFavorite ? "즐겨찾기 해제" : "즐겨찾기"}
                   </button>
                 </>
               ) : null}
@@ -338,7 +416,7 @@ export function SharedRiceBinPanel({
       {message ? <p className="shared-rice-bin-message">{message}</p> : null}
       {writeLocked ? <p role="status">로그아웃 중에는 공유 설정을 변경할 수 없습니다.</p> : null}
 
-      <div className={`shared-rice-bin-hub${isAuthenticated && ownerBoard ? "" : " single"}`}>
+      <div className={`shared-rice-bin-hub${isAuthenticated && overview ? "" : " single"}`}>
         <section className="shared-rice-bin-section shared-rice-bin-lookup-panel">
           <div className="shared-rice-bin-section-heading">
             <h3>공유 쌀통 조회</h3>
@@ -396,14 +474,14 @@ export function SharedRiceBinPanel({
           </div>
         </section>
 
-        {isAuthenticated && ownerBoard ? (
+        {isAuthenticated && overview ? (
           <section className="shared-rice-bin-section shared-rice-bin-share-panel">
             <div className="shared-rice-bin-section-heading">
               <h3>내 쌀통 공유</h3>
             </div>
             <div className="shared-rice-bin-section-body">
               <div className="shared-rice-bin-list">
-                {ownerBoard.sheets.map((sheet) => {
+                {sheets.map((sheet) => {
                   const share = shareBySheetId.get(sheet.id);
                   const link = share ? buildSharedRiceBinLink(share.shareId) : null;
                   return (

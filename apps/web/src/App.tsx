@@ -252,8 +252,8 @@ export function App() {
   }, [applyAppRoute]);
   const isAuthenticated = session.status === "authenticated";
   const isAdmin = isAuthenticated && session.user.isAdmin === true;
-  const isBoardEnabled = isAuthenticated && (activeView === "board" || activeView === "shared");
-  const isBoardPollingEnabled = isAuthenticated && activeView === "board";
+  const isBoardEnabled = isAuthenticated && activeView === "board";
+  const isBoardPollingEnabled = isBoardEnabled;
   const board = useBoard({
     enabled: isBoardEnabled,
     pollingEnabled: isBoardPollingEnabled,
@@ -480,12 +480,10 @@ export function App() {
         ) : (
           <SharedRiceBinPanel
             initialShareId={routeShareId}
-            ownerBoard={session.status === "authenticated" ? board.data : null}
             resetToLookupKey={sharedRiceBinLookupResetKey}
             sessionStatus={session.status}
             onSharedBoardClosed={handleSharedBoardClosed}
             onSharedBoardOpened={handleSharedBoardOpened}
-            onOwnerBoardChanged={board.reload}
             {...getSharedRiceBinInteractionProps(logoutPending, boardMutationBarrier.run)}
           />
         )}
