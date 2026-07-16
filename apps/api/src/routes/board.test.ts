@@ -1863,7 +1863,10 @@ describe("board owner read routes", () => {
               if (sql.includes("FROM board_notes\n       JOIN sheets")) return { results: payload.notes };
               if (sql.includes("FROM board_axis_items\n       JOIN board_tables")) return { results: payload.axisItems };
               if (sql.includes("FROM board_cell_states\n       JOIN board_tables")) return { results: payload.cellStates };
-              if (sql.includes("FROM board_cell_completions\n           JOIN board_tables")) {
+              if (
+                sql.includes("FROM board_cell_completions\n           JOIN board_tables") ||
+                sql.includes("FROM main.board_cell_completions AS board_cell_completions")
+              ) {
                 return { results: payload.completions };
               }
 
