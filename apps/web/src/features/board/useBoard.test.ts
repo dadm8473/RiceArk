@@ -640,6 +640,55 @@ describe("sheet-aware board session", () => {
     session.dispose();
   });
 
+  it("hides the prior payload and fetches only the requested uncached sheet on view return", async () => {
+    const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const sheet2 = manifestSheet("sheet-2", 1, { sort_order: 1 });
+    const changedSheet1 = { ...sheet1, version: 2 };
+    let resolveVersions!: (summary: BoardVersionSummary) => void;
+    const versions = new Promise<BoardVersionSummary>((resolve) => {
+      resolveVersions = resolve;
+    });
+    const calls: string[] = [];
+    const session = createBoardSession({
+      userId: "user-1",
+      api: {
+        getBootstrap: async () =>
+          bootstrapPayload(sheetPayload("sheet-1"), [sheet1, sheet2]),
+        getSheet: async (sheetId) => {
+          calls.push(`sheet:${sheetId}`);
+          const item = sheetId === "sheet-1" ? changedSheet1 : sheet2;
+          return sheetPayload(sheetId, item.version, {
+            sheet: { ...item, content_version: item.version }
+          });
+        },
+        getVersions: async () => {
+          calls.push("versions");
+          return versions;
+        }
+      },
+      runtime: null
+    });
+    await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
+    await session.configure({ enabled: false, pollingEnabled: false, requestedSheetId: null });
+
+    const returning = session.configure({
+      enabled: true,
+      pollingEnabled: false,
+      requestedSheetId: "sheet-2"
+    });
+    await Promise.resolve();
+
+    expect(calls).toEqual(["versions"]);
+    expect(session.snapshot()).toMatchObject({ activeSheetId: "sheet-2", data: null });
+
+    resolveVersions(versionSummary([changedSheet1, sheet2], 2));
+    await returning;
+
+    expect(calls).toEqual(["versions", "sheet:sheet-2"]);
+    expect(session.snapshot().activeSheetId).toBe("sheet-2");
+    session.dispose();
+  });
+
   it("restarts polling after a failed view-return revalidation", async () => {
     const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
     const runtime = createFakeBoardPollingRuntime();

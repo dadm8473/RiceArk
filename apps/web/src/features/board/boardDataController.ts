@@ -55,6 +55,7 @@ export interface BoardDataControllerOptions {
 
 export interface BoardDataController {
   bootstrap(requestedId?: string): Promise<void>;
+  prepareSheetSelection(sheetId: string | null): void;
   selectSheet(sheetId: string): Promise<void>;
   revalidate(reason: string): Promise<void>;
   applyRemoteSummary(summary: BoardVersionSummary, reason?: string): Promise<void>;
@@ -628,6 +629,15 @@ export function createBoardDataController(
     return request;
   };
 
+  const prepareSheetSelection = (sheetId: string | null): void => {
+    if (disposed || state.userId === null || state.activeSheetId === sheetId) return;
+    replaceOperation("sheet", {
+      activeSheetId: sheetId,
+      loading: false,
+      error: null
+    });
+  };
+
   const selectSheet = (sheetId: string): Promise<void> => {
     if (disposed || state.userId === null) return Promise.resolve();
     const userId = state.userId;
@@ -920,6 +930,7 @@ export function createBoardDataController(
 
   return {
     bootstrap,
+    prepareSheetSelection,
     selectSheet,
     revalidate,
     applyRemoteSummary,

@@ -1434,6 +1434,14 @@ export function createBoardSession(options: CreateBoardSessionOptions): BoardSes
     hasRequestedSheetId = true;
     onReplaceSheetId = configuration.onReplaceSheetId;
     enabled = configuration.enabled;
+    if (shouldRevalidateOnReturn) {
+      const state = controller.snapshot();
+      const routeTargetId =
+        requestedSheetId === null ? getDefaultBoardSheetId(state) : requestedSheetId;
+      if (routeTargetId !== state.activeSheetId) {
+        controller.prepareSheetSelection(routeTargetId);
+      }
+    }
     publishSnapshot();
     if (!enabled) return;
 
