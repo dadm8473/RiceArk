@@ -67,8 +67,19 @@ export interface BoardDataController {
   dispose(): void;
 }
 
+function deepFreezeOwned<T>(value: T, seen = new WeakSet<object>()): T {
+  if (value === null || typeof value !== "object") return value;
+  const objectValue = value as object;
+  if (seen.has(objectValue)) return value;
+  seen.add(objectValue);
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    deepFreezeOwned(nested, seen);
+  }
+  return Object.freeze(value) as T;
+}
+
 function cloneOwned<T>(value: T): T {
-  return structuredClone(value);
+  return deepFreezeOwned(structuredClone(value));
 }
 
 function cloneCache(cache: ReadonlyMap<string, BoardSheetCacheEntry>): BoardSheetCache {
@@ -145,6 +156,12 @@ interface BoardDataOperation {
   readonly kind: BoardDataOperationKind;
 }
 
+interface ActiveBoardBootstrap {
+  readonly generation: number;
+  readonly operation: BoardDataOperation;
+  readonly promise: Promise<void>;
+}
+
 export function createBoardDataController(
   api: BoardDataApi,
   options: BoardDataControllerOptions = {}
@@ -166,8 +183,11 @@ export function createBoardDataController(
   let ownershipGeneration = 0;
   let nextOperationId = 0;
   let currentOperation: BoardDataOperation | null = null;
+  let activeBootstrap: ActiveBoardBootstrap | null = null;
   let knownManifestVersion = 0;
   let knownSheetVersions = new Map<string, number>();
+  let settingsManifestVersion = 0;
+  let settingsOperationId = 0;
   const listeners = new Set<BoardDataListener>();
   const bootstrapRequests = new Map<string, Promise<void>>();
   const sheetRequests = new Map<string, Promise<BoardSheetPayload>>();
@@ -391,6 +411,7 @@ export function createBoardDataController(
     activeChanged: boolean;
     effect: BoardDataEffect | undefined;
     needsActiveSheet: boolean;
+    settingsApplied: boolean;
   } => {
     const priorActiveSheetId = state.activeSheetId;
     const currentById = new Map(state.manifest.map((sheet) => [sheet.id, sheet]));
@@ -441,24 +462,25 @@ export function createBoardDataController(
           }
         : undefined;
     const activeChanged = priorActiveSheetId !== reconciliation.nextActiveSheetId;
+    const settingsApplied =
+      allowSettings && acceptsMetadata && summary.settings !== undefined;
 
     state = {
       ...state,
-      settings:
-        allowSettings && acceptsMetadata && summary.settings !== undefined
-          ? { ...summary.settings }
-          : state.settings,
+      settings: settingsApplied ? { ...summary.settings! } : state.settings,
       manifestVersion: Math.max(state.manifestVersion, knownManifestVersion),
       manifest,
       activeSheetId: reconciliation.nextActiveSheetId,
       cache: reconciliation.cache
     };
 
-    if (state.activeSheetId === null) return { activeChanged, effect, needsActiveSheet: false };
+    if (state.activeSheetId === null) {
+      return { activeChanged, effect, needsActiveSheet: false, settingsApplied };
+    }
     const entry = getBoardSheetCacheEntry(state.cache, userId, state.activeSheetId);
     const item = state.manifest.find((sheet) => sheet.id === state.activeSheetId);
     if (!isReusableBoardSheet(entry, item, now())) {
-      return { activeChanged, effect, needsActiveSheet: true };
+      return { activeChanged, effect, needsActiveSheet: true, settingsApplied };
     }
     state = {
       ...state,
@@ -469,7 +491,7 @@ export function createBoardDataController(
         maxCacheEntries
       )
     };
-    return { activeChanged, effect, needsActiveSheet: false };
+    return { activeChanged, effect, needsActiveSheet: false, settingsApplied };
   };
 
   const bootstrap = (requestedId?: string): Promise<void> => {
@@ -482,6 +504,7 @@ export function createBoardDataController(
     const operation = beginOperation("bootstrap");
 
     let request!: Promise<void>;
+    let activeRequest!: ActiveBoardBootstrap;
     request = (async () => {
       try {
         const incoming = await callApi(() => api.getBootstrap(requestedId));
@@ -540,6 +563,8 @@ export function createBoardDataController(
           loading: true,
           error: null
         };
+        settingsManifestVersion = payload.manifest.version;
+        settingsOperationId = operation.id;
         if (isStoredSheetReusable(payload.userId, activeSheetId)) {
           finishOperation(generation, operation);
           return;
@@ -548,13 +573,16 @@ export function createBoardDataController(
         emit();
         await loadSheetForOperation(payload.userId, activeSheetId, generation, operation);
       } catch (error) {
-        if (!owns(generation)) return;
+        if (!owns(generation) || !isCurrentOperation(operation)) return;
         failOperation(generation, operation, error, "Unable to load board data");
         throw error;
       }
     })().finally(() => {
       if (bootstrapRequests.get(key) === request) bootstrapRequests.delete(key);
+      if (activeBootstrap === activeRequest) activeBootstrap = null;
     });
+    activeRequest = { generation, operation, promise: request };
+    activeBootstrap = activeRequest;
     bootstrapRequests.set(key, request);
     return request;
   };
@@ -589,6 +617,10 @@ export function createBoardDataController(
     const operation = beginOperation("sheet", { activeSheetId: sheetId });
     return loadSheetForOperation(userId, sheetId, generation, operation).catch((error) => {
       if (!owns(generation, userId)) return;
+      if (!isCurrentOperation(operation)) {
+        if (state.activeSheetId === sheetId) throw error;
+        return;
+      }
       failOperation(generation, operation, error, `Unable to load board sheet "${sheetId}"`);
       throw error;
     });
@@ -600,6 +632,28 @@ export function createBoardDataController(
     return summary;
   };
 
+  const waitForActiveBootstrap = async (
+    generation: number,
+    userId: string
+  ): Promise<void> => {
+    while (owns(generation, userId)) {
+      const bootstrapRequest = activeBootstrap;
+      if (
+        bootstrapRequest === null ||
+        bootstrapRequest.generation !== generation ||
+        currentOperation?.kind !== "bootstrap" ||
+        currentOperation.id !== bootstrapRequest.operation.id
+      ) {
+        return;
+      }
+      try {
+        await bootstrapRequest.promise;
+      } catch {
+        // A deferred summary can still reconcile after bootstrap fails.
+      }
+    }
+  };
+
   const applyOwnedVersionSummary = async (
     summary: BoardVersionSummary,
     userId: string,
@@ -608,43 +662,41 @@ export function createBoardDataController(
     failureMessage: string
   ): Promise<void> => {
     if (!owns(generation, userId)) return;
+    let deferredByBootstrap = false;
     if (currentOperation?.kind === "bootstrap" && !isCurrentOperation(operation)) {
-      const bootstrapWasLoading = state.loading;
       if (applySummaryVersionBounds(summary, userId)) emit();
-      if (
-        bootstrapWasLoading ||
-        state.error !== null ||
-        state.activeSheetId === null ||
-        isStoredSheetReusable(userId, state.activeSheetId)
-      ) {
-        return;
-      }
-
-      const activeSheetId = state.activeSheetId;
-      const refreshOperation = beginOperation("summary");
-      try {
-        await loadSheetForOperation(userId, activeSheetId, generation, refreshOperation);
-      } catch (error) {
-        if (!owns(generation, userId)) return;
-        failOperation(generation, refreshOperation, error, failureMessage);
-        throw error;
-      }
-      return;
+      deferredByBootstrap = true;
+      await waitForActiveBootstrap(generation, userId);
+      if (!owns(generation, userId)) return;
     }
 
     let refreshOperation = operation;
     try {
-      const operationWasCurrent = isCurrentOperation(operation);
-      const { effect, needsActiveSheet } = applyVersionSummary(
+      const summaryOperationWasCurrent = isCurrentOperation(operation);
+      if (deferredByBootstrap && currentOperation?.kind === "bootstrap") {
+        refreshOperation = beginOperation("summary");
+      }
+      const allowSettings =
+        summaryOperationWasCurrent ||
+        (deferredByBootstrap &&
+          operation.id > settingsOperationId &&
+          summary.manifestVersion >= settingsManifestVersion);
+      const { activeChanged, effect, needsActiveSheet, settingsApplied } = applyVersionSummary(
         summary,
         userId,
-        operationWasCurrent
+        allowSettings
       );
+      if (settingsApplied) {
+        settingsManifestVersion = summary.manifestVersion;
+        settingsOperationId = operation.id;
+      }
       if (!owns(generation, userId)) return;
 
       if (!needsActiveSheet || state.activeSheetId === null) {
-        if (isCurrentOperation(operation)) {
-          finishOperation(generation, operation, {}, effect);
+        if (isCurrentOperation(refreshOperation)) {
+          finishOperation(generation, refreshOperation, {}, effect);
+        } else if (activeChanged) {
+          replaceOperation("summary", { loading: false, error: null }, effect);
         } else {
           emit(effect);
         }
@@ -652,8 +704,10 @@ export function createBoardDataController(
       }
 
       const activeSheetId = state.activeSheetId;
-      if (!isCurrentOperation(operation)) {
-        if (state.loading && currentOperation !== null) {
+      if (!isCurrentOperation(refreshOperation)) {
+        if (activeChanged) {
+          refreshOperation = beginOperation("summary", {}, effect);
+        } else if (state.loading && currentOperation !== null) {
           refreshOperation = currentOperation;
           emit(effect);
         } else {
@@ -664,7 +718,7 @@ export function createBoardDataController(
       }
       await loadSheetForOperation(userId, activeSheetId, generation, refreshOperation);
     } catch (error) {
-      if (!owns(generation, userId)) return;
+      if (!owns(generation, userId) || !isCurrentOperation(refreshOperation)) return;
       failOperation(generation, refreshOperation, error, failureMessage);
       throw error;
     }
@@ -687,7 +741,7 @@ export function createBoardDataController(
         if (!owns(generation, userId)) return;
         summary = ownVersionSummary(incoming);
       } catch (error) {
-        if (!owns(generation, userId)) return;
+        if (!owns(generation, userId) || !isCurrentOperation(operation)) return;
         failOperation(generation, operation, error, "Unable to revalidate board data");
         throw error;
       }
@@ -787,6 +841,10 @@ export function createBoardDataController(
     const operation = beginOperation("sheet", { cache });
     return loadSheetForOperation(userId, sheetId, generation, operation).catch((error) => {
       if (!owns(generation, userId)) return;
+      if (!isCurrentOperation(operation)) {
+        if (state.activeSheetId === sheetId) throw error;
+        return;
+      }
       failOperation(generation, operation, error, `Unable to load board sheet "${sheetId}"`);
       throw error;
     });
@@ -796,11 +854,14 @@ export function createBoardDataController(
     if (disposed || state.userId === userId) return;
     ownershipGeneration += 1;
     currentOperation = null;
+    activeBootstrap = null;
     bootstrapRequests.clear();
     sheetRequests.clear();
     versionRequests.clear();
     knownManifestVersion = 0;
     knownSheetVersions.clear();
+    settingsManifestVersion = 0;
+    settingsOperationId = 0;
     state = {
       userId,
       settings: null,
@@ -836,12 +897,15 @@ export function createBoardDataController(
       disposed = true;
       ownershipGeneration += 1;
       currentOperation = null;
+      activeBootstrap = null;
       listeners.clear();
       bootstrapRequests.clear();
       sheetRequests.clear();
       versionRequests.clear();
       knownManifestVersion = 0;
       knownSheetVersions.clear();
+      settingsManifestVersion = 0;
+      settingsOperationId = 0;
     }
   };
 }

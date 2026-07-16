@@ -589,6 +589,99 @@ describe("remote summary application budgets", () => {
     expect(api.calls).toEqual(["bootstrap:sheet-1"]);
     expect(controller.snapshot()).toMatchObject({ loading: false, error: null });
   });
+
+  it("defers a newer cross-tab summary until bootstrap settles, then applies it without polling", async () => {
+    const api = new FakeBoardApi();
+    const pendingBootstrap = deferred<BoardBootstrapPayload>();
+    const bootstrapManifest = [
+      manifestItem("sheet-1"),
+      manifestItem("sheet-2", 1, { is_default: 0 })
+    ];
+    const newerSettings = { ...defaultSettings, show_server_name: 1 };
+    const effects: BoardDataEffect[] = [];
+    api.getBootstrapImpl = () => pendingBootstrap.promise;
+    api.getSheetImpl = async () => sheetPayload("sheet-2", 2);
+    const controller = createBoardDataController(api, { userId: "user-1" });
+    controller.subscribe((_state, effect) => {
+      if (effect) effects.push(effect);
+    });
+
+    const bootstrapping = controller.bootstrap("sheet-1");
+    const applying = controller.applyRemoteSummary(
+      versionSummary([manifestItem("sheet-2", 2, { is_default: 1 })], {
+        manifestVersion: 2,
+        settings: newerSettings
+      }),
+      "cross-tab"
+    );
+    let summarySettled = false;
+    void applying.then(() => {
+      summarySettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(summarySettled).toBe(false);
+    expect(api.calls).toEqual(["bootstrap:sheet-1"]);
+
+    pendingBootstrap.resolve(
+      bootstrapPayload("sheet-1", bootstrapManifest, {
+        manifest: { version: 1, sheets: bootstrapManifest }
+      })
+    );
+    await Promise.all([bootstrapping, applying]);
+
+    expect(api.calls).toEqual(["bootstrap:sheet-1", "sheet:sheet-2"]);
+    expect(controller.snapshot()).toMatchObject({
+      settings: newerSettings,
+      manifestVersion: 2,
+      manifest: [manifestItem("sheet-2", 2, { is_default: 1 })],
+      activeSheetId: "sheet-2",
+      loading: false,
+      error: null
+    });
+    expect(effects).toEqual([
+      { type: "replace-url-with-sheet", replaceUrlWithSheetId: "sheet-2" }
+    ]);
+  });
+
+  it("reconciles a deferred remote summary after bootstrap failure", async () => {
+    const api = new FakeBoardApi();
+    const pendingBootstrap = deferred<BoardBootstrapPayload>();
+    const recoveredSettings = { ...defaultSettings, show_class_name: 1 };
+    api.getBootstrapImpl = () => pendingBootstrap.promise;
+    api.getSheetImpl = async () => sheetPayload("sheet-2");
+    const controller = createBoardDataController(api, { userId: "user-1" });
+
+    const bootstrapping = controller.bootstrap("sheet-1");
+    const bootstrapResult = bootstrapping.then(
+      () => null,
+      (error: unknown) => error
+    );
+    const applying = controller.applyRemoteSummary(
+      versionSummary([manifestItem("sheet-2", 1, { is_default: 1 })], {
+        manifestVersion: 1,
+        settings: recoveredSettings
+      }),
+      "cross-tab"
+    );
+    pendingBootstrap.reject(new Error("bootstrap unavailable"));
+
+    expect(await bootstrapResult).toEqual(
+      expect.objectContaining({ message: "bootstrap unavailable" })
+    );
+    await applying;
+
+    expect(api.calls).toEqual(["bootstrap:sheet-1", "sheet:sheet-2"]);
+    expect(controller.snapshot()).toMatchObject({
+      settings: recoveredSettings,
+      manifestVersion: 1,
+      manifest: [manifestItem("sheet-2", 1, { is_default: 1 })],
+      activeSheetId: "sheet-2",
+      loading: false,
+      error: null
+    });
+  });
 });
 
 describe("deduplication and retry", () => {
@@ -712,6 +805,108 @@ describe("race and identity protection", () => {
     ]);
     expect(controller.snapshot()).toMatchObject({ activeSheetId: "sheet-3", loading: false, error: null });
     expect(getBoardSheetCacheEntry(controller.snapshot().cache, "user-1", "sheet-2")?.stale).toBe(true);
+  });
+
+  it("cancels a deleted active load at a reusable fallback and swallows its late rejection", async () => {
+    const manifest = [
+      manifestItem("sheet-1"),
+      manifestItem("sheet-2", 1, { is_default: 0 }),
+      manifestItem("sheet-3", 1, { is_default: 0 })
+    ];
+    const { api, controller } = createHarness({ manifest });
+    await controller.bootstrap("sheet-1");
+    await controller.selectSheet("sheet-2");
+    await controller.selectSheet("sheet-1");
+    const olderVersions = deferred<BoardVersionSummary>();
+    const deletedSheet = deferred<BoardSheetPayload>();
+    const effects: BoardDataEffect[] = [];
+    controller.subscribe((_state, effect) => {
+      if (effect) effects.push(effect);
+    });
+    api.getVersionsImpl = () => olderVersions.promise;
+    api.getSheetImpl = () => deletedSheet.promise;
+
+    const polling = controller.revalidate("poll");
+    const selecting = controller.selectSheet("sheet-3");
+    const selectionResult = selecting.then(
+      () => null,
+      (error: unknown) => error
+    );
+    olderVersions.resolve(
+      versionSummary([manifestItem("sheet-2", 1, { is_default: 1 })], {
+        manifestVersion: 2
+      })
+    );
+    await polling;
+
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "sheet:sheet-2",
+      "versions",
+      "sheet:sheet-3"
+    ]);
+    expect(controller.snapshot()).toMatchObject({
+      activeSheetId: "sheet-2",
+      loading: false,
+      error: null
+    });
+    expect(effects).toEqual([
+      { type: "replace-url-with-sheet", replaceUrlWithSheetId: "sheet-2" }
+    ]);
+
+    deletedSheet.reject(new Error("deleted sheet 404"));
+    expect(await selectionResult).toBeNull();
+    expect(controller.snapshot()).toMatchObject({
+      activeSheetId: "sheet-2",
+      loading: false,
+      error: null
+    });
+    expect(effects).toEqual([
+      { type: "replace-url-with-sheet", replaceUrlWithSheetId: "sheet-2" }
+    ]);
+  });
+
+  it("cancels a deleted active load at null and ignores its late success", async () => {
+    const manifest = [manifestItem("sheet-1"), manifestItem("sheet-2", 1, { is_default: 0 })];
+    const { api, controller } = createHarness({ manifest });
+    await controller.bootstrap("sheet-1");
+    const olderVersions = deferred<BoardVersionSummary>();
+    const deletedSheet = deferred<BoardSheetPayload>();
+    const effects: BoardDataEffect[] = [];
+    controller.subscribe((_state, effect) => {
+      if (effect) effects.push(effect);
+    });
+    api.getVersionsImpl = () => olderVersions.promise;
+    api.getSheetImpl = () => deletedSheet.promise;
+
+    const polling = controller.revalidate("poll");
+    const selecting = controller.selectSheet("sheet-2");
+    olderVersions.resolve(versionSummary([], { manifestVersion: 2 }));
+    await polling;
+
+    expect(api.calls).toEqual(["bootstrap:sheet-1", "versions", "sheet:sheet-2"]);
+    expect(controller.snapshot()).toMatchObject({
+      manifest: [],
+      activeSheetId: null,
+      loading: false,
+      error: null
+    });
+    expect(effects).toEqual([
+      { type: "replace-url-with-sheet", replaceUrlWithSheetId: null }
+    ]);
+
+    deletedSheet.resolve(sheetPayload("sheet-2"));
+    await selecting;
+    expect(controller.snapshot()).toMatchObject({
+      manifest: [],
+      activeSheetId: null,
+      loading: false,
+      error: null
+    });
+    expect(controller.snapshot().cache.size).toBe(0);
+    expect(effects).toEqual([
+      { type: "replace-url-with-sheet", replaceUrlWithSheetId: null }
+    ]);
   });
 
   it("refreshes a cached selection invalidated by a slower version response", async () => {
@@ -848,8 +1043,8 @@ describe("race and identity protection", () => {
 
     await controller.bootstrap("sheet-1");
     olderVersions.resolve(
-      versionSummary([manifestItem("sheet-1")], {
-        manifestVersion: 1,
+      versionSummary([manifestItem("sheet-1", 2)], {
+        manifestVersion: 2,
         settings: { ...defaultSettings }
       })
     );
@@ -883,8 +1078,14 @@ describe("race and identity protection", () => {
     olderVersions.resolve(
       versionSummary([manifestItem("sheet-2", 2, { is_default: 1 })], { manifestVersion: 2 })
     );
-    await polling;
+    let pollingSettled = false;
+    void polling.then(() => {
+      pollingSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
 
+    expect(pollingSettled).toBe(false);
     expect(api.calls).toEqual([
       "bootstrap:sheet-1",
       "versions",
@@ -912,7 +1113,7 @@ describe("race and identity protection", () => {
         })
       })
     );
-    await bootstrapping;
+    await Promise.all([bootstrapping, polling]);
 
     expect(api.calls).toEqual([
       "bootstrap:sheet-1",
@@ -1273,6 +1474,20 @@ describe("explicit invalidation and state ownership", () => {
     first.settings!.show_display_name = 0;
     first.manifest[0]!.name = "mutated snapshot";
     const firstEntry = getBoardSheetCacheEntry(first.cache, "user-1", "sheet-1")!;
+    expect(Object.isFrozen(firstEntry.payload)).toBe(true);
+    expect(Object.isFrozen(firstEntry.payload.sheet)).toBe(true);
+    expect(Object.isFrozen(firstEntry.payload.tables)).toBe(true);
+    expect(Object.isFrozen(firstEntry.payload.tables[0])).toBe(true);
+    expect(Object.isFrozen(firstEntry.payload.axisItems)).toBe(true);
+    expect(() => {
+      firstEntry.payload.sheet.name = "mutated payload";
+    }).toThrow(TypeError);
+    expect(() => {
+      firstEntry.payload.tables[0]!.id = "mutated table";
+    }).toThrow(TypeError);
+    expect(() => {
+      firstEntry.payload.tables.push({ id: "table-2" } as BoardSheetPayload["tables"][number]);
+    }).toThrow(TypeError);
     first.cache.clear();
 
     const second = controller.snapshot();
@@ -1280,6 +1495,8 @@ describe("explicit invalidation and state ownership", () => {
     expect(second.settings?.show_display_name).toBe(1);
     expect(second.manifest[0]?.name).toBe("sheet-1");
     expect(secondEntry.payload.tables).toHaveLength(1);
+    expect(secondEntry.payload.sheet.name).toBe("sheet-1");
+    expect(secondEntry.payload.tables[0]?.id).toBe("table-1");
     expect(firstEntry).not.toBe(secondEntry);
     expect(firstEntry.payload).toBe(secondEntry.payload);
     expect(firstEntry.payload).not.toBe(payload.activeSheet);
