@@ -83,11 +83,15 @@ export async function recoverFailedBoardNoteMutation(
   onBoardSheetStale?: ((sheetId: string) => Promise<void> | void) | undefined,
   onBoardChanged?: (() => Promise<BoardPayload | null> | void) | undefined
 ): Promise<void> {
-  if (onBoardSheetStale) {
-    await onBoardSheetStale(sheetId);
-    return;
+  try {
+    if (onBoardSheetStale) {
+      await onBoardSheetStale(sheetId);
+      return;
+    }
+    await onBoardChanged?.();
+  } catch {
+    // The board error surface reports recovery failures; callers keep the mutation error.
   }
-  await onBoardChanged?.();
 }
 
 export function isBoardInteractionLocked({

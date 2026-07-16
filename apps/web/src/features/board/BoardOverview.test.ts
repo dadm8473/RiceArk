@@ -2562,6 +2562,11 @@ describe("BoardOverview", () => {
 
     await recover("sheet-3", undefined, reload);
     expect(reload).toHaveBeenCalledTimes(1);
+
+    const failingRecovery = vi.fn(async () => {
+      throw new Error("recovery failed");
+    });
+    await expect(recover("sheet-4", failingRecovery, reload)).resolves.toBeUndefined();
   });
 
   it("uses sheet-scoped recovery in every failed note mutation path", () => {
