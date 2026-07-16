@@ -343,6 +343,54 @@ describe("sheet-aware board session", () => {
     session.dispose();
   });
 
+  it("starts a fresh versions request after any request already in flight", async () => {
+    const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
+    const sheet2 = manifestSheet("sheet-2", 1, { sort_order: 1 });
+    let resolveFirst!: (summary: BoardVersionSummary) => void;
+    let resolveSecond!: (summary: BoardVersionSummary) => void;
+    const first = new Promise<BoardVersionSummary>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const second = new Promise<BoardVersionSummary>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const calls: string[] = [];
+    const getVersions = vi.fn(() => {
+      calls.push("versions");
+      return calls.length === 1 ? first : second;
+    });
+    const session = createBoardSession({
+      userId: "user-1",
+      api: {
+        getBootstrap: async () => bootstrapPayload(sheetPayload("sheet-1"), [sheet1]),
+        getSheet: async (sheetId) => {
+          calls.push(`sheet:${sheetId}`);
+          return sheetPayload(sheetId);
+        },
+        getVersions
+      },
+      runtime: null
+    });
+    await session.configure({ enabled: true, pollingEnabled: false, requestedSheetId: null });
+
+    const staleReload = session.reload();
+    await Promise.resolve();
+    const freshReload = session.reload({ refreshVersion: true });
+    expect(getVersions).toHaveBeenCalledTimes(1);
+
+    resolveFirst(versionSummary([sheet1], 1));
+    await staleReload;
+    for (let index = 0; index < 5; index += 1) await Promise.resolve();
+    expect(getVersions).toHaveBeenCalledTimes(2);
+
+    resolveSecond(versionSummary([sheet1, sheet2], 2));
+    await freshReload;
+    await session.selectSheet("sheet-2");
+
+    expect(calls).toEqual(["versions", "versions", "sheet:sheet-2"]);
+    session.dispose();
+  });
+
   it("reconciles requested, null-history, and invalid routes without replaying replacement effects", async () => {
     const sheet1 = manifestSheet("sheet-1", 1, { is_default: 1 });
     const sheet2 = manifestSheet("sheet-2", 1, { sort_order: 1 });

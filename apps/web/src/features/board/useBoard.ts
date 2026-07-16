@@ -1485,9 +1485,12 @@ export function createBoardSession(options: CreateBoardSessionOptions): BoardSes
     refreshVersion?: boolean | undefined;
     onApplied?: ((payload: BoardPayload) => void) | undefined;
   } = {}) => {
-    void reloadOptions.refreshVersion;
     if (disposed || !enabled || !bootstrapped) return buildSnapshot().data;
-    await controller.revalidate("reload");
+    if (reloadOptions.refreshVersion) {
+      await controller.revalidateFresh("reload-fresh");
+    } else {
+      await controller.revalidate("reload");
+    }
     const payload = buildSnapshot().data;
     if (payload) reloadOptions.onApplied?.(payload);
     return payload;

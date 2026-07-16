@@ -1256,7 +1256,18 @@ describe("BoardOverview", () => {
     expect(source).not.toContain('addEventListener("popstate"');
     expect(source).not.toContain("window.history.pushState");
     expect(createSheetBlock).not.toContain("setActiveSheetId");
-    expect(createSheetBlock).toMatch(/const sheet = await apiPost[\s\S]*await refreshBoard\(\);[\s\S]*onSheetSelected\(sheet\.id\)/);
+    expect(createSheetBlock).toMatch(/const sheet = await apiPost[\s\S]*await refreshBoard\(\{ refreshVersion: true \}\);[\s\S]*onSheetSelected\(sheet\.id\)/);
+  });
+
+  it("uses table-local axis buckets for canvas sizing", () => {
+    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+    const estimatedSizeBlock = source.slice(
+      source.indexOf("function getEstimatedBoardTableSize"),
+      source.indexOf("export function applyBoardTableSettingsToAxisItems")
+    );
+
+    expect(estimatedSizeBlock).not.toMatch(/axisItems\.filter\(\(item\) => item\.table_id === table\.id/);
+    expect(estimatedSizeBlock).toContain("axisItemsByTable.get(table.id)");
   });
 
   it("renders board zoom controls at the far right of the tab bar without server persistence", () => {

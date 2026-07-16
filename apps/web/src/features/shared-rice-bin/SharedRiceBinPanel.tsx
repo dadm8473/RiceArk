@@ -121,6 +121,7 @@ export function SharedRiceBinPanel({
 }: Props) {
   const [lookupValue, setLookupValue] = useState(initialShareId ?? "");
   const [sharedBoard, setSharedBoard] = useState<BoardPayload | null>(null);
+  const [sharedActiveSheetId, setSharedActiveSheetId] = useState<string | null>(null);
   const [shares, setShares] = useState<BoardShareSummary[]>([]);
   const [favorites, setFavorites] = useState<BoardShareFavoriteSummary[]>([]);
   const [pending, setPending] = useState<string | null>(null);
@@ -159,6 +160,7 @@ export function SharedRiceBinPanel({
   useEffect(() => {
     if (!initialShareId) {
       setSharedBoard(null);
+      setSharedActiveSheetId(null);
       return;
     }
     if (sharedBoard?.shareId === initialShareId) return;
@@ -170,6 +172,7 @@ export function SharedRiceBinPanel({
     lastResetToLookupKeyRef.current = resetToLookupKey;
     if (!sharedBoard) return;
     setSharedBoard(null);
+    setSharedActiveSheetId(null);
     onSharedBoardClosed?.();
   }, [resetToLookupKey, sharedBoard, onSharedBoardClosed]);
 
@@ -185,10 +188,14 @@ export function SharedRiceBinPanel({
     try {
       const payload = await apiGet<BoardPayload>("/api/shared-rice-bins/" + encodeURIComponent(shareId));
       setSharedBoard({ ...payload, readOnly: true });
+      setSharedActiveSheetId(
+        payload.sheets.find((sheet) => sheet.is_default === 1)?.id ?? payload.sheets[0]?.id ?? null
+      );
       setLookupValue(shareId);
       if (options.syncHistory ?? true) onSharedBoardOpened?.(shareId);
     } catch (err) {
       setSharedBoard(null);
+      setSharedActiveSheetId(null);
       setError(err instanceof Error ? err.message : "공유 쌀통을 불러오지 못했습니다.");
     } finally {
       setPending(null);
@@ -269,6 +276,7 @@ export function SharedRiceBinPanel({
 
   function handleSharedBoardClose() {
     setSharedBoard(null);
+    setSharedActiveSheetId(null);
     onSharedBoardClosed?.();
   }
 
@@ -313,7 +321,12 @@ export function SharedRiceBinPanel({
               ) : null}
             </div>
           </div>
-          <BoardOverview board={sharedBoard} readOnly />
+          <BoardOverview
+            activeSheetId={sharedActiveSheetId}
+            board={sharedBoard}
+            onSheetSelected={setSharedActiveSheetId}
+            readOnly
+          />
         </section>
       </section>
     );

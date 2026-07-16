@@ -73,7 +73,7 @@ interface Props {
   activeSheetId?: string | null | undefined;
   enqueueCellState?: ((patch: BoardCellStatePatch) => void) | undefined;
   enqueueCompletion?: ((patch: BoardCompletionPatch) => void) | undefined;
-  onBoardChanged?: () => Promise<BoardPayload | null> | void;
+  onBoardChanged?: (options?: { refreshVersion?: boolean | undefined }) => Promise<BoardPayload | null> | void;
   onBoardSheetStale?: ((sheetId: string) => Promise<void> | void) | undefined;
   onSheetSelected?: ((sheetId: string) => void) | undefined;
   readOnly?: boolean | undefined;
@@ -84,7 +84,7 @@ interface Props {
 export async function recoverFailedBoardNoteMutation(
   sheetId: string,
   onBoardSheetStale?: ((sheetId: string) => Promise<void> | void) | undefined,
-  onBoardChanged?: (() => Promise<BoardPayload | null> | void) | undefined
+  onBoardChanged?: ((options?: { refreshVersion?: boolean | undefined }) => Promise<BoardPayload | null> | void) | undefined
 ): Promise<void> {
   try {
     if (onBoardSheetStale) {
@@ -1081,8 +1081,8 @@ function getSeparatorBorder(item: BoardAxisItem): string | undefined {
 }
 
 function getEstimatedBoardTableSize(table: BoardTable, axisItems: BoardAxisItem[]): { width: number; height: number } {
-  const rows = axisItems.filter((item) => item.table_id === table.id && item.axis === "row" && item.visible === 1);
-  const columns = axisItems.filter((item) => item.table_id === table.id && item.axis === "column" && item.visible === 1);
+  const rows = axisItems.filter((item) => item.axis === "row" && item.visible === 1);
+  const columns = axisItems.filter((item) => item.axis === "column" && item.visible === 1);
   if (rows.length === 0 || columns.length === 0) {
     return {
       width: BOARD_TABLE_FALLBACK_WIDTH,
@@ -1102,15 +1102,24 @@ function getEstimatedBoardTableSize(table: BoardTable, axisItems: BoardAxisItem[
   };
 }
 
-function getBoardCanvasStyle(tables: BoardTable[], axisItems: BoardAxisItem[], notes: BoardNote[] = [], boardZoom = BOARD_ZOOM_DEFAULT): CSSProperties {
+function getBoardCanvasStyle(
+  tables: BoardTable[],
+  axisItemsByTable: ReadonlyMap<string, BoardAxisItem[]>,
+  notes: BoardNote[] = [],
+  boardZoom = BOARD_ZOOM_DEFAULT
+): CSSProperties {
+  const tableSizes = tables.map((table) => ({
+    table,
+    size: getEstimatedBoardTableSize(table, axisItemsByTable.get(table.id) ?? [])
+  }));
   const width = Math.max(
     BOARD_CANVAS_MIN_WIDTH + BOARD_CANVAS_EDGE_PADDING,
-    ...tables.map((table) => table.x + getEstimatedBoardTableSize(table, axisItems).width + BOARD_CANVAS_EDGE_PADDING),
+    ...tableSizes.map(({ table, size }) => table.x + size.width + BOARD_CANVAS_EDGE_PADDING),
     ...notes.map((note) => note.x + note.width + BOARD_CANVAS_EDGE_PADDING)
   );
   const height = Math.max(
     BOARD_CANVAS_MIN_HEIGHT + BOARD_CANVAS_EDGE_PADDING,
-    ...tables.map((table) => table.y + getEstimatedBoardTableSize(table, axisItems).height + BOARD_CANVAS_EDGE_PADDING),
+    ...tableSizes.map(({ table, size }) => table.y + size.height + BOARD_CANVAS_EDGE_PADDING),
     ...notes.map((note) => note.y + note.height + BOARD_CANVAS_EDGE_PADDING)
   );
 
@@ -1760,9 +1769,9 @@ export function BoardOverview({
     setEditingAxisItem(null);
   }
 
-  async function refreshBoard() {
+  async function refreshBoard(options: { refreshVersion?: boolean | undefined } = { refreshVersion: true }) {
     if (onBoardChanged) {
-      await onBoardChanged();
+      await onBoardChanged(options);
       return;
     }
     window.location.reload();
@@ -1777,7 +1786,7 @@ export function BoardOverview({
       setFormError(null);
       try {
         const sheet = await apiPost<{ id: string }>("/api/board/sheets", { name });
-        await refreshBoard();
+        await refreshBoard({ refreshVersion: true });
         onSheetSelected(sheet.id);
       } catch (err) {
         const message = err instanceof Error ? err.message : "탭을 추가하지 못했습니다.";
@@ -2335,7 +2344,7 @@ export function BoardOverview({
     .sort((left, right) => left.sort_order - right.sort_order || left.title.localeCompare(right.title));
 
   const boardCanvas = (
-    <div className="board-canvas" style={getBoardCanvasStyle(activeTables, axisItems, activeNotes, boardZoom)}>
+    <div className="board-canvas" style={getBoardCanvasStyle(activeTables, boardIndexes.axisItemsByTable, activeNotes, boardZoom)}>
       {activeTables.length === 0 && activeNotes.length === 0 ? <p className="board-empty">아직 표가 없습니다.</p> : null}
       {activeTables.length > 0 || activeNotes.length > 0 ? (
         <div className="board-canvas-space">

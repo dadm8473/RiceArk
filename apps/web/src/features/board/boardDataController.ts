@@ -58,6 +58,7 @@ export interface BoardDataController {
   prepareSheetSelection(sheetId: string | null): void;
   selectSheet(sheetId: string): Promise<void>;
   revalidate(reason: string): Promise<void>;
+  revalidateFresh(reason: string): Promise<void>;
   applyRemoteSummary(summary: BoardVersionSummary, reason?: string): Promise<void>;
   applyMutationVersions(versions: BoardMutationVersions): void;
   markSheetStale(sheetId: string): Promise<void>;
@@ -813,6 +814,21 @@ export function createBoardDataController(
     return request;
   };
 
+  const revalidateFresh = async (reason: string): Promise<void> => {
+    if (disposed || state.userId === null) return;
+    const userId = state.userId;
+    const existing = versionRequests.get(userId);
+    if (existing) {
+      try {
+        await existing;
+      } catch {
+        // A request started before the mutation cannot satisfy the fresh read.
+      }
+      if (disposed || state.userId !== userId) return;
+    }
+    await revalidate(reason);
+  };
+
   const applyRemoteSummary = (
     incoming: BoardVersionSummary,
     reason = "remote"
@@ -933,6 +949,7 @@ export function createBoardDataController(
     prepareSheetSelection,
     selectSheet,
     revalidate,
+    revalidateFresh,
     applyRemoteSummary,
     applyMutationVersions,
     markSheetStale: invalidateSheet,

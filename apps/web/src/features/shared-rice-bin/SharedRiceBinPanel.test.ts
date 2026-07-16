@@ -63,6 +63,13 @@ describe("shared rice bin links", () => {
 });
 
 describe("SharedRiceBinPanel", () => {
+  it("owns controlled active-sheet state for shared read-only boards", () => {
+    const source = readFileSync(new URL("./SharedRiceBinPanel.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("sharedActiveSheetId");
+    expect(source).toMatch(/<BoardOverview[\s\S]*activeSheetId=\{sharedActiveSheetId\}[\s\S]*onSheetSelected=\{setSharedActiveSheetId\}[\s\S]*readOnly/);
+  });
+
   it.each([
     ["share:sheet-1", null],
     [`favorite:${shareId}`, null],
