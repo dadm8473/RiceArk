@@ -1,10 +1,15 @@
 import { withBoundedInFlight } from "./boundedInFlight";
 
 const publicJsonInFlight = new Map<string, Promise<Response>>();
+const publicJsonGenerations = new Map<string, number>();
 type WorkerCacheStorage = CacheStorage & { default?: Cache };
 
 function defaultCache(): Cache | null {
   return (globalThis.caches as WorkerCacheStorage | undefined)?.default ?? null;
+}
+
+function currentGeneration(cacheKeyUrl: string): number {
+  return publicJsonGenerations.get(cacheKeyUrl) ?? 0;
 }
 
 function withPublicTtl(response: Response, ttlSeconds: number): Response {
@@ -49,9 +54,15 @@ export async function getPublicJson(
     if (hit) return withPublicTtl(hit, ttlSeconds);
   }
 
+  const generation = currentGeneration(cacheKey.url);
   const shared = await withBoundedInFlight(publicJsonInFlight, cacheKey.url, async () => {
     const loaded = withPublicTtl(await loader(), ttlSeconds);
-    if (cache && loaded.ok && loaded.status === 200) {
+    if (
+      cache &&
+      loaded.ok &&
+      loaded.status === 200 &&
+      currentGeneration(cacheKey.url) === generation
+    ) {
       await cache.put(cacheKey, loaded.clone());
     }
     return loaded;
@@ -64,8 +75,12 @@ export async function deletePublicCacheKey(
   requestUrl: string,
   namespace: string
 ): Promise<void> {
+  const cacheKey = buildPublicCacheKey(requestUrl, namespace);
+  publicJsonGenerations.set(cacheKey.url, currentGeneration(cacheKey.url) + 1);
+  publicJsonInFlight.delete(cacheKey.url);
+
   const cache = defaultCache();
   if (!cache) return;
 
-  await cache.delete(buildPublicCacheKey(requestUrl, namespace));
+  await cache.delete(cacheKey);
 }

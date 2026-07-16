@@ -12,6 +12,16 @@ type CacheDouble = {
   store: Map<string, Response>;
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function createCacheDouble(): CacheDouble {
   const store = new Map<string, Response>();
   return {
@@ -195,6 +205,74 @@ describe("publicJsonCache", () => {
     expect(first).not.toBe(second);
     await expect(first.json()).resolves.toEqual({ events: ["a"] });
     await expect(second.json()).resolves.toEqual({ events: ["a"] });
+  });
+
+  it("invalidates a pending miss without allowing stale cache writes or in-flight reuse", async () => {
+    const cache = createCacheDouble();
+    vi.stubGlobal("caches", { default: cache });
+    const stale = deferred<Response>();
+    const fresh = deferred<Response>();
+    const staleLoader = vi.fn(() => stale.promise);
+    const freshLoader = vi.fn(() => fresh.promise);
+    const unexpectedLoader = vi.fn(async () =>
+      Response.json({ version: "unexpected" })
+    );
+    const requestUrl = "https://example.com/api/race?board=shared";
+    const namespace = "race:v1";
+
+    const staleResponsePromise = getPublicJson(
+      requestUrl,
+      namespace,
+      90,
+      staleLoader
+    );
+    await vi.waitFor(() => {
+      expect(staleLoader).toHaveBeenCalledTimes(1);
+    });
+
+    await deletePublicCacheKey(requestUrl, namespace);
+
+    const freshResponsePromise = getPublicJson(
+      requestUrl,
+      namespace,
+      90,
+      freshLoader
+    );
+    await vi.waitFor(() => {
+      expect(freshLoader).toHaveBeenCalledTimes(1);
+    });
+
+    stale.resolve(Response.json({ version: "stale" }));
+    const staleResponse = await staleResponsePromise;
+    await expect(staleResponse.json()).resolves.toEqual({ version: "stale" });
+    expect(cache.put).not.toHaveBeenCalled();
+
+    const joinedFreshPromise = getPublicJson(
+      requestUrl,
+      namespace,
+      90,
+      unexpectedLoader
+    );
+    await Promise.resolve();
+
+    expect(unexpectedLoader).not.toHaveBeenCalled();
+
+    fresh.resolve(Response.json({ version: "fresh" }));
+    const [freshResponse, joinedFreshResponse] = await Promise.all([
+      freshResponsePromise,
+      joinedFreshPromise
+    ]);
+
+    await expect(freshResponse.json()).resolves.toEqual({ version: "fresh" });
+    await expect(joinedFreshResponse.json()).resolves.toEqual({
+      version: "fresh"
+    });
+    expect(cache.put).toHaveBeenCalledTimes(1);
+
+    const cacheKey = buildPublicCacheKey(requestUrl, namespace);
+    const stored = cache.store.get(cacheKey.url);
+    expect(stored).toBeDefined();
+    await expect(stored?.json()).resolves.toEqual({ version: "fresh" });
   });
 
   it("works without the Cache API and makes cache deletion a no-op", async () => {
