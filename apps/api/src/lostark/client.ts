@@ -1,3 +1,4 @@
+import { withBoundedInFlight } from "../cache/boundedInFlight";
 import type { Env } from "../env";
 import { ApiError } from "../http/errors";
 import { fetchExternal } from "../http/externalFetch";
@@ -11,6 +12,8 @@ import {
 } from "./normalize";
 
 const BASE_URL = "https://developer-lostark.game.onstove.com";
+const ROSTER_CACHE_TTL_SECONDS = 60 * 30;
+const rosterSearchInFlight = new Map<string, Promise<ImportedCharacterCandidate[]>>();
 
 async function readJsonOrNull(response: Response): Promise<unknown> {
   try {
@@ -131,27 +134,30 @@ function normalizeCachedImportedCharacter(character: Partial<ImportedCharacterCa
   };
 }
 
-async function fetchCombatPower(env: Env, characterName: string, options: { bypassCache?: boolean } = {}): Promise<string | null> {
+function normalizeCachedRoster(value: unknown): ImportedCharacterCandidate[] | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const characters = (value as { characters?: unknown }).characters;
+  if (!Array.isArray(characters)) return null;
+  return sortImportedCharacters(
+    characters.map((character) =>
+      normalizeCachedImportedCharacter(character as Partial<ImportedCharacterCandidate>)
+    )
+  );
+}
+
+async function fetchRosterCombatPower(
+  headers: Record<string, string>,
+  characterName: string
+): Promise<string | null> {
   try {
-    const cacheKey = `lostark:combat-power:v1:${characterName.toLowerCase()}`;
-    const cached = options.bypassCache ? null : await env.CACHE.get(cacheKey, "json");
-    if (cached && typeof cached === "object" && "combatPower" in cached) {
-      return normalizeCombatPower((cached as { combatPower: unknown }).combatPower);
-    }
-
-    const response = await fetch(`${BASE_URL}/armories/characters/${encodeURIComponent(characterName)}/profiles`, {
-      headers: {
-        accept: "application/json",
-        authorization: `bearer ${env.LOSTARK_API_KEY}`
-      }
-    });
-
+    const response = await fetchExternal(
+      `${BASE_URL}/armories/characters/${encodeURIComponent(characterName)}/profiles`,
+      { headers }
+    );
     if (!response.ok) return null;
 
     const raw = (await readJsonOrNull(response)) as Pick<LostArkArmoryCharacter, "CombatPower"> | null;
-    const combatPower = normalizeCombatPower(raw?.CombatPower);
-    await env.CACHE.put(cacheKey, JSON.stringify({ combatPower }), { expirationTtl: 60 * 30 });
-    return combatPower;
+    return normalizeCombatPower(raw?.CombatPower);
   } catch {
     return null;
   }
@@ -159,43 +165,42 @@ async function fetchCombatPower(env: Env, characterName: string, options: { bypa
 
 export async function searchRosterCharacters(
   env: Env,
-  characterName: string,
-  options: { bypassCache?: boolean } = {}
+  characterName: string
 ): Promise<ImportedCharacterCandidate[]> {
-  lostArkHeaders(env);
+  const headers = lostArkHeaders(env);
+  const requestedName = characterName.trim();
+  const cacheKey = `lostark:roster:v3:${requestedName.toLowerCase()}`;
 
-  const cacheKey = `lostark:roster:v2:${characterName.toLowerCase()}`;
-  const cached = options.bypassCache ? null : await env.CACHE.get(cacheKey, "json");
-  if (Array.isArray(cached)) {
-    return sortImportedCharacters(cached.map((character) => normalizeCachedImportedCharacter(character as Partial<ImportedCharacterCandidate>)));
-  }
+  return withBoundedInFlight(rosterSearchInFlight, cacheKey, async () => {
+    const cached = normalizeCachedRoster(await env.CACHE.get(cacheKey, "json"));
+    if (cached) return cached;
 
-  const response = await fetch(`${BASE_URL}/characters/${encodeURIComponent(characterName)}/siblings`, {
-    headers: {
-      accept: "application/json",
-      authorization: `bearer ${env.LOSTARK_API_KEY}`
-    }
+    const response = await fetchExternal(
+      `${BASE_URL}/characters/${encodeURIComponent(requestedName)}/siblings`,
+      { headers }
+    );
+    if (!response.ok) throw lostArkApiError(response);
+
+    const raw = await readJsonOrNull(response);
+    const normalized = Array.isArray(raw)
+      ? raw.map((character) => normalizeLostArkCharacter(character as LostArkArmoryCharacter))
+      : [];
+    const enriched = await mapWithConcurrency(
+      normalized,
+      4,
+      async (character) => ({
+        ...character,
+        combatPower:
+          character.combatPower ??
+          (await fetchRosterCombatPower(headers, character.name))
+      })
+    );
+    const sorted = sortImportedCharacters(enriched);
+    await env.CACHE.put(
+      cacheKey,
+      JSON.stringify({ characters: sorted }),
+      { expirationTtl: ROSTER_CACHE_TTL_SECONDS }
+    );
+    return sorted;
   });
-
-  if (!response.ok) {
-    throw new ApiError(response.status, "lostark_api_error", "Lost Ark API request failed");
-  }
-
-  const raw = await readJsonOrNull(response);
-  if (!Array.isArray(raw)) {
-    await env.CACHE.put(cacheKey, JSON.stringify([]), { expirationTtl: 60 * 30 });
-    return [];
-  }
-  const normalized = raw.map(normalizeLostArkCharacter);
-  const enriched = await mapWithConcurrency(
-    normalized,
-    4,
-    async (character) => ({
-      ...character,
-      combatPower: character.combatPower ?? (await fetchCombatPower(env, character.name, options))
-    })
-  );
-  const sorted = sortImportedCharacters(enriched);
-  await env.CACHE.put(cacheKey, JSON.stringify(sorted), { expirationTtl: 60 * 30 });
-  return sorted;
 }

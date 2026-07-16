@@ -1,5 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   CHARACTER_SEARCH_NAME_ERROR,
@@ -289,5 +290,14 @@ describe("getCharacterSearchNameError", () => {
     expect(getCharacterSearchNameError("가나다라마바사아자차카타파")).toBe(CHARACTER_SEARCH_NAME_ERROR);
     expect(getCharacterSearchNameError("냠수 나이스1")).toBe(CHARACTER_SEARCH_NAME_ERROR);
     expect(getCharacterSearchNameError("냠수-나이스1")).toBe(CHARACTER_SEARCH_NAME_ERROR);
+  });
+});
+
+describe("CharacterImport search integration", () => {
+  it("uses the bounded browser cache while keeping successful results fully selected", () => {
+    const source = readFileSync(new URL("./CharacterImport.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("searchCharactersCached");
+    expect(source).toMatch(/setSelected\(buildCharacterCandidateSelection\(result, true\)\)/);
   });
 });

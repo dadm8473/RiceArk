@@ -39,8 +39,16 @@ function getMapWithConcurrency(): MapWithConcurrency {
   return candidate;
 }
 
-function createEnv(initialCache: Record<string, unknown> = {}): Env {
+type TrackingEnv = Env & {
+  cacheGets: string[];
+  cachePuts: Array<{ key: string; options: KVNamespacePutOptions | undefined; value: string }>;
+  cacheStore: Map<string, string>;
+};
+
+function createEnv(initialCache: Record<string, unknown> = {}): TrackingEnv {
   const cache = new Map<string, string>();
+  const cacheGets: string[] = [];
+  const cachePuts: TrackingEnv["cachePuts"] = [];
   for (const [key, value] of Object.entries(initialCache)) {
     cache.set(key, JSON.stringify(value));
   }
@@ -48,14 +56,27 @@ function createEnv(initialCache: Record<string, unknown> = {}): Env {
     LOSTARK_API_KEY: "lostark-key",
     CACHE: {
       async get(key: string) {
+        cacheGets.push(key);
         const value = cache.get(key);
         return value ? JSON.parse(value) : null;
       },
-      async put(key: string, value: string) {
+      async put(key: string, value: string, options?: KVNamespacePutOptions) {
+        cachePuts.push({ key, options, value });
         cache.set(key, value);
       }
-    } as unknown as KVNamespace
-  } as Env;
+    } as unknown as KVNamespace,
+    cacheGets,
+    cachePuts,
+    cacheStore: cache
+  } as TrackingEnv;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
 }
 
 describe("fetchLostArkCharacterProfile", () => {
@@ -292,38 +313,116 @@ describe("mapWithConcurrency", () => {
 describe("searchRosterCharacters", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
-  it("enriches characters with combat power and sorts by item level descending", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("/characters/main/siblings")) {
-          return Response.json([
-            { CharacterName: "저렙", ServerName: "루페온", CharacterClassName: "바드", ItemAvgLevel: "1,580.00" },
-            { CharacterName: "나나", ServerName: "루페온", CharacterClassName: "바드", ItemAvgLevel: "1,640.00" },
-            { CharacterName: "가가", ServerName: "카단", CharacterClassName: "도화가", ItemAvgLevel: "1,640.00" }
-          ]);
-        }
-        if (url.includes("/armories/characters/%EC%A0%80%EB%A0%99/profiles")) {
-          return Response.json({ CombatPower: "9,999,999" });
-        }
-        if (url.includes("/armories/characters/%EB%82%98%EB%82%98/profiles")) {
-          return Response.json({ CombatPower: "22,222,222" });
-        }
-        if (url.includes("/armories/characters/%EA%B0%80%EA%B0%80/profiles")) {
-          return Response.json({ CombatPower: "11,111,111" });
-        }
-        return new Response(null, { status: 404 });
-      })
-    );
+  it("stores one enriched v3 roster value without per-character KV writes", async () => {
+    const env = createEnv();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/characters/main/siblings")) {
+        return Response.json([
+          { CharacterName: "저렙", ServerName: "루페온", CharacterClassName: "바드", ItemAvgLevel: "1,580.00" },
+          { CharacterName: "나나", ServerName: "루페온", CharacterClassName: "바드", ItemAvgLevel: "1,640.00" },
+          { CharacterName: "가가", ServerName: "카단", CharacterClassName: "도화가", ItemAvgLevel: "1,640.00" }
+        ]);
+      }
+      if (url.includes("/armories/characters/%EC%A0%80%EB%A0%99/profiles")) {
+        return Response.json({ CombatPower: "9,999,999" });
+      }
+      if (url.includes("/armories/characters/%EB%82%98%EB%82%98/profiles")) {
+        return Response.json({ CombatPower: "22,222,222" });
+      }
+      if (url.includes("/armories/characters/%EA%B0%80%EA%B0%80/profiles")) {
+        return Response.json({ CombatPower: "11,111,111" });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
-    await expect(searchRosterCharacters(createEnv(), "main")).resolves.toEqual([
+    const expected = [
       { name: "가가", serverName: "카단", className: "도화가", itemLevel: "1,640.00", combatPower: "11,111,111" },
       { name: "나나", serverName: "루페온", className: "바드", itemLevel: "1,640.00", combatPower: "22,222,222" },
       { name: "저렙", serverName: "루페온", className: "바드", itemLevel: "1,580.00", combatPower: "9,999,999" }
-    ]);
+    ];
+
+    await expect(searchRosterCharacters(env, "main")).resolves.toEqual(expected);
+    expect(env.cacheGets).toEqual(["lostark:roster:v3:main"]);
+    expect(env.cachePuts).toHaveLength(1);
+    expect(env.cachePuts[0]).toMatchObject({
+      key: "lostark:roster:v3:main",
+      options: { expirationTtl: 60 * 30 }
+    });
+    expect(JSON.parse(env.cachePuts[0]?.value ?? "{}")).toEqual({ characters: expected });
+    expect(env.cachePuts.some((entry) => entry.key.startsWith("lostark:combat-power:"))).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
+  it("normalizes query keys and shares one in-flight roster request", async () => {
+    const siblings = deferred<Response>();
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => siblings.promise);
+    vi.stubGlobal("fetch", fetchMock);
+    const env = createEnv();
+
+    const first = searchRosterCharacters(env, " Main ");
+    const second = searchRosterCharacters(env, "main");
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    siblings.resolve(Response.json([]));
+    await expect(Promise.all([first, second])).resolves.toEqual([[], []]);
+
+    expect(env.cacheGets).toEqual(["lostark:roster:v3:main"]);
+    expect(env.cachePuts).toHaveLength(1);
+    expect(env.cachePuts[0]?.key).toBe("lostark:roster:v3:main");
+  });
+
+  it("limits profile enrichment to four concurrent requests", async () => {
+    const releases = Array.from({ length: 8 }, () => deferred<void>());
+    let activeProfiles = 0;
+    let maxActiveProfiles = 0;
+    let profileIndex = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/characters/main/siblings")) {
+        return Response.json(
+          Array.from({ length: 8 }, (_, index) => ({
+            CharacterName: `캐릭터${index}`,
+            ServerName: "아만",
+            CharacterClassName: "바드",
+            ItemAvgLevel: `1,60${index}.00`
+          }))
+        );
+      }
+
+      const index = profileIndex;
+      profileIndex += 1;
+      activeProfiles += 1;
+      maxActiveProfiles = Math.max(maxActiveProfiles, activeProfiles);
+      await releases[index]?.promise;
+      activeProfiles -= 1;
+      return Response.json({ CombatPower: `${index + 1},000` });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const env = createEnv();
+
+    const result = searchRosterCharacters(env, "main");
+    await vi.waitFor(() => {
+      expect(profileIndex).toBe(4);
+    });
+    releases.slice(0, 4).forEach((release) => release.resolve());
+    await vi.waitFor(() => {
+      expect(profileIndex).toBe(8);
+    });
+    releases.slice(4).forEach((release) => release.resolve());
+
+    await expect(result).resolves.toHaveLength(8);
+    expect(maxActiveProfiles).toBe(4);
+    expect(env.cachePuts).toHaveLength(1);
   });
 
   it("does not let non-numeric combat power text break character imports", async () => {
@@ -381,10 +480,12 @@ describe("searchRosterCharacters", () => {
 
     await expect(
       searchRosterCharacters(createEnv({
-        "lostark:roster:v2:고래나이스1": [
-          { name: "고래나이스2", serverName: "카단", className: "바드", itemLevel: "정보 없음", combatPower: "정보 없음" },
-          { name: "고래나이스1", serverName: "아만", className: "브레이커", itemLevel: "1,640.00", combatPower: null }
-        ]
+        "lostark:roster:v3:고래나이스1": {
+          characters: [
+            { name: "고래나이스2", serverName: "카단", className: "바드", itemLevel: "정보 없음", combatPower: "정보 없음" },
+            { name: "고래나이스1", serverName: "아만", className: "브레이커", itemLevel: "1,640.00", combatPower: null }
+          ]
+        }
       }), "고래나이스1")
     ).resolves.toEqual([
       { name: "고래나이스1", serverName: "아만", className: "브레이커", itemLevel: "1,640.00", combatPower: null },
@@ -427,5 +528,46 @@ describe("searchRosterCharacters", () => {
     );
 
     await expect(searchRosterCharacters(createEnv(), "고래나이스1")).resolves.toEqual([]);
+  });
+
+  it("keeps only the failed profile's combat power null and still caches the roster once", async () => {
+    const env = createEnv();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/characters/main/siblings")) {
+          return Response.json([
+            { CharacterName: "성공", ServerName: "아만", CharacterClassName: "바드", ItemAvgLevel: "1,640.00" },
+            { CharacterName: "실패", ServerName: "카단", CharacterClassName: "도화가", ItemAvgLevel: "1,630.00" }
+          ]);
+        }
+        if (url.includes("/armories/characters/%EC%8B%A4%ED%8C%A8/profiles")) {
+          throw new DOMException("timed out", "TimeoutError");
+        }
+        return Response.json({ CombatPower: "12,345" });
+      })
+    );
+
+    await expect(searchRosterCharacters(env, "main")).resolves.toEqual([
+      { name: "성공", serverName: "아만", className: "바드", itemLevel: "1,640.00", combatPower: "12,345" },
+      { name: "실패", serverName: "카단", className: "도화가", itemLevel: "1,630.00", combatPower: null }
+    ]);
+    expect(env.cachePuts).toHaveLength(1);
+  });
+
+  it("writes nothing on a siblings failure and cleans the in-flight entry for retry", async () => {
+    const env = createEnv();
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error("siblings unavailable"))
+      .mockResolvedValueOnce(Response.json([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(searchRosterCharacters(env, "main")).rejects.toThrow("siblings unavailable");
+    expect(env.cachePuts).toHaveLength(0);
+    await expect(searchRosterCharacters(env, "main")).resolves.toEqual([]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(env.cachePuts).toHaveLength(1);
   });
 });

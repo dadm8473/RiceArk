@@ -10,14 +10,12 @@ import {
   type BoardMutationRunner,
   runBoardMutationDirect
 } from "../board/mutationBarrier";
+import {
+  searchCharactersCached,
+  type CharacterCandidate
+} from "./characterSearchCache";
 
-export interface CharacterCandidate {
-  name: string;
-  serverName: string;
-  className: string;
-  itemLevel: string;
-  combatPower: string | null;
-}
+export type { CharacterCandidate } from "./characterSearchCache";
 
 export interface ManualCharacterDraft {
   name: string;
@@ -279,10 +277,18 @@ export function CharacterImport({ tableId, onSaved, runMutation = runBoardMutati
     setSearching(true);
     setMessage(null);
     try {
-      const result = await apiGet<{ characters: CharacterCandidate[] }>(`/api/characters/search?name=${encodeURIComponent(normalizedName)}`);
-      setCandidates(result.characters);
-      setSelected(buildCharacterCandidateSelection(result.characters, true));
-      if (result.characters.length === 0) {
+      const result = await searchCharactersCached(
+        normalizedName,
+        async (requestedName) => {
+          const payload = await apiGet<{ characters: CharacterCandidate[] }>(
+            `/api/characters/search?name=${encodeURIComponent(requestedName)}`
+          );
+          return payload.characters;
+        }
+      );
+      setCandidates(result);
+      setSelected(buildCharacterCandidateSelection(result, true));
+      if (result.length === 0) {
         setMessage({ text: "검색 결과가 없습니다. 대표 캐릭터명을 다시 확인해주세요.", tone: "notice" });
       }
     } catch {
