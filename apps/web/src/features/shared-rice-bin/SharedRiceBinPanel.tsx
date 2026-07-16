@@ -181,11 +181,16 @@ export function SharedRiceBinPanel({
 
   useEffect(() => {
     if (!isAuthenticated || !sharedBoardShareId) return;
+    if (overview) {
+      favoriteStatusRequestRef.current = null;
+      setSharedBoardFavorite(favoriteShareIds.has(sharedBoardShareId));
+      return;
+    }
     if (favoriteStatusRequestRef.current === sharedBoardShareId) return;
     void loadFavoriteStatus(sharedBoardShareId).catch((err) => {
       setError(err instanceof Error ? err.message : "즐겨찾기 상태를 불러오지 못했습니다.");
     });
-  }, [isAuthenticated, sharedBoardShareId]);
+  }, [favoriteShareIds, isAuthenticated, overview, sharedBoardShareId]);
 
   useEffect(() => {
     if (!initialShareId) {
@@ -229,7 +234,7 @@ export function SharedRiceBinPanel({
       setSharedBoardFavorite(favoriteShareIds.has(shareId));
       setLookupValue(shareId);
       if (options.syncHistory ?? true) onSharedBoardOpened?.(shareId);
-      await loadFavoriteStatus(shareId);
+      if (!overview) await loadFavoriteStatus(shareId);
     } catch (err) {
       if (requestId !== lookupRequestRef.current) return;
       setSharedBoard(null);
@@ -267,6 +272,11 @@ export function SharedRiceBinPanel({
           if (!current) return current;
           const sheet = current.sheets.find((sheet) => sheet.id === sheetId);
           if (!sheet) return current;
+          const previousShareIds = new Set(
+            current.shares
+              .filter((share) => share.sheetId === sheetId)
+              .map((share) => share.shareId)
+          );
           const nextShare: BoardShareSummary = {
             sheetId,
             sheetName: sheet.name,
@@ -275,7 +285,12 @@ export function SharedRiceBinPanel({
           };
           return {
             ...current,
-            shares: [...current.shares.filter((share) => share.sheetId !== sheetId), nextShare]
+            shares: [...current.shares.filter((share) => share.sheetId !== sheetId), nextShare],
+            favorites: current.favorites.filter(
+              (favorite) =>
+                favorite.sheetId !== sheetId &&
+                !previousShareIds.has(favorite.shareId)
+            )
           };
         });
         setMessage("공유 아이디를 새로 만들었습니다.");
@@ -293,10 +308,23 @@ export function SharedRiceBinPanel({
         setPending(`share:${sheetId}`);
         setError(null);
         await apiDelete("/api/board/sheets/" + encodeURIComponent(sheetId) + "/share");
-        setOverview((current) => current ? {
-          ...current,
-          shares: current.shares.filter((share) => share.sheetId !== sheetId)
-        } : current);
+        setOverview((current) => {
+          if (!current) return current;
+          const stoppedShareIds = new Set(
+            current.shares
+              .filter((share) => share.sheetId === sheetId)
+              .map((share) => share.shareId)
+          );
+          return {
+            ...current,
+            shares: current.shares.filter((share) => share.sheetId !== sheetId),
+            favorites: current.favorites.filter(
+              (favorite) =>
+                favorite.sheetId !== sheetId &&
+                !stoppedShareIds.has(favorite.shareId)
+            )
+          };
+        });
         setMessage("공유를 중단했습니다. 기존 링크는 더 이상 열리지 않습니다.");
       },
       (err) => setError(err instanceof Error ? err.message : "공유를 중단하지 못했습니다."),

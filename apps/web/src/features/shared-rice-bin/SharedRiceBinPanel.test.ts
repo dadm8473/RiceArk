@@ -1,4 +1,10 @@
-import { createElement } from "react";
+import {
+  Children,
+  createElement,
+  isValidElement,
+  type ReactElement,
+  type ReactNode
+} from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,8 +22,15 @@ import type { BoardPayload } from "../board/types";
 const hooks = vi.hoisted(() => ({
   effects: [] as Array<{
     callback: () => void | (() => void);
+    cleanup: (() => void) | undefined;
     dependencies: readonly unknown[] | undefined;
+    pending: boolean;
   }>,
+  effectCursor: 0,
+  refs: [] as Array<{ current: unknown }>,
+  refCursor: 0,
+  stateCursor: 0,
+  stateValues: [] as unknown[],
   stateUpdates: [] as unknown[]
 }));
 
@@ -33,13 +46,38 @@ vi.mock("react", async (importOriginal) => {
   return {
     ...actual,
     useEffect: (callback: () => void | (() => void), dependencies?: readonly unknown[]) => {
-      hooks.effects.push({ callback, dependencies });
+      const index = hooks.effectCursor++;
+      const previous = hooks.effects[index];
+      const pending =
+        !previous ||
+        dependencies === undefined ||
+        previous.dependencies === undefined ||
+        dependencies.length !== previous.dependencies.length ||
+        dependencies.some((dependency, dependencyIndex) => !Object.is(dependency, previous.dependencies?.[dependencyIndex]));
+      hooks.effects[index] = {
+        callback,
+        cleanup: previous?.cleanup,
+        dependencies,
+        pending
+      };
+    },
+    useMemo: <T,>(factory: () => T) => factory(),
+    useRef: <T,>(initial: T) => {
+      const index = hooks.refCursor++;
+      if (!hooks.refs[index]) hooks.refs[index] = { current: initial };
+      return hooks.refs[index] as { current: T };
     },
     useState: <T,>(initial: T | (() => T)) => {
-      const [value, setValue] = actual.useState(initial);
-      return [value, (next: T | ((current: T) => T)) => {
+      const index = hooks.stateCursor++;
+      if (!Object.prototype.hasOwnProperty.call(hooks.stateValues, index)) {
+        hooks.stateValues[index] = typeof initial === "function" ? (initial as () => T)() : initial;
+      }
+      return [hooks.stateValues[index] as T, (next: T | ((current: T) => T)) => {
         hooks.stateUpdates.push(next);
-        setValue(next);
+        hooks.stateValues[index] =
+          typeof next === "function"
+            ? (next as (current: T) => T)(hooks.stateValues[index] as T)
+            : next;
       }] as const;
     }
   };
@@ -52,6 +90,7 @@ vi.mock("../../api/client", () => ({
 }));
 
 const shareId = "AbCdEfGhIjKlMnOpQrStUv";
+const replacementShareId = "ZyXwVuTsRqPoNmLkJiHgFe";
 
 const ownerBoard: BoardPayload = {
   userId: "user-1",
@@ -79,11 +118,76 @@ function deferred<T>() {
 }
 
 function flushPromises() {
-  return Promise.resolve().then(() => Promise.resolve());
+  return Promise.resolve()
+    .then(() => Promise.resolve())
+    .then(() => Promise.resolve())
+    .then(() => Promise.resolve());
 }
 
 function runCapturedEffects() {
-  for (const effect of hooks.effects) effect.callback();
+  for (const effect of hooks.effects) {
+    if (!effect.pending) continue;
+    effect.cleanup?.();
+    const cleanup = effect.callback();
+    effect.cleanup = typeof cleanup === "function" ? cleanup : undefined;
+    effect.pending = false;
+  }
+}
+
+function renderPanel(
+  props: Parameters<typeof SharedRiceBinPanel>[0]
+): ReactElement {
+  hooks.effectCursor = 0;
+  hooks.refCursor = 0;
+  hooks.stateCursor = 0;
+  return SharedRiceBinPanel(props);
+}
+
+function getNodeText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (!isValidElement(node)) {
+    return Children.toArray(node).map((child) => getNodeText(child)).join("");
+  }
+  return getNodeText((node.props as { children?: ReactNode }).children ?? null);
+}
+
+function findElement(
+  node: ReactNode,
+  predicate: (element: ReactElement) => boolean
+): ReactElement | null {
+  if (node === null || node === undefined || typeof node !== "object") return null;
+  if (!isValidElement(node)) {
+    for (const child of Children.toArray(node)) {
+      const match = findElement(child, predicate);
+      if (match) return match;
+    }
+    return null;
+  }
+  if (predicate(node)) return node;
+  for (const child of Children.toArray((node.props as { children?: ReactNode }).children)) {
+    const match = findElement(child, predicate);
+    if (match) return match;
+  }
+  return null;
+}
+
+function findButton(
+  root: ReactElement,
+  label: string,
+  rowText?: string
+): ReactElement<{ onClick: () => void }> {
+  const scope = rowText
+    ? findElement(root, (element) => {
+        const props = element.props as { className?: string };
+        return props.className === "shared-rice-bin-row" && getNodeText(element).includes(rowText);
+      })
+    : root;
+  expect(scope).not.toBeNull();
+  const button = findElement(scope, (element) =>
+    element.type === "button" && getNodeText(element).trim() === label
+  );
+  expect(button).not.toBeNull();
+  return button as ReactElement<{ onClick: () => void }>;
 }
 
 function createSharedBoardPayload(id = shareId): BoardPayload & { shareId: string } {
@@ -95,6 +199,11 @@ function createSharedBoardPayload(id = shareId): BoardPayload & { shareId: strin
 
 beforeEach(() => {
   hooks.effects.length = 0;
+  hooks.effectCursor = 0;
+  hooks.refs.length = 0;
+  hooks.refCursor = 0;
+  hooks.stateCursor = 0;
+  hooks.stateValues.length = 0;
   hooks.stateUpdates.length = 0;
   api.calls.length = 0;
   api.apiDelete.mockReset();
@@ -206,6 +315,47 @@ describe("SharedRiceBinPanel", () => {
     expect(api.calls).not.toContain("/api/board/share-favorites");
   });
 
+  it("uses loaded overview favorite state when opening detail without a favorite status request", async () => {
+    api.apiGet.mockImplementation(async (path: string) => {
+      api.calls.push(path);
+      if (path === "/api/board/sharing-overview") {
+        return {
+          sheets: [{ ...ownerBoard.sheets[0]!, version: 7 }],
+          shares: [],
+          favorites: [{
+            shareId,
+            sheetId: "sheet-1",
+            sheetName: "친구 보드",
+            ownerDisplayName: "친구",
+            createdAt: "2026-07-16T00:00:00.000Z"
+          }]
+        };
+      }
+      if (path === `/api/shared-rice-bins/${shareId}`) return createSharedBoardPayload();
+      if (path === `/api/board/share-favorites/${shareId}`) return { favorite: false };
+      return {};
+    });
+
+    renderPanel({ sessionStatus: "authenticated" });
+    runCapturedEffects();
+    await flushPromises();
+
+    const hub = renderPanel({ sessionStatus: "authenticated" });
+    findButton(hub, "열기", "친구 보드").props.onClick();
+    await flushPromises();
+
+    const detail = renderPanel({ sessionStatus: "authenticated" });
+    runCapturedEffects();
+    await flushPromises();
+
+    expect(api.calls).toEqual([
+      "/api/board/sharing-overview",
+      `/api/shared-rice-bins/${shareId}`
+    ]);
+    expect(api.calls).not.toContain(`/api/board/share-favorites/${shareId}`);
+    expect(getNodeText(detail)).toContain("즐겨찾기 해제");
+  });
+
   it("renders anonymous lookup hub without any overview request", async () => {
     renderToStaticMarkup(createElement(SharedRiceBinPanel, { sessionStatus: "anonymous" }));
     runCapturedEffects();
@@ -223,6 +373,94 @@ describe("SharedRiceBinPanel", () => {
     expect(source).not.toContain("/api/board/shares");
     expect(source).not.toMatch(/apiGet<\{\s*favorites:/);
     expect(source).not.toContain("refreshShares");
+  });
+
+  it("stops a share by removing both the share and its matching favorite locally", async () => {
+    api.apiGet.mockImplementation(async (path: string) => {
+      api.calls.push(path);
+      if (path === "/api/board/sharing-overview") {
+        return {
+          sheets: [{ ...ownerBoard.sheets[0]!, version: 7 }],
+          shares: [{
+            shareId,
+            sheetId: "sheet-1",
+            sheetName: "숙제",
+            createdAt: "2026-07-16T00:00:00.000Z"
+          }],
+          favorites: [{
+            shareId,
+            sheetId: "sheet-1",
+            sheetName: "중단될 즐겨찾기",
+            ownerDisplayName: "나",
+            createdAt: "2026-07-16T00:00:00.000Z"
+          }]
+        };
+      }
+      return {};
+    });
+
+    renderPanel({ sessionStatus: "authenticated" });
+    runCapturedEffects();
+    await flushPromises();
+
+    const hub = renderPanel({ sessionStatus: "authenticated" });
+    findButton(hub, "공유 중단", shareId).props.onClick();
+    await flushPromises();
+
+    const updatedHub = renderPanel({ sessionStatus: "authenticated" });
+    const updatedText = getNodeText(updatedHub);
+    expect(api.calls).toEqual([
+      "/api/board/sharing-overview",
+      "/api/board/sheets/sheet-1/share"
+    ]);
+    expect(api.apiDelete).toHaveBeenCalledWith("/api/board/sheets/sheet-1/share");
+    expect(updatedText).toContain("공유 중이 아닙니다.");
+    expect(updatedText).toContain("즐겨찾기한 쌀통이 없습니다.");
+    expect(updatedText).not.toContain("중단될 즐겨찾기");
+  });
+
+  it("starts a replacement share by removing the previous favorite and inserting the returned share locally", async () => {
+    api.apiGet.mockImplementation(async (path: string) => {
+      api.calls.push(path);
+      if (path === "/api/board/sharing-overview") {
+        return {
+          sheets: [{ ...ownerBoard.sheets[0]!, version: 7 }],
+          shares: [],
+          favorites: [{
+            shareId,
+            sheetId: "sheet-1",
+            sheetName: "이전 공유 즐겨찾기",
+            ownerDisplayName: "나",
+            createdAt: "2026-07-16T00:00:00.000Z"
+          }]
+        };
+      }
+      return {};
+    });
+    api.apiPost.mockImplementation(async (path: string) => {
+      api.calls.push(path);
+      return { shareId: replacementShareId };
+    });
+
+    renderPanel({ sessionStatus: "authenticated" });
+    runCapturedEffects();
+    await flushPromises();
+
+    const hub = renderPanel({ sessionStatus: "authenticated" });
+    findButton(hub, "공유 시작", "숙제").props.onClick();
+    await flushPromises();
+
+    const updatedHub = renderPanel({ sessionStatus: "authenticated" });
+    const updatedText = getNodeText(updatedHub);
+    expect(api.calls).toEqual([
+      "/api/board/sharing-overview",
+      "/api/board/sheets/sheet-1/share"
+    ]);
+    expect(api.apiPost).toHaveBeenCalledWith("/api/board/sheets/sheet-1/share", {});
+    expect(updatedText).toContain(replacementShareId);
+    expect(updatedText).toContain("공유 중단");
+    expect(updatedText).toContain("즐겨찾기한 쌀통이 없습니다.");
+    expect(updatedText).not.toContain("이전 공유 즐겨찾기");
   });
 
   it("owns controlled active-sheet state for shared read-only boards", () => {
