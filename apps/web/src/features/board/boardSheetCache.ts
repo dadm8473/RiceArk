@@ -107,6 +107,7 @@ export function isReusableBoardSheet(
     entry &&
       manifestItem &&
       !entry.stale &&
+      entry.payload.sheet.id === manifestItem.id &&
       entry.payload.sheet.content_version === manifestItem.version &&
       entry.payload.periodFingerprint === buildLocalBoardPeriodFingerprint(entry.payload, now)
   );

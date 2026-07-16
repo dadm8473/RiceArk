@@ -223,6 +223,12 @@ describe("board sheet reuse", () => {
     expect(isReusableBoardSheet(cached, manifestItem("sheet-1", 7), beforeDailyReset)).toBe(false);
   });
 
+  it("rejects a manifest item for a different sheet with the same version and fingerprint", () => {
+    const cached = { payload: sheetPayload("sheet-a", 7), lastAccess: 10, stale: false };
+
+    expect(isReusableBoardSheet(cached, manifestItem("sheet-b", 7), beforeDailyReset)).toBe(false);
+  });
+
   it("rejects an otherwise valid entry after a local period boundary", () => {
     const payload = sheetPayload("sheet-1", 7, {
       axisItems: dailyAxisItems,
