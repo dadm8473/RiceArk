@@ -400,15 +400,17 @@ async function loadBoardSheetAttempt(
                   board_cell_completions.period_key,
                   board_cell_completions.completed
            FROM board_cell_completions
-           JOIN board_tables
-             ON board_tables.id = board_cell_completions.table_id
-            AND board_tables.user_id = ?1
-           JOIN sheets
-             ON sheets.id = board_tables.sheet_id
-            AND sheets.user_id = ?1
            WHERE board_cell_completions.user_id = ?1
-             AND sheets.id = ?2
              AND board_cell_completions.table_id IN (SELECT value FROM json_each(?3))
+             AND board_cell_completions.table_id IN (
+               SELECT board_tables.id
+               FROM board_tables
+               JOIN sheets
+                 ON sheets.id = board_tables.sheet_id
+                AND sheets.user_id = ?1
+               WHERE board_tables.user_id = ?1
+                 AND sheets.id = ?2
+             )
              AND board_cell_completions.period_key IN (SELECT value FROM json_each(?4))
            ORDER BY board_cell_completions.table_id,
                     board_cell_completions.row_item_id,

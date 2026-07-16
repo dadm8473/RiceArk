@@ -839,6 +839,38 @@ describe("sheet-aware board reads", () => {
     });
   });
 
+  it("skips completion reads when a selected sheet has no current periods or no tables", async () => {
+    await withEstablishedBoard(async ({ database, env, statements }) => {
+      statements.length = 0;
+      await expect(loadBoardSheet(env, "user-1", "sheet-first")).resolves.toMatchObject({
+        tables: [expect.objectContaining({ id: "table-first" })],
+        axisItems: [],
+        completions: [],
+        periodFingerprint: ""
+      });
+      expect(statements).toHaveLength(6);
+      expect(statements.some((statement) => statement.sql.includes("FROM board_cell_completions"))).toBe(false);
+
+      insertSheet(database, {
+        id: "sheet-empty",
+        userId: "user-1",
+        name: "Empty",
+        sortOrder: 30,
+        isDefault: 0,
+        version: 1
+      });
+      statements.length = 0;
+      await expect(loadBoardSheet(env, "user-1", "sheet-empty")).resolves.toMatchObject({
+        tables: [],
+        axisItems: [],
+        completions: [],
+        periodFingerprint: ""
+      });
+      expect(statements).toHaveLength(6);
+      expect(statements.some((statement) => statement.sql.includes("FROM board_cell_completions"))).toBe(false);
+    });
+  });
+
   it("retries a direct sheet read when content changes between its data queries and end fence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
@@ -1252,7 +1284,7 @@ describe("sheet-aware board reads", () => {
     }
   });
 
-  it("binds owned table IDs and 300 unique completion periods as JSON values in new reads", async () => {
+  it("binds owned table IDs and 300 periods as compact JSON values in active and legacy reads", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-05T03:00:00.000Z"));
     await withEstablishedBoard(async ({ database, env, statements }) => {

@@ -1,284 +1,98 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHmac, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DATABASE_BINDING = "DB";
 const USER_ID = "board-read-measure-user";
-const SESSION_TOKEN_HASH = "board-read-measure-token-hash";
+const SESSION_TOKEN = "board-read-measure-session-token";
+const SESSION_SECRET = "board-read-measure-session-secret";
+const SESSION_TOKEN_HASH = createHmac("sha256", SESSION_SECRET).update(SESSION_TOKEN).digest("hex");
 const ACTIVE_SHEET_ID = "sheet-1";
-const PERIOD_KEYS_JSON = JSON.stringify(["weekly:2030-01-01"]);
+const FIXED_NOW = "2026-06-05T03:00:00.000Z";
+const FIXTURE_PERIOD_KEY = "weekly:2026-06-03";
+const RESET_RULE_JSON = JSON.stringify({
+  type: "weekly",
+  weekday: 3,
+  hour: 6,
+  timezone: "Asia/Seoul"
+});
 const WORKER_HOST = "127.0.0.1";
-const WORKER_READY_TIMEOUT_MS = 20_000;
+const WORKER_START_ATTEMPTS = 5;
+const WORKER_READY_TIMEOUT_MS = 12_000;
 const WORKER_REQUEST_TIMEOUT_MS = 10_000;
-const WORKER_STOP_TIMEOUT_MS = 5_000;
+const CHILD_COMMAND_TIMEOUT_MS = 60_000;
+const CHILD_STOP_TIMEOUT_MS = 3_000;
 
-// Each 20x12 table keeps cell-state rows dense enough to stress payloads while
-// current-period completions stay sparse, matching persisted user interaction.
 const FIXTURE = Object.freeze({
   sheetCount: 3,
   tablesPerSheet: 3,
   notesPerSheet: 4,
   rowsPerTable: 20,
   columnsPerTable: 12,
-  cellStatesPerTable: 180,
-  completionsPerTable: 48
+  cellStatesPerTable: 180
 });
 
+const CELLS_PER_TABLE = FIXTURE.rowsPerTable * FIXTURE.columnsPerTable;
+
+const COMPLETION_DENSITY_PERCENTAGES = Object.freeze([20, 50, 90]);
+
 const BUDGETS = Object.freeze({
-  establishedBootstrapQueriesIncludingAuth: 10,
+  establishedBootstrapQueriesIncludingAuthMax: 10,
+  legacyFullBoardQueriesIncludingAuthAndPreflight: 9,
+  legacyEnsureDefaultBoardPreflightStatements: 1,
   noChangeVersionSqlStatements: 1,
-  activeRowsReadReductionPercent: 40
+  activeCompletionSqlStatements: 1,
+  legacyCompletionSqlStatements: 1,
+  activeRowsReadReductionPercentMin: 40,
+  activeCompletionRowsReadReductionPercentMin: 40,
+  activeCompletionRowsReadMustNotExceedLegacy: true
 });
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const apiDirectory = dirname(scriptDirectory);
+const repositoryDirectory = dirname(dirname(apiDirectory));
 const wranglerConfigPath = join(apiDirectory, "wrangler.jsonc");
-const boardReadsPath = join(apiDirectory, "src", "db", "boardReads.ts");
-const legacyBoardPath = join(apiDirectory, "src", "db", "board.ts");
-const sessionsPath = join(apiDirectory, "src", "auth", "sessions.ts");
+const SOURCE_MODULES = Object.freeze({
+  auth: "apps/api/src/auth/sessions.ts#findUserBySessionToken",
+  active: "apps/api/src/db/boardReads.ts#loadBoardBootstrap",
+  legacy: "apps/api/src/db/board.ts#loadBoard",
+  version: "apps/api/src/db/board.ts#loadBoardVersionSummary"
+});
 const require = createRequire(import.meta.url);
 const wranglerBin = require.resolve("wrangler/bin/wrangler.js");
-
-const AUTH_EQUIVALENT_SQL = `SELECT users.id, users.display_name, users.avatar_url
-     FROM sessions
-     INNER JOIN users ON users.id = sessions.user_id
-     WHERE sessions.token_hash = ? AND sessions.expires_at > CURRENT_TIMESTAMP
-     LIMIT 1`;
-
-// Mirrors BOARD_MANIFEST_SQL and loadBoardSheetAttempt in boardReads.ts.
-const BOARD_MANIFEST_SQL = `WITH manifest AS (
-  SELECT COALESCE(
-    (SELECT version FROM board_manifest_versions WHERE user_id = ?1),
-    0
-  ) AS manifest_version
-)
-SELECT
-  manifest.manifest_version,
-  COALESCE(user_settings.show_display_name, 1) AS show_display_name,
-  COALESCE(user_settings.show_server_name, 0) AS show_server_name,
-  COALESCE(user_settings.show_class_name, 0) AS show_class_name,
-  COALESCE(user_settings.show_item_level, 1) AS show_item_level,
-  COALESCE(user_settings.show_combat_power, 0) AS show_combat_power,
-  sheets.id,
-  sheets.name,
-  sheets.sort_order,
-  sheets.is_default,
-  sheets.content_version AS version
-FROM manifest
-LEFT JOIN user_settings ON user_settings.user_id = ?1
-LEFT JOIN sheets ON sheets.user_id = ?1
-ORDER BY sheets.sort_order, sheets.name`;
-
-const ACTIVE_SHEET_METADATA_SQL = `SELECT id, name, sort_order, is_default, content_version
-     FROM sheets
-     WHERE id = ? AND user_id = ?`;
-
-const ACTIVE_TABLES_SQL = `SELECT board_tables.id,
-              board_tables.sheet_id,
-              board_tables.name,
-              board_tables.sort_order,
-              board_tables.x,
-              board_tables.y,
-              board_tables.width,
-              board_tables.height,
-              board_tables.row_role,
-              board_tables.column_role,
-              board_tables.task_axis,
-              board_tables.default_row_height,
-              board_tables.default_column_width,
-              board_tables.locked,
-              board_tables.display_options_json,
-              board_tables.event_options_json,
-              board_tables.template_type
-       FROM board_tables
-       JOIN sheets
-         ON sheets.id = board_tables.sheet_id
-        AND sheets.user_id = ?1
-       WHERE board_tables.user_id = ?1
-         AND sheets.id = ?2
-       ORDER BY board_tables.sort_order, board_tables.name`;
-
-const ACTIVE_NOTES_SQL = `SELECT board_notes.id,
-              board_notes.sheet_id,
-              board_notes.title,
-              board_notes.body,
-              board_notes.color,
-              board_notes.sort_order,
-              board_notes.x,
-              board_notes.y,
-              board_notes.width,
-              board_notes.height,
-              board_notes.locked
-       FROM board_notes
-       JOIN sheets
-         ON sheets.id = board_notes.sheet_id
-        AND sheets.user_id = ?1
-       WHERE board_notes.user_id = ?1
-         AND sheets.id = ?2
-       ORDER BY board_notes.sort_order, board_notes.title`;
-
-const ACTIVE_AXIS_ITEMS_SQL = `SELECT board_axis_items.id,
-              board_axis_items.table_id,
-              board_axis_items.axis,
-              board_axis_items.kind,
-              board_axis_items.label,
-              board_axis_items.character_id,
-              board_axis_items.task_id,
-              board_axis_items.task_scope,
-              board_axis_items.task_reset_type,
-              board_axis_items.task_reset_rule_json,
-              board_axis_items.task_color,
-              board_axis_items.size_px,
-              board_axis_items.cross_size_px,
-              board_axis_items.sort_order,
-              board_axis_items.visible,
-              board_axis_items.separator_json,
-              board_axis_items.display_options_json,
-              characters.name AS character_name,
-              characters.display_name AS character_display_name,
-              characters.server_name AS character_server_name,
-              characters.class_name AS character_class_name,
-              characters.item_level AS character_item_level,
-              characters.combat_power AS character_combat_power,
-              characters.source AS character_source
-       FROM board_axis_items
-       JOIN board_tables
-         ON board_tables.id = board_axis_items.table_id
-        AND board_tables.user_id = ?1
-       JOIN sheets
-         ON sheets.id = board_tables.sheet_id
-        AND sheets.user_id = ?1
-       LEFT JOIN characters
-         ON characters.id = board_axis_items.character_id
-        AND characters.user_id = board_axis_items.user_id
-        AND characters.deleted_at IS NULL
-       WHERE board_axis_items.user_id = ?1
-         AND sheets.id = ?2
-       ORDER BY board_axis_items.table_id,
-                board_axis_items.axis,
-                board_axis_items.sort_order,
-                board_axis_items.label`;
-
-const ACTIVE_CELL_STATES_SQL = `SELECT board_cell_states.table_id,
-              board_cell_states.row_item_id,
-              board_cell_states.column_item_id,
-              board_cell_states.checkbox_visible,
-              board_cell_states.mark_type,
-              board_cell_states.mark_icon,
-              board_cell_states.memo,
-              board_cell_states.mark_period_key
-       FROM board_cell_states
-       JOIN board_tables
-         ON board_tables.id = board_cell_states.table_id
-        AND board_tables.user_id = ?1
-       JOIN sheets
-         ON sheets.id = board_tables.sheet_id
-        AND sheets.user_id = ?1
-       WHERE board_cell_states.user_id = ?1
-         AND sheets.id = ?2
-       ORDER BY board_cell_states.table_id,
-                board_cell_states.row_item_id,
-                board_cell_states.column_item_id`;
-
-const ACTIVE_COMPLETIONS_SQL = `SELECT board_cell_completions.table_id,
-                  board_cell_completions.row_item_id,
-                  board_cell_completions.column_item_id,
-                  board_cell_completions.period_key,
-                  board_cell_completions.completed
-           FROM board_cell_completions
-           JOIN board_tables
-             ON board_tables.id = board_cell_completions.table_id
-            AND board_tables.user_id = ?1
-           JOIN sheets
-             ON sheets.id = board_tables.sheet_id
-            AND sheets.user_id = ?1
-           WHERE board_cell_completions.user_id = ?1
-             AND sheets.id = ?2
-             AND board_cell_completions.period_key IN (SELECT value FROM json_each(?3))
-           ORDER BY board_cell_completions.table_id,
-                    board_cell_completions.row_item_id,
-                    board_cell_completions.column_item_id,
-                    board_cell_completions.period_key`;
-
-// Mirrors the compatible full-board reads in board.ts loadBoard.
-const LEGACY_SHEETS_SQL = "SELECT * FROM sheets WHERE user_id = ? ORDER BY sort_order, name";
-const LEGACY_TABLES_SQL = "SELECT * FROM board_tables WHERE user_id = ? ORDER BY sort_order, name";
-const LEGACY_NOTES_SQL = "SELECT * FROM board_notes WHERE user_id = ? ORDER BY sort_order, title";
-const LEGACY_AXIS_ITEMS_SQL = `SELECT board_axis_items.*,
-              characters.name AS character_name,
-              characters.display_name AS character_display_name,
-              characters.server_name AS character_server_name,
-              characters.class_name AS character_class_name,
-              characters.item_level AS character_item_level,
-              characters.combat_power AS character_combat_power,
-              characters.source AS character_source
-       FROM board_axis_items
-       LEFT JOIN characters
-         ON characters.id = board_axis_items.character_id
-        AND characters.user_id = board_axis_items.user_id
-        AND characters.deleted_at IS NULL
-       WHERE board_axis_items.user_id = ?
-       ORDER BY board_axis_items.table_id, board_axis_items.axis, board_axis_items.sort_order, board_axis_items.label`;
-const LEGACY_CELL_STATES_SQL =
-  "SELECT * FROM board_cell_states WHERE user_id = ? ORDER BY table_id, row_item_id, column_item_id";
-const LEGACY_SETTINGS_SQL = `SELECT show_display_name,
-              show_server_name,
-              show_class_name,
-              show_item_level,
-              show_combat_power
-       FROM user_settings
-       WHERE user_id = ?`;
-const LEGACY_COMPLETIONS_SQL = `SELECT table_id, row_item_id, column_item_id, period_key, completed
-           FROM board_cell_completions
-           WHERE user_id = ?1
-             AND period_key IN (SELECT value FROM json_each(?2))`;
-
-// Mirrors board.ts loadBoardVersionSummary.
-const VERSION_SUMMARY_SQL = `WITH manifest AS (
-       SELECT COALESCE(
-         (SELECT version FROM board_manifest_versions WHERE user_id = ?1),
-         0
-       ) AS manifest_version
-     )
-     SELECT manifest.manifest_version,
-            COALESCE(user_settings.show_display_name, 1) AS show_display_name,
-            COALESCE(user_settings.show_server_name, 0) AS show_server_name,
-            COALESCE(user_settings.show_class_name, 0) AS show_class_name,
-            COALESCE(user_settings.show_item_level, 1) AS show_item_level,
-            COALESCE(user_settings.show_combat_power, 0) AS show_combat_power,
-            sheets.id,
-            sheets.name,
-            sheets.sort_order,
-            sheets.is_default,
-            sheets.content_version AS version
-     FROM manifest
-     LEFT JOIN user_settings ON user_settings.user_id = ?1
-     LEFT JOIN sheets ON sheets.user_id = ?1
-     ORDER BY sheets.sort_order, sheets.name`;
 
 const WORKER_SOURCE = `export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const nonce = request.headers.get("x-measurement-nonce");
+    if (nonce !== env.HEALTH_NONCE) {
+      return Response.json({ error: "not_found" }, { status: 404 });
+    }
     if (request.method === "GET" && url.pathname === "/health") {
-      return Response.json({ ok: true });
+      return Response.json({ ok: true, nonce: env.HEALTH_NONCE });
     }
     if (request.method !== "POST" || url.pathname !== "/execute") {
       return Response.json({ error: "not_found" }, { status: 404 });
     }
     try {
       const body = await request.json();
-      if (typeof body.sql !== "string" || !Array.isArray(body.bindings)) {
+      if (
+        typeof body.sql !== "string" ||
+        !Array.isArray(body.bindings) ||
+        (body.method !== "all" && body.method !== "run")
+      ) {
         return Response.json({ error: "invalid_request" }, { status: 400 });
       }
       const prepared = env.DB.prepare(body.sql);
       const statement = body.bindings.length > 0 ? prepared.bind(...body.bindings) : prepared;
-      return Response.json(await statement.all());
+      return Response.json(body.method === "run" ? await statement.run() : await statement.all());
     } catch (error) {
       return Response.json(
         { error: error instanceof Error ? error.message : String(error) },
@@ -288,10 +102,6 @@ const WORKER_SOURCE = `export default {
   }
 };
 `;
-
-function normalizeSql(value) {
-  return value.replace(/\s+/g, " ").trim();
-}
 
 function sqlLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
@@ -338,7 +148,7 @@ function jsonDocuments(value) {
             documents.push(JSON.parse(value.slice(start, index + 1)));
             start = index;
           } catch {
-            // Wrangler may print informational text containing brackets before its JSON payload.
+            // Wrangler can print informational text containing brackets before JSON.
           }
           break;
         }
@@ -400,11 +210,50 @@ function spawnCaptured(command, args, options) {
   return { child, state, closed };
 }
 
-async function runWrangler(args) {
+async function settlesWithin(promise, timeoutMs) {
+  let timeout;
+  return new Promise((resolve) => {
+    timeout = setTimeout(() => resolve(false), timeoutMs);
+    promise.then(() => {
+      clearTimeout(timeout);
+      resolve(true);
+    });
+  });
+}
+
+async function terminateChild(processState) {
+  if (processState.state.code !== null || processState.state.signal !== null) {
+    await processState.closed;
+    return;
+  }
+  processState.child.kill("SIGTERM");
+  if (await settlesWithin(processState.closed, CHILD_STOP_TIMEOUT_MS)) return;
+  processState.child.kill("SIGKILL");
+  assert.ok(
+    await settlesWithin(processState.closed, CHILD_STOP_TIMEOUT_MS),
+    `Child process did not terminate after bounded TERM/KILL timeouts.\n${childDiagnostics(processState.state)}`
+  );
+}
+
+function assertLocalWranglerArgs(args) {
+  assert.ok(!args.includes("--remote"), "Measurement must never pass Wrangler --remote");
+  assert.ok(!args.some((argument) => /^https?:\/\//i.test(argument)), "Measurement must not pass a remote URL");
+  assert.ok(args.includes("--local"), "Every measurement Wrangler command must pass --local");
+  assert.ok(args.includes("--persist-to"), "Every measurement Wrangler command must use isolated --persist-to state");
+}
+
+async function runWrangler(args, label) {
+  assertLocalWranglerArgs(args);
   const processState = spawnCaptured(process.execPath, [wranglerBin, ...args], { cwd: apiDirectory });
-  await processState.closed;
+  const completed = await settlesWithin(processState.closed, CHILD_COMMAND_TIMEOUT_MS);
+  if (!completed) {
+    await terminateChild(processState);
+    throw new Error(
+      `${label} exceeded ${CHILD_COMMAND_TIMEOUT_MS}ms and was terminated.\n${childDiagnostics(processState.state)}`
+    );
+  }
   if (processState.state.error) {
-    throw new Error(`Unable to start Wrangler: ${processState.state.error.message}`, {
+    throw new Error(`Unable to start ${label}: ${processState.state.error.message}`, {
       cause: processState.state.error
     });
   }
@@ -441,7 +290,7 @@ async function applyMigrations(stateDirectory, databaseName) {
     stateDirectory,
     "--config",
     wranglerConfigPath
-  ]);
+  ], "Wrangler local D1 migrations");
   if (result.code !== 0) {
     throw new Error(`Applying production migrations failed.\n${commandDiagnostics(result)}`);
   }
@@ -463,7 +312,7 @@ async function seedFixture(temporaryDirectory, stateDirectory, databaseName) {
     sqlFile,
     "--json",
     "--yes"
-  ]);
+  ], "Wrangler local D1 fixture seed");
   if (result.code !== 0) {
     throw new Error(`Seeding the deterministic fixture failed.\n${commandDiagnostics(result)}`);
   }
@@ -491,51 +340,61 @@ async function reserveFreePort() {
   return port;
 }
 
-async function terminateChild(processState) {
-  if (processState.state.error) {
-    await Promise.race([processState.closed, delay(WORKER_STOP_TIMEOUT_MS)]);
-    return;
+async function waitForWorkerReadiness(worker) {
+  const deadline = Date.now() + WORKER_READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (worker.state.error) {
+      throw new Error(`Unable to start Wrangler dev: ${worker.state.error.message}`, {
+        cause: worker.state.error
+      });
+    }
+    if (worker.state.code !== null || worker.state.signal !== null) {
+      throw new Error(`Wrangler dev exited before readiness.\n${childDiagnostics(worker.state)}`);
+    }
+    try {
+      const response = await fetch(`${worker.baseUrl}/health`, {
+        headers: { "x-measurement-nonce": worker.nonce },
+        signal: AbortSignal.timeout(500)
+      });
+      const body = response.ok ? await response.json() : null;
+      if (body?.ok === true && body.nonce === worker.nonce) return;
+    } catch {
+      // The selected port is not yet serving this exact nonce.
+    }
+    await delay(100);
   }
-  if (processState.state.code !== null || processState.state.signal !== null) {
-    await processState.closed;
-    return;
-  }
-  processState.child.kill("SIGTERM");
-  await Promise.race([processState.closed, delay(WORKER_STOP_TIMEOUT_MS)]);
-  if (processState.state.code === null && processState.state.signal === null) {
-    processState.child.kill("SIGKILL");
-    await Promise.race([processState.closed, delay(WORKER_STOP_TIMEOUT_MS)]);
-  }
-  assert.ok(
-    processState.state.code !== null || processState.state.signal !== null,
-    `Wrangler dev did not terminate within ${WORKER_STOP_TIMEOUT_MS * 2}ms`
+  throw new Error(
+    `Wrangler dev did not serve its unguessable health nonce within ${WORKER_READY_TIMEOUT_MS}ms.\n` +
+    childDiagnostics(worker.state)
   );
 }
 
 async function startMeasurementWorker(temporaryDirectory, stateDirectory, d1Config) {
   const workerPath = join(temporaryDirectory, "measurement-worker.mjs");
   const workerConfigPath = join(temporaryDirectory, "measurement-wrangler.json");
-  const port = await reserveFreePort();
   await writeFile(workerPath, WORKER_SOURCE, "utf8");
-  await writeFile(
-    workerConfigPath,
-    `${JSON.stringify({
-      name: "riceark-board-read-measurement",
-      main: "measurement-worker.mjs",
-      compatibility_date: d1Config.compatibilityDate,
-      d1_databases: [{
-        binding: DATABASE_BINDING,
-        database_name: d1Config.databaseName,
-        database_id: d1Config.databaseId
-      }]
-    }, null, 2)}\n`,
-    "utf8"
-  );
+  const failures = [];
 
-  const processState = spawnCaptured(
-    process.execPath,
-    [
-      wranglerBin,
+  for (let attempt = 1; attempt <= WORKER_START_ATTEMPTS; attempt += 1) {
+    const port = await reserveFreePort();
+    const nonce = randomBytes(24).toString("hex");
+    await writeFile(
+      workerConfigPath,
+      `${JSON.stringify({
+        name: "riceark-board-read-measurement",
+        main: "measurement-worker.mjs",
+        compatibility_date: d1Config.compatibilityDate,
+        vars: { HEALTH_NONCE: nonce },
+        d1_databases: [{
+          binding: DATABASE_BINDING,
+          database_name: d1Config.databaseName,
+          database_id: d1Config.databaseId
+        }]
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    const wranglerArgs = [
       "dev",
       "--config",
       workerConfigPath,
@@ -546,174 +405,260 @@ async function startMeasurementWorker(temporaryDirectory, stateDirectory, d1Conf
       WORKER_HOST,
       "--port",
       String(port)
-    ],
-    { cwd: temporaryDirectory }
-  );
-  const baseUrl = `http://${WORKER_HOST}:${port}`;
-  const deadline = Date.now() + WORKER_READY_TIMEOUT_MS;
-
-  try {
-    while (Date.now() < deadline) {
-      if (processState.state.error) {
-        throw new Error(`Unable to start Wrangler dev: ${processState.state.error.message}`, {
-          cause: processState.state.error
-        });
-      }
-      if (processState.state.code !== null || processState.state.signal !== null) {
-        throw new Error(`Wrangler dev exited before readiness.\n${childDiagnostics(processState.state)}`);
-      }
-      try {
-        const response = await fetch(`${baseUrl}/health`, {
-          signal: AbortSignal.timeout(500)
-        });
-        if (response.ok && (await response.json()).ok === true) {
-          return { ...processState, baseUrl };
-        }
-      } catch {
-        // The local worker has not started accepting requests yet.
-      }
-      await delay(100);
-    }
-    throw new Error(
-      `Wrangler dev did not become ready within ${WORKER_READY_TIMEOUT_MS}ms.\n${childDiagnostics(processState.state)}`
+    ];
+    assertLocalWranglerArgs(wranglerArgs);
+    assert.equal(wranglerArgs[wranglerArgs.indexOf("--ip") + 1], WORKER_HOST);
+    const processState = spawnCaptured(
+      process.execPath,
+      [wranglerBin, ...wranglerArgs],
+      { cwd: temporaryDirectory }
     );
-  } catch (error) {
-    await terminateChild(processState);
-    throw error;
+    const worker = {
+      ...processState,
+      baseUrl: `http://${WORKER_HOST}:${port}`,
+      nonce
+    };
+
+    try {
+      await waitForWorkerReadiness(worker);
+      return worker;
+    } catch (error) {
+      failures.push(`attempt ${attempt}: ${error instanceof Error ? error.message : String(error)}`);
+      await terminateChild(processState);
+    }
   }
+
+  throw new Error(
+    `Wrangler dev failed ${WORKER_START_ATTEMPTS} loopback startup attempts with fresh ports.\n${failures.join("\n")}`
+  );
 }
 
-async function executeWorkerSql(worker, statement) {
+async function executeWorkerSql(worker, input) {
   let response;
   try {
     response = await fetch(`${worker.baseUrl}/execute`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sql: statement.sql, bindings: statement.bindings }),
+      headers: {
+        "Content-Type": "application/json",
+        "x-measurement-nonce": worker.nonce
+      },
+      body: JSON.stringify({
+        sql: input.sql,
+        bindings: input.bindings ?? [],
+        method: input.method ?? "all"
+      }),
       signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS)
     });
   } catch (error) {
     throw new Error(
-      `${statement.label} did not receive a local worker response.\n${childDiagnostics(worker.state)}`,
+      `${input.label} did not receive a local Worker response.\n${childDiagnostics(worker.state)}`,
       { cause: error }
     );
   }
   const body = await response.text();
   if (!response.ok) {
-    throw new Error(`${statement.label} returned HTTP ${response.status}: ${body}`);
+    throw new Error(`${input.label} returned HTTP ${response.status}: ${body}`);
   }
   let result;
   try {
     result = JSON.parse(body);
   } catch (error) {
-    throw new Error(`${statement.label} returned invalid JSON: ${body}`, { cause: error });
+    throw new Error(`${input.label} returned invalid JSON: ${body}`, { cause: error });
   }
-  assert.equal(result.success, true, `${statement.label} returned success=false`);
-  assert.ok(Array.isArray(result.results), `${statement.label} omitted results`);
-  assert.equal(
-    typeof result.meta?.rows_read,
-    "number",
-    `${statement.label} omitted the required local D1 meta.rows_read`
-  );
-  assert.equal(
-    result.meta?.rows_written,
-    0,
-    `${statement.label} unexpectedly wrote ${String(result.meta?.rows_written)} rows`
-  );
+  assert.equal(result.success, true, `${input.label} returned success=false`);
+  if (input.requireReadMeta !== false) {
+    assert.equal(
+      typeof result.meta?.rows_read,
+      "number",
+      `${input.label} omitted truthful local D1 meta.rows_read`
+    );
+  }
+  if (input.allowWrites !== true) {
+    assert.equal(
+      result.meta?.rows_written,
+      0,
+      `${input.label} unexpectedly wrote ${String(result.meta?.rows_written)} rows`
+    );
+  }
   return result;
 }
 
-function statement(label, sql, bindings) {
-  return { label, sql, bindings };
+function normalizeSql(value) {
+  return value.replace(/\s+/g, " ").trim();
 }
 
-const ESTABLISHED_BOOTSTRAP_STATEMENTS = [
-  statement("Established bootstrap auth-equivalent lookup", AUTH_EQUIVALENT_SQL, [SESSION_TOKEN_HASH]),
-  statement("Established bootstrap manifest", BOARD_MANIFEST_SQL, [USER_ID]),
-  statement("Established bootstrap active-sheet metadata", ACTIVE_SHEET_METADATA_SQL, [ACTIVE_SHEET_ID, USER_ID]),
-  statement("Established bootstrap active-sheet tables", ACTIVE_TABLES_SQL, [USER_ID, ACTIVE_SHEET_ID]),
-  statement("Established bootstrap active-sheet notes", ACTIVE_NOTES_SQL, [USER_ID, ACTIVE_SHEET_ID]),
-  statement("Established bootstrap active-sheet axis items", ACTIVE_AXIS_ITEMS_SQL, [USER_ID, ACTIVE_SHEET_ID]),
-  statement("Established bootstrap active-sheet cell states", ACTIVE_CELL_STATES_SQL, [USER_ID, ACTIVE_SHEET_ID]),
-  statement("Established bootstrap active-sheet completions", ACTIVE_COMPLETIONS_SQL, [
-    USER_ID,
-    ACTIVE_SHEET_ID,
-    PERIOD_KEYS_JSON
-  ]),
-  statement("Established bootstrap manifest fence", BOARD_MANIFEST_SQL, [USER_ID])
-];
-
-const LEGACY_FULL_BOARD_STATEMENTS = [
-  statement("Legacy full-board auth-equivalent lookup", AUTH_EQUIVALENT_SQL, [SESSION_TOKEN_HASH]),
-  statement("Legacy full-board sheets", LEGACY_SHEETS_SQL, [USER_ID]),
-  statement("Legacy full-board tables", LEGACY_TABLES_SQL, [USER_ID]),
-  statement("Legacy full-board notes", LEGACY_NOTES_SQL, [USER_ID]),
-  statement("Legacy full-board axis items", LEGACY_AXIS_ITEMS_SQL, [USER_ID]),
-  statement("Legacy full-board cell states", LEGACY_CELL_STATES_SQL, [USER_ID]),
-  statement("Legacy full-board settings", LEGACY_SETTINGS_SQL, [USER_ID]),
-  statement("Legacy full-board completions", LEGACY_COMPLETIONS_SQL, [USER_ID, PERIOD_KEYS_JSON])
-];
-
-const NO_CHANGE_VERSION_STATEMENTS = [
-  statement("No-change version summary", VERSION_SUMMARY_SQL, [USER_ID])
-];
-
-async function measureStatements(worker, statements) {
-  const measurements = [];
-  for (const current of statements) {
-    const result = await executeWorkerSql(worker, current);
-    measurements.push({
-      label: current.label,
-      rowsRead: result.meta.rows_read,
-      resultBytes: Buffer.byteLength(JSON.stringify(result.results), "utf8")
-    });
+function classifyStatement(pathName, sql, issuedKinds) {
+  const normalized = normalizeSql(sql);
+  if (normalized.includes("FROM sessions") && normalized.includes("INNER JOIN users")) return "auth";
+  if (normalized.startsWith("SELECT EXISTS(") && normalized.includes("board_tables")) {
+    return "ensureDefaultBoardPreflight";
   }
+  if (normalized.includes("WITH manifest AS")) {
+    if (pathName === "noChangeVersionCheck") return "versionSummary";
+    const manifestCount = issuedKinds.filter((kind) => kind.startsWith("manifest")).length;
+    return manifestCount === 0 ? "manifest" : "manifestFence";
+  }
+  if (normalized.includes("FROM board_cell_completions")) return "completions";
+  if (normalized.includes("FROM board_cell_states")) return "cellStates";
+  if (normalized.includes("FROM board_axis_items")) return "axisItems";
+  if (normalized.includes("FROM board_notes")) return "notes";
+  if (normalized.includes("FROM board_tables")) return "tables";
+  if (normalized.includes("FROM user_settings")) return "settings";
+  if (normalized.includes("FROM sheets")) {
+    return normalized.includes("WHERE id = ? AND user_id = ?") ? "activeSheetMetadata" : "sheets";
+  }
+  return "unclassified";
+}
+
+function serializedBytes(value) {
+  return Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
+}
+
+function createInstrumentedEnv(worker, pathName) {
+  const records = [];
+  const issuedKinds = [];
+  let nextSequence = 0;
+
+  function prepare(sql, bindings = []) {
+    return {
+      bind(...values) {
+        return prepare(sql, values);
+      },
+      async all() {
+        const sequence = nextSequence;
+        nextSequence += 1;
+        const kind = classifyStatement(pathName, sql, issuedKinds);
+        issuedKinds.push(kind);
+        const result = await executeWorkerSql(worker, {
+          label: `${pathName} ${kind}`,
+          sql,
+          bindings,
+          method: "all"
+        });
+        records.push({
+          sequence,
+          kind,
+          method: "all",
+          bindingCount: bindings.length,
+          rowsRead: result.meta.rows_read,
+          resultBytes: serializedBytes(result.results)
+        });
+        return result;
+      },
+      async first(column) {
+        const sequence = nextSequence;
+        nextSequence += 1;
+        const kind = classifyStatement(pathName, sql, issuedKinds);
+        issuedKinds.push(kind);
+        const result = await executeWorkerSql(worker, {
+          label: `${pathName} ${kind}`,
+          sql,
+          bindings,
+          method: "all"
+        });
+        const row = result.results?.[0] ?? null;
+        const value = column === undefined ? row : row?.[column] ?? null;
+        records.push({
+          sequence,
+          kind,
+          method: "first",
+          bindingCount: bindings.length,
+          rowsRead: result.meta.rows_read,
+          resultBytes: serializedBytes(value)
+        });
+        return value;
+      },
+      async run() {
+        throw new Error(`${pathName} unexpectedly attempted a write through D1PreparedStatement.run()`);
+      }
+    };
+  }
+
+  const DB = {
+    prepare,
+    async batch() {
+      throw new Error(`${pathName} unexpectedly attempted D1Database.batch(); fixture was not established`);
+    }
+  };
+
   return {
-    queryCount: measurements.length,
-    rowsRead: measurements.reduce((sum, entry) => sum + entry.rowsRead, 0),
-    resultBytes: measurements.reduce((sum, entry) => sum + entry.resultBytes, 0),
-    statements: measurements
+    env: { DB, SESSION_SECRET },
+    summarize() {
+      const statements = records.toSorted((left, right) => left.sequence - right.sequence);
+      const completions = statements.filter((entry) => entry.kind === "completions");
+      return {
+        queryCount: statements.length,
+        rowsRead: statements.reduce((sum, entry) => sum + entry.rowsRead, 0),
+        resultBytes: statements.reduce((sum, entry) => sum + entry.resultBytes, 0),
+        completion: {
+          queryCount: completions.length,
+          rowsRead: completions.reduce((sum, entry) => sum + entry.rowsRead, 0),
+          resultBytes: completions.reduce((sum, entry) => sum + entry.resultBytes, 0)
+        },
+        statements: statements.map(({ kind, method, bindingCount, rowsRead, resultBytes }) => ({
+          kind,
+          method,
+          bindingCount,
+          rowsRead,
+          resultBytes
+        }))
+      };
+    }
   };
 }
 
-function percentReduction(baseline, reduced) {
-  assert.ok(baseline > 0, "Cannot calculate reduction from a zero baseline");
-  return ((baseline - reduced) / baseline) * 100;
+async function withFixedClock(operation) {
+  const OriginalDate = globalThis.Date;
+  const fixedTime = OriginalDate.parse(FIXED_NOW);
+  class FixedDate extends OriginalDate {
+    constructor(...args) {
+      super(...(args.length === 0 ? [fixedTime] : args));
+    }
+
+    static now() {
+      return fixedTime;
+    }
+  }
+  globalThis.Date = FixedDate;
+  try {
+    return await operation();
+  } finally {
+    globalThis.Date = OriginalDate;
+  }
 }
 
-function rounded(value) {
-  return Number(value.toFixed(2));
-}
-
-async function assertSourceLinkedSql() {
-  const [boardReadsSource, legacyBoardSource, sessionsSource] = await Promise.all([
-    readFile(boardReadsPath, "utf8"),
-    readFile(legacyBoardPath, "utf8"),
-    readFile(sessionsPath, "utf8")
-  ]);
-  const sources = [
-    [sessionsSource, AUTH_EQUIVALENT_SQL, "sessions.ts findUserBySessionToken"],
-    [boardReadsSource, BOARD_MANIFEST_SQL, "boardReads.ts BOARD_MANIFEST_SQL"],
-    [boardReadsSource, ACTIVE_SHEET_METADATA_SQL, "boardReads.ts loadOwnedBoardSheetMetadata"],
-    [boardReadsSource, ACTIVE_TABLES_SQL, "boardReads.ts loadBoardSheetAttempt tables"],
-    [boardReadsSource, ACTIVE_NOTES_SQL, "boardReads.ts loadBoardSheetAttempt notes"],
-    [boardReadsSource, ACTIVE_AXIS_ITEMS_SQL, "boardReads.ts loadBoardSheetAttempt axis items"],
-    [boardReadsSource, ACTIVE_CELL_STATES_SQL, "boardReads.ts loadBoardSheetAttempt cell states"],
-    [boardReadsSource, ACTIVE_COMPLETIONS_SQL, "boardReads.ts loadBoardSheetAttempt completions"],
-    [legacyBoardSource, LEGACY_SHEETS_SQL, "board.ts loadBoard sheets"],
-    [legacyBoardSource, LEGACY_TABLES_SQL, "board.ts loadBoard tables"],
-    [legacyBoardSource, LEGACY_NOTES_SQL, "board.ts loadBoard notes"],
-    [legacyBoardSource, LEGACY_AXIS_ITEMS_SQL, "board.ts loadBoard axis items"],
-    [legacyBoardSource, LEGACY_CELL_STATES_SQL, "board.ts loadBoard cell states"],
-    [legacyBoardSource, LEGACY_SETTINGS_SQL, "board.ts loadBoard settings"],
-    [legacyBoardSource, LEGACY_COMPLETIONS_SQL, "board.ts loadBoard completions"],
-    [legacyBoardSource, VERSION_SUMMARY_SQL, "board.ts loadBoardVersionSummary"]
-  ];
-  for (const [source, sql, label] of sources) {
-    assert.ok(
-      normalizeSql(source).includes(normalizeSql(sql)),
-      `Measurement SQL drifted from ${label}; update this source-linked script`
-    );
+async function loadProductionLoaders() {
+  const vitestPackagePath = require.resolve("vitest/package.json");
+  const viteRequire = createRequire(vitestPackagePath);
+  const viteEntryPath = viteRequire.resolve("vite");
+  const { createServer: createViteServer } = await import(pathToFileURL(viteEntryPath).href);
+  const vite = await createViteServer({
+    root: repositoryDirectory,
+    configFile: false,
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true }
+  });
+  try {
+    const [sessions, boardReads, board] = await Promise.all([
+      vite.ssrLoadModule("/apps/api/src/auth/sessions.ts"),
+      vite.ssrLoadModule("/apps/api/src/db/boardReads.ts"),
+      vite.ssrLoadModule("/apps/api/src/db/board.ts")
+    ]);
+    assert.equal(typeof sessions.findUserBySessionToken, "function", `Missing ${SOURCE_MODULES.auth}`);
+    assert.equal(typeof boardReads.loadBoardBootstrap, "function", `Missing ${SOURCE_MODULES.active}`);
+    assert.equal(typeof board.loadBoard, "function", `Missing ${SOURCE_MODULES.legacy}`);
+    assert.equal(typeof board.loadBoardVersionSummary, "function", `Missing ${SOURCE_MODULES.version}`);
+    return {
+      vite,
+      findUserBySessionToken: sessions.findUserBySessionToken,
+      loadBoardBootstrap: boardReads.loadBoardBootstrap,
+      loadBoard: board.loadBoard,
+      loadBoardVersionSummary: board.loadBoardVersionSummary
+    };
+  } catch (error) {
+    await vite.close();
+    throw new Error("Programmatic Vite SSR loading of production board read exports failed", { cause: error });
   }
 }
 
@@ -744,10 +689,6 @@ function fixtureSql() {
   const cellStateNumbers = `${tableNumbers}, state_numbers(value) AS (
     VALUES(0)
     UNION ALL SELECT value + 1 FROM state_numbers WHERE value < ${FIXTURE.cellStatesPerTable - 1}
-  )`;
-  const completionNumbers = `${tableNumbers}, completion_numbers(value) AS (
-    VALUES(0)
-    UNION ALL SELECT value + 1 FROM completion_numbers WHERE value < ${FIXTURE.completionsPerTable - 1}
   )`;
   const taskNumbers = `WITH RECURSIVE numbers(value) AS (
     VALUES(1)
@@ -795,7 +736,7 @@ function fixtureSql() {
             'Task ' || value,
             'character',
             'weekly',
-            '{"type":"weekly","weekday":3}',
+            ${sqlLiteral(RESET_RULE_JSON)},
             (value - 1) * 10,
             1,
             0
@@ -872,7 +813,7 @@ function fixtureSql() {
             'task-' || row_numbers.value,
             'character',
             'weekly',
-            '{"type":"weekly","weekday":3}',
+            ${sqlLiteral(RESET_RULE_JSON)},
             CASE row_numbers.value % 5
               WHEN 0 THEN '#dc2626'
               WHEN 1 THEN '#2563eb'
@@ -940,102 +881,267 @@ function fixtureSql() {
               ELSE NULL
             END,
             CASE WHEN state_numbers.value % 4 = 1
-              THEN 'weekly:2030-01-01'
+              THEN ${sqlLiteral(FIXTURE_PERIOD_KEY)}
               ELSE NULL
             END
      FROM sheet_numbers CROSS JOIN table_numbers CROSS JOIN state_numbers`,
-    `${completionNumbers}
-     INSERT INTO board_cell_completions (
-       id, user_id, table_id, row_item_id, column_item_id, period_key, completed
-     )
-     SELECT 'completion-' || sheet_numbers.value || '-' || table_numbers.value || '-' ||
-              completion_numbers.value,
-            ${sqlLiteral(USER_ID)},
-            'table-' || sheet_numbers.value || '-' || table_numbers.value,
-            'row-' || sheet_numbers.value || '-' || table_numbers.value || '-' ||
-              (CAST(completion_numbers.value / ${FIXTURE.columnsPerTable} AS INTEGER) + 1),
-            'column-' || sheet_numbers.value || '-' || table_numbers.value || '-' ||
-              (completion_numbers.value % ${FIXTURE.columnsPerTable} + 1),
-            'weekly:2030-01-01',
-            CASE WHEN completion_numbers.value % 3 = 0 THEN 0 ELSE 1 END
-     FROM sheet_numbers CROSS JOIN table_numbers CROSS JOIN completion_numbers`,
-    // A freshly bulk-seeded SQLite database has no planner statistics; production-like
-    // indexed sheet reads require statistics before rows_read is representative.
     "ANALYZE"
   );
 }
 
-async function verifyFixture(worker) {
+function completionFixtureSql(completionsPerTable) {
+  return `WITH RECURSIVE sheet_numbers(value) AS (
+    VALUES(1)
+    UNION ALL SELECT value + 1 FROM sheet_numbers WHERE value < ${FIXTURE.sheetCount}
+  ), table_numbers(value) AS (
+    VALUES(1)
+    UNION ALL SELECT value + 1 FROM table_numbers WHERE value < ${FIXTURE.tablesPerSheet}
+  ), completion_numbers(value) AS (
+    VALUES(0)
+    UNION ALL SELECT value + 1 FROM completion_numbers WHERE value < ${completionsPerTable - 1}
+  )
+  INSERT INTO board_cell_completions (
+    id, user_id, table_id, row_item_id, column_item_id, period_key, completed
+  )
+  SELECT 'completion-' || sheet_numbers.value || '-' || table_numbers.value || '-' || completion_numbers.value,
+         ${sqlLiteral(USER_ID)},
+         'table-' || sheet_numbers.value || '-' || table_numbers.value,
+         'row-' || sheet_numbers.value || '-' || table_numbers.value || '-' ||
+           (CAST(((completion_numbers.value * 97) % ${CELLS_PER_TABLE}) / ${FIXTURE.columnsPerTable} AS INTEGER) + 1),
+         'column-' || sheet_numbers.value || '-' || table_numbers.value || '-' ||
+           (((completion_numbers.value * 97) % ${CELLS_PER_TABLE}) % ${FIXTURE.columnsPerTable} + 1),
+         ${sqlLiteral(FIXTURE_PERIOD_KEY)},
+         CASE WHEN completion_numbers.value % 3 = 0 THEN 0 ELSE 1 END
+  FROM sheet_numbers CROSS JOIN table_numbers CROSS JOIN completion_numbers`;
+}
+
+async function replaceCompletions(worker, completionsPerTable) {
+  await executeWorkerSql(worker, {
+    label: "Completion fixture reset",
+    sql: "DELETE FROM board_cell_completions WHERE user_id = ?",
+    bindings: [USER_ID],
+    method: "run",
+    allowWrites: true,
+    requireReadMeta: false
+  });
+  await executeWorkerSql(worker, {
+    label: "Completion fixture seed",
+    sql: completionFixtureSql(completionsPerTable),
+    method: "run",
+    allowWrites: true,
+    requireReadMeta: false
+  });
+  await executeWorkerSql(worker, {
+    label: "Completion fixture statistics",
+    sql: "ANALYZE board_cell_completions",
+    method: "run",
+    allowWrites: true,
+    requireReadMeta: false
+  });
+}
+
+async function verifyFixture(worker, completionsPerTable) {
   const expected = Array.from({ length: FIXTURE.sheetCount }, (_, index) => ({
     id: `sheet-${index + 1}`,
     tables: FIXTURE.tablesPerSheet,
     notes: FIXTURE.notesPerSheet,
     axis_items: FIXTURE.tablesPerSheet * (FIXTURE.rowsPerTable + FIXTURE.columnsPerTable),
     cell_states: FIXTURE.tablesPerSheet * FIXTURE.cellStatesPerTable,
-    completions: FIXTURE.tablesPerSheet * FIXTURE.completionsPerTable
+    completions: FIXTURE.tablesPerSheet * completionsPerTable
   }));
-  const result = await executeWorkerSql(worker, statement(
-    "Fixture shape verification",
-    `SELECT sheets.id,
-            (SELECT COUNT(*) FROM board_tables WHERE board_tables.sheet_id = sheets.id) AS tables,
-            (SELECT COUNT(*) FROM board_notes WHERE board_notes.sheet_id = sheets.id) AS notes,
-            (SELECT COUNT(*)
-             FROM board_axis_items
-             JOIN board_tables ON board_tables.id = board_axis_items.table_id
-             WHERE board_tables.sheet_id = sheets.id) AS axis_items,
-            (SELECT COUNT(*)
-             FROM board_cell_states
-             JOIN board_tables ON board_tables.id = board_cell_states.table_id
-             WHERE board_tables.sheet_id = sheets.id) AS cell_states,
-            (SELECT COUNT(*)
-             FROM board_cell_completions
-             JOIN board_tables ON board_tables.id = board_cell_completions.table_id
-             WHERE board_tables.sheet_id = sheets.id) AS completions
-     FROM sheets
-     WHERE sheets.user_id = ?
-     ORDER BY sheets.sort_order, sheets.name`,
-    [USER_ID]
-  ));
+  const result = await executeWorkerSql(worker, {
+    label: "Fixture shape verification",
+    sql: `SELECT sheets.id,
+                 (SELECT COUNT(*) FROM board_tables WHERE board_tables.sheet_id = sheets.id) AS tables,
+                 (SELECT COUNT(*) FROM board_notes WHERE board_notes.sheet_id = sheets.id) AS notes,
+                 (SELECT COUNT(*)
+                  FROM board_axis_items
+                  JOIN board_tables ON board_tables.id = board_axis_items.table_id
+                  WHERE board_tables.sheet_id = sheets.id) AS axis_items,
+                 (SELECT COUNT(*)
+                  FROM board_cell_states
+                  JOIN board_tables ON board_tables.id = board_cell_states.table_id
+                  WHERE board_tables.sheet_id = sheets.id) AS cell_states,
+                 (SELECT COUNT(*)
+                  FROM board_cell_completions
+                  JOIN board_tables ON board_tables.id = board_cell_completions.table_id
+                  WHERE board_tables.sheet_id = sheets.id) AS completions
+          FROM sheets
+          WHERE sheets.user_id = ?
+          ORDER BY sheets.sort_order, sheets.name`,
+    bindings: [USER_ID]
+  });
   assert.deepEqual(result.results, expected, "Fixture must be even across exactly three sheets");
   return {
-    sheetCount: FIXTURE.sheetCount,
+    completionDensityPercent: Math.round((completionsPerTable / CELLS_PER_TABLE) * 100),
+    cellsPerTable: CELLS_PER_TABLE,
+    completionsPerTable,
     perSheet: {
       tables: expected[0].tables,
       notes: expected[0].notes,
       axisItems: expected[0].axis_items,
       cellStates: expected[0].cell_states,
       completions: expected[0].completions
-    },
-    totals: {
-      tables: expected[0].tables * FIXTURE.sheetCount,
-      notes: expected[0].notes * FIXTURE.sheetCount,
-      axisItems: expected[0].axis_items * FIXTURE.sheetCount,
-      cellStates: expected[0].cell_states * FIXTURE.sheetCount,
-      completions: expected[0].completions * FIXTURE.sheetCount
     }
   };
 }
 
-function assertBudgets(establishedBootstrap, legacyFullBoard, noChangeVersionCheck) {
+async function measurePath(worker, pathName, operation) {
+  const instrumented = createInstrumentedEnv(worker, pathName);
+  const value = await withFixedClock(() => operation(instrumented.env));
+  return { value, metrics: instrumented.summarize() };
+}
+
+async function measureEstablishedBootstrap(worker, loaders, completionsPerTable) {
+  const measured = await measurePath(worker, "establishedBootstrap", async (env) => {
+    const user = await loaders.findUserBySessionToken(env, SESSION_TOKEN);
+    assert.equal(user?.id, USER_ID, "Production auth lookup did not resolve the fixture user");
+    return loaders.loadBoardBootstrap(env, USER_ID, ACTIVE_SHEET_ID);
+  });
+  assert.equal(measured.value.activeSheet.sheet.id, ACTIVE_SHEET_ID);
+  assert.equal(measured.value.activeSheet.tables.length, FIXTURE.tablesPerSheet);
+  assert.equal(measured.value.activeSheet.completions.length, FIXTURE.tablesPerSheet * completionsPerTable);
   assert.ok(
-    establishedBootstrap.queryCount <= BUDGETS.establishedBootstrapQueriesIncludingAuth,
-    `Established bootstrap used ${establishedBootstrap.queryCount} D1 queries including auth-equivalent lookup; budget is ${BUDGETS.establishedBootstrapQueriesIncludingAuth}`
+    measured.value.activeSheet.completions.every((completion) => (
+      completion.table_id.startsWith("table-1-") &&
+      completion.period_key === FIXTURE_PERIOD_KEY
+    )),
+    "Production bootstrap returned a completion outside the owned active tables or current period"
   );
   assert.equal(
-    noChangeVersionCheck.queryCount,
-    BUDGETS.noChangeVersionSqlStatements,
-    `No-change version check used ${noChangeVersionCheck.queryCount} SQL statements; budget is ${BUDGETS.noChangeVersionSqlStatements}`
-  );
-  const rowsReadReductionPercent = percentReduction(legacyFullBoard.rowsRead, establishedBootstrap.rowsRead);
-  assert.ok(
-    rowsReadReductionPercent >= BUDGETS.activeRowsReadReductionPercent,
-    `Active-sheet rows_read reduction was ${rounded(rowsReadReductionPercent)}%; budget is at least ${BUDGETS.activeRowsReadReductionPercent}% (active ${establishedBootstrap.rowsRead}, legacy ${legacyFullBoard.rowsRead}). Active statements: ${JSON.stringify(establishedBootstrap.statements)}. Legacy statements: ${JSON.stringify(legacyFullBoard.statements)}`
+    measured.value.activeSheet.periodFingerprint,
+    FIXTURE_PERIOD_KEY,
+    "Production bootstrap did not derive the fixture's current period key from its valid ResetRule"
   );
   return {
+    ...measured.metrics,
+    periodFingerprint: measured.value.activeSheet.periodFingerprint
+  };
+}
+
+async function measureLegacyFullBoard(worker, loaders, completionsPerTable) {
+  const measured = await measurePath(worker, "legacyFullBoard", async (env) => {
+    const user = await loaders.findUserBySessionToken(env, SESSION_TOKEN);
+    assert.equal(user?.id, USER_ID, "Production auth lookup did not resolve the fixture user");
+    return loaders.loadBoard(env, USER_ID);
+  });
+  assert.equal(measured.value.sheets.length, FIXTURE.sheetCount);
+  assert.equal(measured.value.tables.length, FIXTURE.sheetCount * FIXTURE.tablesPerSheet);
+  assert.equal(
+    measured.value.completions.length,
+    FIXTURE.sheetCount * FIXTURE.tablesPerSheet * completionsPerTable
+  );
+  assert.ok(
+    measured.value.completions.every((completion) => completion.period_key === FIXTURE_PERIOD_KEY),
+    "Production legacy loader returned a completion outside the fixed current period"
+  );
+  return measured.metrics;
+}
+
+async function measureVersionCheck(worker, loaders) {
+  const measured = await measurePath(worker, "noChangeVersionCheck", (env) => (
+    loaders.loadBoardVersionSummary(env, USER_ID)
+  ));
+  assert.equal(measured.value.sheets.length, FIXTURE.sheetCount);
+  return measured.metrics;
+}
+
+function percentReduction(baseline, reduced) {
+  assert.ok(baseline > 0, "Cannot calculate reduction from a zero baseline");
+  return ((baseline - reduced) / baseline) * 100;
+}
+
+function rounded(value) {
+  return Number(value.toFixed(2));
+}
+
+function assertDensityBudgets(densityPercent, establishedBootstrap, legacyFullBoard) {
+  assert.ok(
+    establishedBootstrap.queryCount <= BUDGETS.establishedBootstrapQueriesIncludingAuthMax,
+    `${densityPercent}% density established bootstrap used ${establishedBootstrap.queryCount} queries including auth; ` +
+    `budget is <= ${BUDGETS.establishedBootstrapQueriesIncludingAuthMax}`
+  );
+  assert.equal(
+    legacyFullBoard.queryCount,
+    BUDGETS.legacyFullBoardQueriesIncludingAuthAndPreflight,
+    `${densityPercent}% density legacy load used ${legacyFullBoard.queryCount} queries including auth and preflight; ` +
+    `expected ${BUDGETS.legacyFullBoardQueriesIncludingAuthAndPreflight}`
+  );
+  assert.equal(
+    legacyFullBoard.statements.filter((entry) => entry.kind === "ensureDefaultBoardPreflight").length,
+    BUDGETS.legacyEnsureDefaultBoardPreflightStatements,
+    `${densityPercent}% density legacy measurement did not naturally execute ensureDefaultBoard preflight exactly once`
+  );
+  assert.equal(
+    establishedBootstrap.completion.queryCount,
+    BUDGETS.activeCompletionSqlStatements,
+    "Active completion query count drifted"
+  );
+  assert.equal(
+    legacyFullBoard.completion.queryCount,
+    BUDGETS.legacyCompletionSqlStatements,
+    "Legacy completion query count drifted"
+  );
+
+  const rowsReadReduction = percentReduction(legacyFullBoard.rowsRead, establishedBootstrap.rowsRead);
+  assert.ok(
+    rowsReadReduction >= BUDGETS.activeRowsReadReductionPercentMin,
+    `${densityPercent}% density active rows_read reduction was ${rounded(rowsReadReduction)}%; ` +
+    `budget is >= ${BUDGETS.activeRowsReadReductionPercentMin}%. Active: ${JSON.stringify(establishedBootstrap)} ` +
+    `Legacy: ${JSON.stringify(legacyFullBoard)}`
+  );
+
+  const completionRowsReadReduction = percentReduction(
+    legacyFullBoard.completion.rowsRead,
+    establishedBootstrap.completion.rowsRead
+  );
+  if (BUDGETS.activeCompletionRowsReadMustNotExceedLegacy) {
+    assert.ok(
+      establishedBootstrap.completion.rowsRead <= legacyFullBoard.completion.rowsRead,
+      `${densityPercent}% density active completion rows_read regressed: ` +
+      `${establishedBootstrap.completion.rowsRead} active > ${legacyFullBoard.completion.rowsRead} legacy`
+    );
+  }
+  assert.ok(
+    completionRowsReadReduction >= BUDGETS.activeCompletionRowsReadReductionPercentMin,
+    `${densityPercent}% density active completion rows_read reduction was ${rounded(completionRowsReadReduction)}%; ` +
+    `budget is >= ${BUDGETS.activeCompletionRowsReadReductionPercentMin}% ` +
+    `(active ${establishedBootstrap.completion.rowsRead}, legacy ${legacyFullBoard.completion.rowsRead})`
+  );
+
+  return {
     rowsRead: legacyFullBoard.rowsRead - establishedBootstrap.rowsRead,
-    rowsReadPercent: rounded(rowsReadReductionPercent),
+    rowsReadPercent: rounded(rowsReadReduction),
     resultBytes: legacyFullBoard.resultBytes - establishedBootstrap.resultBytes,
-    resultBytesPercent: rounded(percentReduction(legacyFullBoard.resultBytes, establishedBootstrap.resultBytes))
+    resultBytesPercent: rounded(percentReduction(legacyFullBoard.resultBytes, establishedBootstrap.resultBytes)),
+    completionRowsRead: legacyFullBoard.completion.rowsRead - establishedBootstrap.completion.rowsRead,
+    completionRowsReadPercent: rounded(completionRowsReadReduction),
+    completionResultBytes: legacyFullBoard.completion.resultBytes - establishedBootstrap.completion.resultBytes,
+    completionResultBytesPercent: rounded(percentReduction(
+      legacyFullBoard.completion.resultBytes,
+      establishedBootstrap.completion.resultBytes
+    ))
+  };
+}
+
+async function measureDensity(worker, loaders, densityPercent) {
+  const completionsPerTable = Math.round((CELLS_PER_TABLE * densityPercent) / 100);
+  assert.equal(
+    completionsPerTable / CELLS_PER_TABLE,
+    densityPercent / 100,
+    `${densityPercent}% must produce an exact integer completion count`
+  );
+  await replaceCompletions(worker, completionsPerTable);
+  const fixture = await verifyFixture(worker, completionsPerTable);
+  const establishedBootstrap = await measureEstablishedBootstrap(worker, loaders, completionsPerTable);
+  const legacyFullBoard = await measureLegacyFullBoard(worker, loaders, completionsPerTable);
+  const savings = assertDensityBudgets(densityPercent, establishedBootstrap, legacyFullBoard);
+  return {
+    densityPercent,
+    fixture,
+    establishedBootstrap,
+    legacyFullBoard,
+    savings
   };
 }
 
@@ -1043,39 +1149,70 @@ function formatError(error) {
   if (error instanceof AggregateError) {
     return `${error.message}\n${error.errors.map((entry) => formatError(entry)).join("\n")}`;
   }
-  if (error instanceof Error) return error.stack ?? error.message;
+  if (error instanceof Error) {
+    const cause = error.cause ? `\nCaused by: ${formatError(error.cause)}` : "";
+    return `${error.stack ?? error.message}${cause}`;
+  }
   return String(error);
 }
 
 let temporaryDirectory;
 let worker;
+let loaders;
 let summary;
 let measurementError;
 try {
-  await assertSourceLinkedSql();
   temporaryDirectory = await mkdtemp(join(tmpdir(), "riceark-board-read-measure-"));
   const stateDirectory = join(temporaryDirectory, "state");
   const d1Config = await readLocalD1Config();
   await applyMigrations(stateDirectory, d1Config.databaseName);
   await seedFixture(temporaryDirectory, stateDirectory, d1Config.databaseName);
   worker = await startMeasurementWorker(temporaryDirectory, stateDirectory, d1Config);
-  const fixture = await verifyFixture(worker);
-  const establishedBootstrap = await measureStatements(worker, ESTABLISHED_BOOTSTRAP_STATEMENTS);
-  const legacyFullBoard = await measureStatements(worker, LEGACY_FULL_BOARD_STATEMENTS);
-  const noChangeVersionCheck = await measureStatements(worker, NO_CHANGE_VERSION_STATEMENTS);
-  const savings = assertBudgets(establishedBootstrap, legacyFullBoard, noChangeVersionCheck);
+  loaders = await loadProductionLoaders();
+
+  const densitySweep = [];
+  for (const densityPercent of COMPLETION_DENSITY_PERCENTAGES) {
+    densitySweep.push(await measureDensity(worker, loaders, densityPercent));
+  }
+  const productionPeriodFingerprints = new Set(
+    densitySweep.map((entry) => entry.establishedBootstrap.periodFingerprint)
+  );
+  assert.deepEqual(
+    [...productionPeriodFingerprints],
+    [FIXTURE_PERIOD_KEY],
+    "Production loaders derived inconsistent period fingerprints across the density sweep"
+  );
+  const noChangeVersionCheck = await measureVersionCheck(worker, loaders);
+  assert.equal(
+    noChangeVersionCheck.queryCount,
+    BUDGETS.noChangeVersionSqlStatements,
+    `No-change version check used ${noChangeVersionCheck.queryCount} SQL statements; ` +
+    `budget is ${BUDGETS.noChangeVersionSqlStatements}`
+  );
+
   summary = {
-    adapter: "wrangler-local-worker-d1-binding",
-    fixture,
+    adapter: "actual-production-loaders-via-vite-and-wrangler-local-worker-d1",
+    sourceModules: SOURCE_MODULES,
+    fixedNow: FIXED_NOW,
+    fixtureResetRule: JSON.parse(RESET_RULE_JSON),
+    productionDerivedPeriodKey: [...productionPeriodFingerprints][0],
+    completionDensityPercentages: COMPLETION_DENSITY_PERCENTAGES,
     budgets: BUDGETS,
-    establishedBootstrap,
-    legacyFullBoard,
-    noChangeVersionCheck,
-    savings
+    densitySweep,
+    noChangeVersionCheck
   };
 } catch (error) {
   measurementError = error;
 } finally {
+  if (loaders?.vite) {
+    try {
+      await loaders.vite.close();
+    } catch (error) {
+      measurementError = measurementError
+        ? new AggregateError([measurementError, error], "Measurement and Vite cleanup both failed")
+        : error;
+    }
+  }
   if (worker) {
     try {
       await terminateChild(worker);
