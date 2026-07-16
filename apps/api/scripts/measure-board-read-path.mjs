@@ -498,7 +498,7 @@ function classifyStatement(pathName, sql, issuedKinds) {
     const manifestCount = issuedKinds.filter((kind) => kind.startsWith("manifest")).length;
     return manifestCount === 0 ? "manifest" : "manifestFence";
   }
-  if (normalized.includes("FROM board_cell_completions")) return "completions";
+  if (/FROM (?:main\.)?board_cell_completions\b/.test(normalized)) return "completions";
   if (normalized.includes("FROM board_cell_states")) return "cellStates";
   if (normalized.includes("FROM board_axis_items")) return "axisItems";
   if (normalized.includes("FROM board_notes")) return "notes";

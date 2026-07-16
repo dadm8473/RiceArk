@@ -394,14 +394,14 @@ async function loadBoardSheetAttempt(
     tableIds.length === 0 || periodKeys.length === 0
       ? { results: [] }
       : await env.DB.prepare(
-          `WITH board_cell_completions(table_id) AS MATERIALIZED (
+          `WITH requested_table_ids(table_id) AS MATERIALIZED (
              SELECT value FROM json_each(?3)
            ),
            owned_tables(id) AS MATERIALIZED (
              SELECT board_tables.id
-             FROM board_cell_completions
+             FROM requested_table_ids
              JOIN board_tables
-               ON board_tables.id = board_cell_completions.table_id
+               ON board_tables.id = requested_table_ids.table_id
              JOIN sheets
                ON sheets.id = board_tables.sheet_id
               AND sheets.user_id = ?1

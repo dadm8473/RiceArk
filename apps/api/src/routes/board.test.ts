@@ -1867,7 +1867,14 @@ describe("board owner read routes", () => {
                 sql.includes("FROM board_cell_completions\n           JOIN board_tables") ||
                 sql.includes("FROM main.board_cell_completions AS board_cell_completions")
               ) {
-                return { results: payload.completions };
+                expect(this.values).toHaveLength(4);
+                const tableIds = JSON.parse(String(this.values[2])) as string[];
+                const periodKeys = JSON.parse(String(this.values[3])) as string[];
+                return {
+                  results: payload.completions.filter((completion) => (
+                    tableIds.includes(completion.table_id) && periodKeys.includes(completion.period_key)
+                  ))
+                };
               }
 
               if (sql.startsWith("SELECT * FROM sheets")) {

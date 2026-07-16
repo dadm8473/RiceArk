@@ -815,13 +815,20 @@ describe("sheet-aware board reads", () => {
         "board_cell_states",
         "board_cell_completions"
       ]) {
-        const statement = statements.find((candidate) => candidate.sql.includes(`FROM ${tableName}`));
+        const fromClause = tableName === "board_cell_completions"
+          ? "FROM main.board_cell_completions AS board_cell_completions"
+          : `FROM ${tableName}`;
+        const statement = statements.find((candidate) => candidate.sql.includes(fromClause));
         expect(statement?.sql, tableName).toMatch(/JOIN\s+sheets/i);
         expect(statement?.values, tableName).toEqual(expect.arrayContaining(["user-1", "sheet-active"]));
       }
 
-      const completionStatements = statements.filter((statement) => statement.sql.includes("FROM board_cell_completions"));
+      const completionStatements = statements.filter((statement) => (
+        statement.sql.includes("FROM main.board_cell_completions AS board_cell_completions")
+      ));
       expect(completionStatements).toHaveLength(1);
+      expect(completionStatements[0]?.sql).toContain("WITH requested_table_ids(table_id) AS MATERIALIZED");
+      expect(completionStatements[0]?.sql).not.toContain("WITH board_cell_completions(table_id) AS MATERIALIZED");
       expect(completionStatements[0]?.sql).toMatch(
         /board_cell_completions\.table_id IN \(SELECT value FROM json_each\(\?3\)\)/
       );
@@ -1306,7 +1313,8 @@ describe("sheet-aware board reads", () => {
       statements.length = 0;
       await loadBoardSheet(env, "user-1", "sheet-active", new Date("2026-06-05T03:00:00.000Z"));
       const sheetCompletionRead = statements.find((statement) =>
-        statement.sql.includes("FROM board_cell_completions") && statement.sql.includes("sheets.id = ?2")
+        statement.sql.includes("FROM main.board_cell_completions AS board_cell_completions") &&
+        statement.sql.includes("sheets.id = ?2")
       );
       expect(sheetCompletionRead?.values.length).toBeLessThan(100);
       expect(sheetCompletionRead?.values).toHaveLength(4);
