@@ -187,6 +187,78 @@ describe("board data request budgets", () => {
     expect(api.calls).toEqual(["bootstrap:sheet-1", "sheet:sheet-2", "versions"]);
   });
 
+  it("retries a current selection once when a mutation acknowledgement overtakes its read", async () => {
+    const manifest = [manifestItem("sheet-1"), manifestItem("sheet-2")];
+    const { api, controller } = createHarness({ manifest });
+    await controller.bootstrap("sheet-1");
+    const firstRead = deferred<BoardSheetPayload>();
+    let attempts = 0;
+    api.getSheetImpl = async () => {
+      attempts += 1;
+      return attempts === 1 ? firstRead.promise : sheetPayload("sheet-2", 2);
+    };
+
+    const selecting = controller.selectSheet("sheet-2");
+    controller.applyMutationVersions({ sheets: [{ id: "sheet-2", version: 2 }] });
+    firstRead.resolve(sheetPayload("sheet-2", 1));
+    await selecting;
+
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "sheet:sheet-2",
+      "sheet:sheet-2"
+    ]);
+    const state = controller.snapshot();
+    const entry = getBoardSheetCacheEntry(state.cache, "user-1", "sheet-2");
+    expect(state).toMatchObject({ activeSheetId: "sheet-2", loading: false, error: null });
+    expect(entry).toMatchObject({ stale: false, payload: { sheet: { content_version: 2 } } });
+    expect(
+      isReusableBoardSheet(
+        entry,
+        state.manifest.find((sheet) => sheet.id === "sheet-2"),
+        new Date("2026-07-16T00:00:00.000Z")
+      )
+    ).toBe(true);
+  });
+
+  it("bounds a current selection to one retry and leaves an unusable result retryable", async () => {
+    const manifest = [manifestItem("sheet-1"), manifestItem("sheet-2")];
+    const { api, controller } = createHarness({ manifest });
+    await controller.bootstrap("sheet-1");
+    const firstRead = deferred<BoardSheetPayload>();
+    let attempts = 0;
+    api.getSheetImpl = async () => {
+      attempts += 1;
+      return attempts === 1 ? firstRead.promise : sheetPayload("sheet-2", 1);
+    };
+
+    const selecting = controller.selectSheet("sheet-2");
+    controller.applyMutationVersions({ sheets: [{ id: "sheet-2", version: 2 }] });
+    firstRead.resolve(sheetPayload("sheet-2", 1));
+    await expect(selecting).rejects.toThrow(/remained stale/);
+
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "sheet:sheet-2",
+      "sheet:sheet-2"
+    ]);
+    expect(controller.snapshot()).toMatchObject({
+      activeSheetId: "sheet-2",
+      loading: false,
+      error: expect.stringMatching(/remained stale/)
+    });
+    expect(getBoardSheetCacheEntry(controller.snapshot().cache, "user-1", "sheet-2")?.stale).toBe(true);
+
+    api.getSheetImpl = async () => sheetPayload("sheet-2", 2);
+    await controller.selectSheet("sheet-2");
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "sheet:sheet-2",
+      "sheet:sheet-2",
+      "sheet:sheet-2"
+    ]);
+  });
+
   it("fetches exactly the active sheet after its remote content version changes", async () => {
     const manifest = [manifestItem("sheet-1")];
     const { api, controller } = createHarness({ manifest });
@@ -396,6 +468,127 @@ describe("manifest fallback and period reconciliation", () => {
     expect(api.calls).toEqual(["bootstrap:sheet-1", "sheet:sheet-1"]);
     expect(getBoardSheetCacheEntry(controller.snapshot().cache, "user-1", "sheet-1")?.stale).toBe(false);
   });
+
+  it("retries an active period invalidation once when the first payload has the old fingerprint", async () => {
+    const { api, controller } = createHarness();
+    await controller.bootstrap("sheet-1");
+    let attempts = 0;
+    api.getSheetImpl = async () => {
+      attempts += 1;
+      return sheetPayload("sheet-1", 1, {
+        periodFingerprint: attempts === 1 ? "old-period" : ""
+      });
+    };
+
+    await controller.invalidatePeriod("sheet-1");
+
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "sheet:sheet-1",
+      "sheet:sheet-1"
+    ]);
+    expect(getBoardSheetCacheEntry(controller.snapshot().cache, "user-1", "sheet-1")).toMatchObject({
+      stale: false,
+      payload: { periodFingerprint: "" }
+    });
+  });
+});
+
+describe("remote summary application budgets", () => {
+  it("applies unchanged and inactive changes without polling or eager inactive reads", async () => {
+    const manifest = [manifestItem("sheet-1"), manifestItem("sheet-2")];
+    const { api, controller } = createHarness({ manifest });
+    await controller.bootstrap("sheet-1");
+    await controller.selectSheet("sheet-2");
+    await controller.selectSheet("sheet-1");
+
+    await controller.applyRemoteSummary(versionSummary(manifest), "broadcast");
+    expect(api.calls).toEqual(["bootstrap:sheet-1", "sheet:sheet-2"]);
+
+    await controller.applyRemoteSummary(
+      versionSummary([manifestItem("sheet-1"), manifestItem("sheet-2", 2)], {
+        manifestVersion: 2
+      }),
+      "broadcast"
+    );
+
+    expect(api.calls).toEqual(["bootstrap:sheet-1", "sheet:sheet-2"]);
+    expect(controller.snapshot()).toMatchObject({ activeSheetId: "sheet-1", loading: false, error: null });
+    expect(getBoardSheetCacheEntry(controller.snapshot().cache, "user-1", "sheet-2")?.stale).toBe(true);
+  });
+
+  it("loads exactly one changed active sheet without polling", async () => {
+    const { api, controller } = createHarness();
+    await controller.bootstrap("sheet-1");
+    api.getSheetImpl = async () => sheetPayload("sheet-1", 2);
+
+    await controller.applyRemoteSummary(
+      versionSummary([manifestItem("sheet-1", 2)], { manifestVersion: 2 }),
+      "cross-tab"
+    );
+
+    expect(api.calls).toEqual(["bootstrap:sheet-1", "sheet:sheet-1"]);
+    expect(getBoardSheetCacheEntry(controller.snapshot().cache, "user-1", "sheet-1")).toMatchObject({
+      stale: false,
+      payload: { sheet: { content_version: 2 } }
+    });
+  });
+
+  it("reconciles active deletion to an uncached fallback with one read and one effect", async () => {
+    const manifest = [manifestItem("sheet-1"), manifestItem("sheet-2", 1, { is_default: 0 })];
+    const { api, controller } = createHarness({ manifest });
+    await controller.bootstrap("sheet-1");
+    const effects: BoardDataEffect[] = [];
+    controller.subscribe((_state, effect) => {
+      if (effect) effects.push(effect);
+    });
+    api.getSheetImpl = async () => sheetPayload("sheet-2", 2, {
+      sheet: {
+        id: "sheet-2",
+        name: "sheet-2",
+        sort_order: 2,
+        is_default: 1,
+        content_version: 2
+      }
+    });
+
+    await controller.applyRemoteSummary(
+      versionSummary([manifestItem("sheet-2", 2, { is_default: 1 })], {
+        manifestVersion: 2
+      }),
+      "cross-tab"
+    );
+
+    expect(api.calls).toEqual(["bootstrap:sheet-1", "sheet:sheet-2"]);
+    expect(controller.snapshot()).toMatchObject({ activeSheetId: "sheet-2", loading: false, error: null });
+    expect(effects).toEqual([
+      { type: "replace-url-with-sheet", replaceUrlWithSheetId: "sheet-2" }
+    ]);
+  });
+
+  it("rejects duplicate ids without API calls or state contamination", async () => {
+    const { api, controller } = createHarness();
+    await controller.bootstrap("sheet-1");
+
+    await expect(
+      controller.applyRemoteSummary(
+        versionSummary([manifestItem("sheet-1"), manifestItem("sheet-1")]),
+        "cross-tab"
+      )
+    ).rejects.toThrow(/duplicate sheet id.*sheet-1/i);
+
+    expect(api.calls).toEqual(["bootstrap:sheet-1"]);
+    expect(controller.snapshot()).toMatchObject({
+      manifestVersion: 1,
+      manifest: [{ id: "sheet-1", version: 1 }],
+      loading: false,
+      error: expect.stringMatching(/duplicate sheet id/i)
+    });
+
+    await controller.applyRemoteSummary(versionSummary([manifestItem("sheet-1")]), "retry");
+    expect(api.calls).toEqual(["bootstrap:sheet-1"]);
+    expect(controller.snapshot()).toMatchObject({ loading: false, error: null });
+  });
 });
 
 describe("deduplication and retry", () => {
@@ -496,6 +689,29 @@ describe("race and identity protection", () => {
     expect(state).toMatchObject({ activeSheetId: "sheet-3", loading: false, error: null });
     expect(getBoardSheetCacheEntry(state.cache, "user-1", "sheet-2")).toBeDefined();
     expect(getBoardSheetCacheEntry(state.cache, "user-1", "sheet-3")).toBeDefined();
+  });
+
+  it("does not retry an unusable selection after it is superseded and becomes inactive", async () => {
+    const manifest = [manifestItem("sheet-1"), manifestItem("sheet-2"), manifestItem("sheet-3")];
+    const { api, controller } = createHarness({ manifest });
+    await controller.bootstrap("sheet-1");
+    const second = deferred<BoardSheetPayload>();
+    api.getSheetImpl = async (sheetId) =>
+      sheetId === "sheet-2" ? second.promise : sheetPayload("sheet-3");
+
+    const selectSecond = controller.selectSheet("sheet-2");
+    controller.applyMutationVersions({ sheets: [{ id: "sheet-2", version: 2 }] });
+    await controller.selectSheet("sheet-3");
+    second.resolve(sheetPayload("sheet-2", 1));
+    await selectSecond;
+
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "sheet:sheet-2",
+      "sheet:sheet-3"
+    ]);
+    expect(controller.snapshot()).toMatchObject({ activeSheetId: "sheet-3", loading: false, error: null });
+    expect(getBoardSheetCacheEntry(controller.snapshot().cache, "user-1", "sheet-2")?.stale).toBe(true);
   });
 
   it("refreshes a cached selection invalidated by a slower version response", async () => {
@@ -645,6 +861,199 @@ describe("race and identity protection", () => {
       manifestVersion: 2,
       manifest: [{ id: "sheet-1", version: 2 }]
     });
+  });
+
+  it("does not let an older poll cancel or reconcile over a newer in-flight bootstrap", async () => {
+    const manifest = [manifestItem("sheet-1"), manifestItem("sheet-2", 1, { is_default: 0 })];
+    const { api, controller } = createHarness({ manifest });
+    await controller.bootstrap("sheet-1");
+    const olderVersions = deferred<BoardVersionSummary>();
+    const newerBootstrap = deferred<BoardBootstrapPayload>();
+    const effects: BoardDataEffect[] = [];
+    controller.subscribe((_state, effect) => {
+      if (effect) effects.push(effect);
+    });
+    api.getVersionsImpl = () => olderVersions.promise;
+    const polling = controller.revalidate("poll");
+    api.getBootstrapImpl = () => newerBootstrap.promise;
+    const bootstrapping = controller.bootstrap("sheet-2");
+    const newerSettings = { ...defaultSettings, show_server_name: 1 };
+    const newerManifest = [manifestItem("sheet-2", 3, { is_default: 1 })];
+
+    olderVersions.resolve(
+      versionSummary([manifestItem("sheet-2", 2, { is_default: 1 })], { manifestVersion: 2 })
+    );
+    await polling;
+
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "versions",
+      "bootstrap:sheet-2"
+    ]);
+    expect(controller.snapshot()).toMatchObject({
+      activeSheetId: "sheet-1",
+      loading: true,
+      error: null
+    });
+    expect(effects).toEqual([]);
+
+    newerBootstrap.resolve(
+      bootstrapPayload("sheet-2", newerManifest, {
+        settings: newerSettings,
+        manifest: { version: 3, sheets: newerManifest },
+        activeSheet: sheetPayload("sheet-2", 3, {
+          sheet: {
+            id: "sheet-2",
+            name: "sheet-2",
+            sort_order: 2,
+            is_default: 1,
+            content_version: 3
+          }
+        })
+      })
+    );
+    await bootstrapping;
+
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "versions",
+      "bootstrap:sheet-2"
+    ]);
+    expect(controller.snapshot()).toMatchObject({
+      settings: newerSettings,
+      manifestVersion: 3,
+      manifest: newerManifest,
+      activeSheetId: "sheet-2",
+      loading: false,
+      error: null
+    });
+    expect(effects).toEqual([]);
+  });
+
+  it("keeps mutation lower bounds through bootstrap and refreshes its behind active payload", async () => {
+    const { api, controller } = createHarness();
+    await controller.bootstrap("sheet-1");
+    const pendingBootstrap = deferred<BoardBootstrapPayload>();
+    api.getBootstrapImpl = () => pendingBootstrap.promise;
+    api.getSheetImpl = async () => sheetPayload("sheet-1", 3);
+
+    const bootstrapping = controller.bootstrap("sheet-1");
+    controller.applyMutationVersions({
+      manifestVersion: 3,
+      sheets: [{ id: "sheet-1", version: 3 }]
+    });
+    const olderManifest = [manifestItem("sheet-1", 2)];
+    pendingBootstrap.resolve(
+      bootstrapPayload("sheet-1", olderManifest, {
+        manifest: { version: 2, sheets: olderManifest },
+        activeSheet: sheetPayload("sheet-1", 2)
+      })
+    );
+    await bootstrapping;
+
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "bootstrap:sheet-1",
+      "sheet:sheet-1"
+    ]);
+    const state = controller.snapshot();
+    const entry = getBoardSheetCacheEntry(state.cache, "user-1", "sheet-1");
+    expect(state).toMatchObject({
+      manifestVersion: 3,
+      manifest: [{ id: "sheet-1", version: 3 }],
+      activeSheetId: "sheet-1",
+      loading: false,
+      error: null
+    });
+    expect(entry).toMatchObject({ stale: false, payload: { sheet: { content_version: 3 } } });
+    expect(
+      isReusableBoardSheet(entry, state.manifest[0], new Date("2026-07-16T00:00:00.000Z"))
+    ).toBe(true);
+  });
+
+  it("fails a behind bootstrap after one refresh retry and leaves the same key retryable", async () => {
+    const { api, controller } = createHarness();
+    await controller.bootstrap("sheet-1");
+    const pendingBootstrap = deferred<BoardBootstrapPayload>();
+    api.getBootstrapImpl = () => pendingBootstrap.promise;
+    api.getSheetImpl = async () => sheetPayload("sheet-1", 2);
+
+    const bootstrapping = controller.bootstrap("sheet-1");
+    controller.applyMutationVersions({
+      manifestVersion: 3,
+      sheets: [{ id: "sheet-1", version: 3 }]
+    });
+    const olderManifest = [manifestItem("sheet-1", 2)];
+    pendingBootstrap.resolve(
+      bootstrapPayload("sheet-1", olderManifest, {
+        manifest: { version: 2, sheets: olderManifest },
+        activeSheet: sheetPayload("sheet-1", 2)
+      })
+    );
+
+    await expect(bootstrapping).rejects.toThrow(/remained stale/);
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "bootstrap:sheet-1",
+      "sheet:sheet-1",
+      "sheet:sheet-1"
+    ]);
+    expect(controller.snapshot()).toMatchObject({
+      manifestVersion: 3,
+      manifest: [{ id: "sheet-1", version: 3 }],
+      loading: false,
+      error: expect.stringMatching(/remained stale/)
+    });
+    expect(getBoardSheetCacheEntry(controller.snapshot().cache, "user-1", "sheet-1")?.stale).toBe(true);
+
+    const currentManifest = [manifestItem("sheet-1", 3)];
+    api.getBootstrapImpl = async () =>
+      bootstrapPayload("sheet-1", currentManifest, {
+        manifest: { version: 3, sheets: currentManifest },
+        activeSheet: sheetPayload("sheet-1", 3)
+      });
+    await controller.bootstrap("sheet-1");
+
+    expect(api.calls).toEqual([
+      "bootstrap:sheet-1",
+      "bootstrap:sheet-1",
+      "sheet:sheet-1",
+      "sheet:sheet-1",
+      "bootstrap:sheet-1"
+    ]);
+    expect(controller.snapshot()).toMatchObject({ loading: false, error: null });
+  });
+
+  it("rejects duplicate summary ids before contamination and clears the poll for retry", async () => {
+    const { api, controller } = createHarness();
+    await controller.bootstrap("sheet-1");
+    let attempts = 0;
+    api.getVersionsImpl = async () => {
+      attempts += 1;
+      return attempts === 1
+        ? versionSummary([manifestItem("sheet-1", 2), manifestItem("sheet-1", 3)], {
+            manifestVersion: 2
+          })
+        : versionSummary([manifestItem("sheet-1")]);
+    };
+
+    await expect(controller.revalidate("duplicate")).rejects.toThrow(/duplicate sheet id.*sheet-1/i);
+
+    expect(api.calls).toEqual(["bootstrap:sheet-1", "versions"]);
+    expect(controller.snapshot()).toMatchObject({
+      manifestVersion: 1,
+      manifest: [{ id: "sheet-1", version: 1 }],
+      loading: false,
+      error: expect.stringMatching(/duplicate sheet id/i)
+    });
+    expect(getBoardSheetCacheEntry(controller.snapshot().cache, "user-1", "sheet-1")).toMatchObject({
+      stale: false,
+      payload: { sheet: { content_version: 1 } }
+    });
+
+    await controller.revalidate("retry");
+    expect(api.calls).toEqual(["bootstrap:sheet-1", "versions", "versions"]);
+    expect(controller.snapshot()).toMatchObject({ loading: false, error: null });
   });
 
   it("does not let a slow version summary regress mutation-acknowledged manifest or sheet versions", async () => {
@@ -849,7 +1258,7 @@ describe("explicit invalidation and state ownership", () => {
     expect(getBoardSheetCacheEntry(controller.snapshot().cache, "user-1", "sheet-1")?.stale).toBe(true);
   });
 
-  it("returns independently cloned snapshots and owns inbound API payloads", async () => {
+  it("clones snapshot containers while reusing the controller-owned immutable payload", async () => {
     const api = new FakeBoardApi();
     const payload = bootstrapPayload();
     payload.activeSheet.tables.push({ id: "table-1" } as BoardSheetPayload["tables"][number]);
@@ -864,13 +1273,16 @@ describe("explicit invalidation and state ownership", () => {
     first.settings!.show_display_name = 0;
     first.manifest[0]!.name = "mutated snapshot";
     const firstEntry = getBoardSheetCacheEntry(first.cache, "user-1", "sheet-1")!;
-    firstEntry.payload.tables.length = 0;
     first.cache.clear();
 
     const second = controller.snapshot();
+    const secondEntry = getBoardSheetCacheEntry(second.cache, "user-1", "sheet-1")!;
     expect(second.settings?.show_display_name).toBe(1);
     expect(second.manifest[0]?.name).toBe("sheet-1");
-    expect(getBoardSheetCacheEntry(second.cache, "user-1", "sheet-1")?.payload.tables).toHaveLength(1);
+    expect(secondEntry.payload.tables).toHaveLength(1);
+    expect(firstEntry).not.toBe(secondEntry);
+    expect(firstEntry.payload).toBe(secondEntry.payload);
+    expect(firstEntry.payload).not.toBe(payload.activeSheet);
   });
 
   it("unsubscribes cleanly and dispose makes pending completions silent no-ops", async () => {
