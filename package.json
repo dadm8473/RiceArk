@@ -13,7 +13,8 @@
     "dev:web": "pnpm --filter @riceark/web dev",
     "db:migrate:local": "pnpm --filter @riceark/api db:migrate:local",
     "deploy:api": "pnpm --filter @riceark/api deploy",
-    "deploy:web": "pnpm --filter @riceark/web deploy"
+    "deploy:web": "pnpm --filter @riceark/web deploy",
+    "measure:board-reads": "pnpm --filter @riceark/api measure:board-reads"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260529.0",

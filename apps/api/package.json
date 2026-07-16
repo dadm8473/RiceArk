@@ -9,7 +9,8 @@
     "dev": "wrangler dev --local",
     "deploy": "wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply riceark --local",
-    "test:d1-sql": "node scripts/verify-board-bulk-sql.mjs"
+    "test:d1-sql": "node scripts/verify-board-bulk-sql.mjs",
+    "measure:board-reads": "node scripts/measure-board-read-path.mjs"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.5.0",
