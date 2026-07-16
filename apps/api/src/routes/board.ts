@@ -419,21 +419,21 @@ boardRoutes.delete("/board/share-favorites/:shareId", zValidator("param", boardS
 
 boardRoutes.get("/shared-rice-bins/:shareId", zValidator("param", boardShareIdParamSchema), async (c) => {
   const { shareId } = c.req.valid("param");
+  c.header("Cache-Control", "no-store");
   const board = await loadSharedBoard(c.env, shareId);
   if (!board) {
     throw new ApiError(404, "board_share_not_found", "공유 쌀통을 찾을 수 없습니다.");
   }
-  c.header("Cache-Control", "no-store");
   return c.json(board);
 });
 
 boardRoutes.get("/shared-rice-bins/:shareId/version", zValidator("param", boardShareIdParamSchema), async (c) => {
   const { shareId } = c.req.valid("param");
+  c.header("Cache-Control", "no-store");
   const versions = await loadSharedBoardVersionSummary(c.env, shareId);
   if (!versions) {
     throw new ApiError(404, "board_share_not_found", "공유 쌀통을 찾을 수 없습니다.");
   }
-  c.header("Cache-Control", "no-store");
   return c.json(versions);
 });
 

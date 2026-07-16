@@ -2335,7 +2335,7 @@ describe("board share routes", () => {
     const { env } = createShareRouteEnv();
     const response = await app.request(path, {}, env);
     expect(response.status).toBe(404);
-    expect(response.headers.get("cache-control")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
   it("lists owner shares and manages authenticated share favorites", async () => {
@@ -2484,6 +2484,6 @@ describe("board share routes", () => {
     const { env } = createShareRouteEnv();
     const response = await app.request(path, {}, env);
     expect(response.status).toBe(404);
-    expect(response.headers.get("cache-control")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 });
