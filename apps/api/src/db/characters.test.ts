@@ -146,6 +146,8 @@ function createCharacterDatabase(): DatabaseSync {
       display_name TEXT,
       item_level TEXT NOT NULL,
       combat_power TEXT,
+      item_level_pinned INTEGER NOT NULL DEFAULT 0 CHECK (item_level_pinned IN (0, 1)),
+      combat_power_pinned INTEGER NOT NULL DEFAULT 0 CHECK (combat_power_pinned IN (0, 1)),
       memo TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
       source TEXT NOT NULL CHECK (source IN ('lostark', 'manual')),
@@ -1159,7 +1161,12 @@ describe("character projection mutations", () => {
           combatPower: null,
           memo: "고정 파티"
         })
-      ).resolves.toEqual({ ok: true, versions: { sheets: [] } });
+      ).resolves.toEqual({
+        ok: true,
+        itemLevelPinned: false,
+        combatPowerPinned: false,
+        versions: { sheets: [] }
+      });
       expect(batches).toHaveLength(1);
       expect(database.prepare("SELECT name, class_name, display_name, item_level, memo FROM characters WHERE id = ?")
         .get("character-1")).toEqual({
@@ -1190,12 +1197,51 @@ describe("character projection mutations", () => {
         })
       ).resolves.toEqual({
         ok: true,
+        itemLevelPinned: false,
+        combatPowerPinned: false,
         versions: {
           sheets: [
             { id: "sheet-1", version: 1 },
             { id: "sheet-2", version: 1 }
           ]
         }
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("updates pinned values directly and returns the stored independent pin states", async () => {
+    const database = createCharacterDatabase();
+    try {
+      insertCharacter(database, "character-1");
+      database.prepare(
+        "UPDATE characters SET item_level_pinned = 1, combat_power_pinned = 1 WHERE id = ?"
+      ).run("character-1");
+      const { env } = createSqliteEnv(database);
+
+      await expect(
+        updateCharacterDetails(env, "user-1", "character-1", {
+          displayName: null,
+          itemLevel: "1,700.00",
+          combatPower: "3,000.00",
+          itemLevelPinned: true,
+          combatPowerPinned: false
+        })
+      ).resolves.toEqual({
+        ok: true,
+        itemLevelPinned: true,
+        combatPowerPinned: false,
+        versions: { sheets: [] }
+      });
+      expect(database.prepare(
+        `SELECT item_level, combat_power, item_level_pinned, combat_power_pinned
+         FROM characters WHERE id = ?`
+      ).get("character-1")).toEqual({
+        item_level: "1,700.00",
+        combat_power: "3,000.00",
+        item_level_pinned: 1,
+        combat_power_pinned: 0
       });
     } finally {
       database.close();

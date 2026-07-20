@@ -210,6 +210,40 @@ function buildCharacterMutationResult(
   return { ok: true, versions: buildBoardMutationVersions(sheetVersions) };
 }
 
+function buildCharacterDetailsMutationResult(
+  mutationResult: unknown,
+  versionResult: unknown,
+  characterId: string
+): BoardMutationResult<{
+  ok: true;
+  itemLevelPinned: boolean;
+  combatPowerPinned: boolean;
+}> | null {
+  const sheetVersions = returnedSheetVersions(versionResult);
+  if (sheetVersions === null) throw new Error("Character mutation batch returned malformed version rows");
+  const row = firstBatchRow<{
+    id?: unknown;
+    item_level_pinned?: unknown;
+    combat_power_pinned?: unknown;
+  }>(mutationResult);
+  if (row?.id !== characterId) {
+    if (sheetVersions.length > 0) throw new Error("Character mutation batch returned versions without a character mutation");
+    return null;
+  }
+  if (
+    (row.item_level_pinned !== 0 && row.item_level_pinned !== 1) ||
+    (row.combat_power_pinned !== 0 && row.combat_power_pinned !== 1)
+  ) {
+    throw new Error("Character details mutation returned malformed pin states");
+  }
+  return {
+    ok: true,
+    itemLevelPinned: row.item_level_pinned === 1,
+    combatPowerPinned: row.combat_power_pinned === 1,
+    versions: buildBoardMutationVersions(sheetVersions)
+  };
+}
+
 function parseStoredTimestamp(value: string | null | undefined): number | null {
   if (!value) return null;
   const parsed = Date.parse(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
@@ -613,9 +647,15 @@ export async function updateCharacterDetails(
     displayName: string | null;
     itemLevel: string | null;
     combatPower: string | null;
+    itemLevelPinned?: boolean | undefined;
+    combatPowerPinned?: boolean | undefined;
     memo?: string | null | undefined;
   }
-): Promise<BoardMutationResult | null> {
+): Promise<BoardMutationResult<{
+  ok: true;
+  itemLevelPinned: boolean;
+  combatPowerPinned: boolean;
+}> | null> {
   const [updatedResult, versionResult] = await env.DB.batch([
     env.DB.prepare(
       `UPDATE characters
@@ -625,10 +665,12 @@ export async function updateCharacterDetails(
            display_name = ?,
            item_level = ?,
            combat_power = ?,
+           item_level_pinned = CASE WHEN ? = 1 THEN ? ELSE item_level_pinned END,
+           combat_power_pinned = CASE WHEN ? = 1 THEN ? ELSE combat_power_pinned END,
            memo = CASE WHEN ? = 1 THEN ? ELSE memo END,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ? AND user_id = ? AND enabled = 1 AND deleted_at IS NULL
-       RETURNING id`
+       RETURNING id, item_level_pinned, combat_power_pinned`
     ).bind(
       input.name !== undefined ? 1 : 0,
       input.name ?? null,
@@ -639,6 +681,10 @@ export async function updateCharacterDetails(
       input.displayName,
       input.itemLevel ?? "",
       input.combatPower,
+      input.itemLevelPinned !== undefined ? 1 : 0,
+      input.itemLevelPinned ? 1 : 0,
+      input.combatPowerPinned !== undefined ? 1 : 0,
+      input.combatPowerPinned ? 1 : 0,
       input.memo !== undefined ? 1 : 0,
       input.memo ?? null,
       characterId,
@@ -646,7 +692,7 @@ export async function updateCharacterDetails(
     ),
     bumpBoardSheetVersionsForCharacterStatement(env, userId, characterId)
   ]);
-  return buildCharacterMutationResult(updatedResult, versionResult, characterId);
+  return buildCharacterDetailsMutationResult(updatedResult, versionResult, characterId);
 }
 
 export async function refreshCharactersFromLostArk(

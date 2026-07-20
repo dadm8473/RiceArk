@@ -60,6 +60,8 @@ export const characterDetailsSchema = z
     displayName: optionalEmojiCharacterText(20),
     itemLevel: optionalEditableCharacterStatText,
     combatPower: optionalEditableCharacterStatText,
+    itemLevelPinned: z.boolean().optional(),
+    combatPowerPinned: z.boolean().optional(),
     memo: safeText({ allowEmpty: true, allowEmoji: true, maxBytes: 1024, maxChars: 200, multiline: true }).nullable().optional()
   })
   .strict();
