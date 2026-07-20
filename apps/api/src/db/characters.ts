@@ -542,8 +542,14 @@ export async function saveSelectedCharacters(env: Env, userId: string, selected:
          ) = json_array_length(?2)
        ON CONFLICT(user_id, name, server_name)
        DO UPDATE SET class_name = excluded.class_name,
-                     item_level = excluded.item_level,
-                     combat_power = excluded.combat_power,
+                     item_level = CASE
+                       WHEN characters.item_level_pinned = 1 THEN characters.item_level
+                       ELSE excluded.item_level
+                     END,
+                     combat_power = CASE
+                       WHEN characters.combat_power_pinned = 1 THEN characters.combat_power
+                       ELSE excluded.combat_power
+                     END,
                      sort_order = excluded.sort_order,
                      source = 'lostark',
                      enabled = 1,

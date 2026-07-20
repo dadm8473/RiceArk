@@ -2565,8 +2565,14 @@ export async function importBoardCharactersForTable(
          )
        ON CONFLICT(user_id, name, server_name)
        DO UPDATE SET class_name = excluded.class_name,
-                     item_level = excluded.item_level,
-                     combat_power = excluded.combat_power,
+                     item_level = CASE
+                       WHEN characters.item_level_pinned = 1 THEN characters.item_level
+                       ELSE excluded.item_level
+                     END,
+                     combat_power = CASE
+                       WHEN characters.combat_power_pinned = 1 THEN characters.combat_power
+                       ELSE excluded.combat_power
+                     END,
                      sort_order = excluded.sort_order,
                      source = 'lostark',
                      enabled = 1,
@@ -2720,13 +2726,19 @@ export async function importBoardCharactersForTable(
          SELECT characters.id
          FROM input
          JOIN characters
-           ON characters.user_id = ?2
-          AND characters.name = input.name
-          AND characters.server_name = input.server_name
-          AND characters.class_name IS input.class_name
-          AND characters.item_level IS input.item_level
-          AND characters.combat_power IS input.combat_power
-          AND characters.source = 'lostark'
+          ON characters.user_id = ?2
+         AND characters.name = input.name
+         AND characters.server_name = input.server_name
+         AND characters.class_name IS input.class_name
+          AND (
+            characters.item_level_pinned = 1
+            OR characters.item_level IS input.item_level
+          )
+          AND (
+            characters.combat_power_pinned = 1
+            OR characters.combat_power IS input.combat_power
+          )
+         AND characters.source = 'lostark'
           AND characters.enabled = 1
           AND characters.deleted_at IS NULL
          JOIN board_axis_items

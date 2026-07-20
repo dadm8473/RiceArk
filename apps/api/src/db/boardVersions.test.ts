@@ -72,6 +72,8 @@ function createVersionDatabase(): DatabaseSync {
       class_name TEXT NOT NULL DEFAULT '',
       item_level TEXT NOT NULL DEFAULT '',
       combat_power TEXT,
+      item_level_pinned INTEGER NOT NULL DEFAULT 0 CHECK (item_level_pinned IN (0, 1)),
+      combat_power_pinned INTEGER NOT NULL DEFAULT 0 CHECK (combat_power_pinned IN (0, 1)),
       source TEXT NOT NULL DEFAULT 'lostark',
       enabled INTEGER NOT NULL DEFAULT 1,
       deleted_at TEXT
@@ -275,6 +277,39 @@ describe("board mutation versions", () => {
         { id: "sheet-1", version: 1 },
         { id: "sheet-2", version: 1 }
       ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("does not bump referenced sheets for ignored pinned import values", () => {
+    const database = createVersionDatabase();
+    try {
+      database.prepare("INSERT INTO sheets (id, user_id) VALUES (?, ?)").run("sheet-1", "user-1");
+      database.prepare("INSERT INTO board_tables (id, user_id, sheet_id) VALUES (?, ?, ?)")
+        .run("table-1", "user-1", "sheet-1");
+      database.prepare(
+        `INSERT INTO characters (
+           id, user_id, name, server_name, class_name, item_level, combat_power,
+           item_level_pinned, combat_power_pinned, source
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?)`
+      ).run("character-1", "user-1", "공유캐릭터", "아만", "브레이커", "1,640.00", "2,500.00", "lostark");
+      database.prepare(
+        "INSERT INTO board_axis_items (id, user_id, table_id, character_id) VALUES (?, ?, ?, ?)"
+      ).run("axis-1", "user-1", "table-1", "character-1");
+      const { env, statements } = createEnv();
+
+      bumpBoardSheetVersionsForCharacterImportStatement(env, "user-1", [{
+        name: "공유캐릭터",
+        serverName: "아만",
+        className: "브레이커",
+        itemLevel: "1,700.00",
+        combatPower: "3,000.00"
+      }]);
+
+      expect(executeStatement(database, statements[0]!)).toEqual([]);
+      expect(database.prepare("SELECT content_version FROM sheets WHERE id = ?").get("sheet-1"))
+        .toEqual({ content_version: 0 });
     } finally {
       database.close();
     }

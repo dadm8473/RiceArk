@@ -360,6 +360,70 @@ describe("set-based character arrays", () => {
     }
   });
 
+  it("preserves imported stats independently and versions only effective changes", async () => {
+    const database = createCharacterDatabase();
+    try {
+      insertCharacter(database, "character-1");
+      insertProjection(database, "character-1");
+      database.prepare("UPDATE characters SET item_level_pinned = 1 WHERE id = ?").run("character-1");
+      const { env } = createSqliteEnv(database);
+
+      await saveSelectedCharacters(env, "user-1", [{
+        name: "name-character-1",
+        serverName: "아만",
+        className: "브레이커",
+        itemLevel: "1,700.00",
+        combatPower: "3,000.00"
+      }]);
+      expect(database.prepare(
+        `SELECT item_level, combat_power, item_level_pinned, combat_power_pinned
+         FROM characters WHERE id = ?`
+      ).get("character-1")).toEqual({
+        item_level: "1,640.00",
+        combat_power: "3,000.00",
+        item_level_pinned: 1,
+        combat_power_pinned: 0
+      });
+
+      database.prepare(
+        "UPDATE characters SET item_level_pinned = 0, combat_power_pinned = 1 WHERE id = ?"
+      ).run("character-1");
+      await saveSelectedCharacters(env, "user-1", [{
+        name: "name-character-1",
+        serverName: "아만",
+        className: "브레이커",
+        itemLevel: "1,710.00",
+        combatPower: "3,100.00"
+      }]);
+      expect(database.prepare(
+        `SELECT item_level, combat_power, item_level_pinned, combat_power_pinned
+         FROM characters WHERE id = ?`
+      ).get("character-1")).toEqual({
+        item_level: "1,710.00",
+        combat_power: "3,000.00",
+        item_level_pinned: 0,
+        combat_power_pinned: 1
+      });
+
+      database.prepare(
+        "UPDATE characters SET item_level_pinned = 1, combat_power_pinned = 1 WHERE id = ?"
+      ).run("character-1");
+      await saveSelectedCharacters(env, "user-1", [{
+        name: "name-character-1",
+        serverName: "아만",
+        className: "브레이커",
+        itemLevel: "1,720.00",
+        combatPower: "3,200.00"
+      }]);
+      expect(database.prepare("SELECT content_version FROM sheets ORDER BY id").all()).toEqual([
+        { content_version: 2 },
+        { content_version: 2 }
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
   it("reorders 100 characters in one guarded JSON statement", async () => {
     const database = createCharacterDatabase();
     try {
