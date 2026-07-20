@@ -128,7 +128,14 @@ type RefreshBoardTableCharactersRequest = (
   }>
 ) => Promise<{
   failedCount: number;
-  failures?: Array<{ id: string; name?: string; reason: string }>;
+  failures?: Array<{
+    code?: string;
+    id: string;
+    name?: string;
+    reason: string;
+    retryAfterSeconds?: number;
+    status?: "manual" | "not_found" | "not_available" | "rate_limited" | "failed";
+  }>;
   refreshedCount: number;
   totalCount: number;
 }>;
@@ -1047,16 +1054,16 @@ describe("BoardOverview", () => {
     expect(getAddBoardCharacterRefreshFailureNames()({
       failedCount: 2,
       failures: [
-        { id: "character-1", reason: "17초 뒤 다시 시도해주세요." },
-        { id: "missing-character", reason: "저장된 캐릭터를 찾을 수 없습니다." }
+        { id: "character-1", reason: "17초 뒤 다시 시도해주세요.", retryAfterSeconds: 17, status: "rate_limited" },
+        { id: "missing-character", reason: "저장된 캐릭터를 찾을 수 없습니다.", status: "not_found" }
       ],
       refreshedCount: 1,
       totalCount: 3
     }, new Map([["character-1", "냠냠수빈"]]))).toEqual({
       failedCount: 2,
       failures: [
-        { id: "character-1", name: "냠냠수빈", reason: "17초 뒤 다시 시도해주세요." },
-        { id: "missing-character", name: "missing-character", reason: "저장된 캐릭터를 찾을 수 없습니다." }
+        { id: "character-1", name: "냠냠수빈", reason: "17초 뒤 다시 시도해주세요.", retryAfterSeconds: 17, status: "rate_limited" },
+        { id: "missing-character", name: "missing-character", reason: "저장된 캐릭터를 찾을 수 없습니다.", status: "not_found" }
       ],
       refreshedCount: 1,
       totalCount: 3
@@ -1225,11 +1232,11 @@ describe("BoardOverview", () => {
     ).resolves.toEqual({
       failedCount: 5,
       failures: [
-        { id: "manual", reason: "수동 캐릭터는 자동 갱신할 수 없습니다." },
-        { id: "missing", reason: "저장된 캐릭터를 찾을 수 없습니다." },
-        { id: "unavailable", reason: "로스트아크에서 캐릭터 정보를 찾지 못했습니다." },
-        { id: "rate", reason: "17초 뒤 다시 시도해주세요." },
-        { id: "failed", reason: "일시적인 API 오류입니다." }
+        { id: "manual", reason: "수동 캐릭터는 자동 갱신할 수 없습니다.", status: "manual" },
+        { id: "missing", reason: "저장된 캐릭터를 찾을 수 없습니다.", status: "not_found" },
+        { id: "unavailable", reason: "로스트아크에서 캐릭터 정보를 찾지 못했습니다.", status: "not_available" },
+        { id: "rate", reason: "17초 뒤 다시 시도해주세요.", retryAfterSeconds: 17, status: "rate_limited" },
+        { code: "lostark_api_error", id: "failed", reason: "일시적인 API 오류입니다.", status: "failed" }
       ],
       refreshedCount: 1,
       totalCount: 6

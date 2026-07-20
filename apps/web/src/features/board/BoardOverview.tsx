@@ -215,11 +215,13 @@ export interface TableCharacterRefreshSummary {
   totalCount: number;
 }
 
-export interface TableCharacterRefreshFailure {
-  id: string;
+export type TableCharacterRefreshFailure = Exclude<
+  BoardCharacterRefreshBatchItem,
+  BoardCharacterRefreshUpdatedResult
+> & {
   name?: string | undefined;
   reason: string;
-}
+};
 
 export function getBoardCharacterRefreshFailureReason(
   result: Exclude<BoardCharacterRefreshBatchItem, BoardCharacterRefreshUpdatedResult>
@@ -417,7 +419,7 @@ export async function refreshBoardTableCharactersRequest(
         result.status !== "updated"
     )
     .map((result) => ({
-      id: result.id,
+      ...result,
       reason: getBoardCharacterRefreshFailureReason(result)
     }));
   if (updated.length > 0) applyUpdated(updated);
