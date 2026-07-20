@@ -209,9 +209,35 @@ interface BoardCharacterRefreshBatchResponse {
 
 export interface TableCharacterRefreshSummary {
   failedCount: number;
+  failures?: TableCharacterRefreshFailure[] | undefined;
   message?: string | undefined;
   refreshedCount: number;
   totalCount: number;
+}
+
+export type TableCharacterRefreshFailure = Exclude<
+  BoardCharacterRefreshBatchItem,
+  BoardCharacterRefreshUpdatedResult
+> & {
+  name?: string | undefined;
+  reason: string;
+};
+
+export function getBoardCharacterRefreshFailureReason(
+  result: Exclude<BoardCharacterRefreshBatchItem, BoardCharacterRefreshUpdatedResult>
+): string {
+  switch (result.status) {
+    case "rate_limited":
+      return `${result.retryAfterSeconds}초 뒤 다시 시도해주세요.`;
+    case "not_available":
+      return "로스트아크에서 캐릭터 정보를 찾지 못했습니다.";
+    case "not_found":
+      return "저장된 캐릭터를 찾을 수 없습니다.";
+    case "manual":
+      return "수동 캐릭터는 자동 갱신할 수 없습니다.";
+    case "failed":
+      return "일시적인 API 오류입니다.";
+  }
 }
 
 interface BoardAxisSeparator {
@@ -387,9 +413,19 @@ export async function refreshBoardTableCharactersRequest(
   const updated = response.results.filter(
     (result): result is BoardCharacterRefreshUpdatedResult => result.status === "updated"
   );
+  const failures = response.results
+    .filter(
+      (result): result is Exclude<BoardCharacterRefreshBatchItem, BoardCharacterRefreshUpdatedResult> =>
+        result.status !== "updated"
+    )
+    .map((result) => ({
+      ...result,
+      reason: getBoardCharacterRefreshFailureReason(result)
+    }));
   if (updated.length > 0) applyUpdated(updated);
   return {
     failedCount: response.results.length - updated.length,
+    ...(failures.length > 0 ? { failures } : {}),
     refreshedCount: updated.length,
     totalCount: response.results.length
   };
@@ -962,6 +998,37 @@ export function getRefreshableBoardCharacterIds(tableId: string, items: BoardAxi
     ids.add(item.character_id);
   }
   return [...ids];
+}
+
+export function getBoardCharacterNamesById(tableId: string, items: BoardAxisItem[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const item of items) {
+    if (
+      item.table_id !== tableId ||
+      item.kind !== "character" ||
+      item.visible !== 1 ||
+      !item.character_id ||
+      names.has(item.character_id)
+    ) {
+      continue;
+    }
+    names.set(item.character_id, getBoardCharacterName(item));
+  }
+  return names;
+}
+
+export function addBoardCharacterRefreshFailureNames(
+  summary: TableCharacterRefreshSummary,
+  names: ReadonlyMap<string, string>
+): TableCharacterRefreshSummary {
+  if (!summary.failures) return summary;
+  return {
+    ...summary,
+    failures: summary.failures.map((failure) => ({
+      ...failure,
+      name: names.get(failure.id) ?? failure.id
+    }))
+  };
 }
 
 function getCharacterDisplaySettings(settings: BoardDisplaySettings): BoardCharacterDisplaySettings {
@@ -1758,6 +1825,7 @@ export function BoardOverview({
     }
 
     const characterIds = getRefreshableBoardCharacterIds(table.id, axisItems);
+    const characterNames = getBoardCharacterNamesById(table.id, axisItems);
     if (characterIds.length === 0) {
       return { failedCount: 0, refreshedCount: 0, totalCount: 0 };
     }
@@ -1776,9 +1844,12 @@ export function BoardOverview({
       setFormError(null);
 
       try {
-        const summary = await refreshBoardTableCharactersRequest(characterIds, (updated) => {
-          setAxisItems((current) => applyBoardCharacterRefreshResultsToAxisItems(current, updated));
-        });
+        const summary = addBoardCharacterRefreshFailureNames(
+          await refreshBoardTableCharactersRequest(characterIds, (updated) => {
+            setAxisItems((current) => applyBoardCharacterRefreshResultsToAxisItems(current, updated));
+          }),
+          characterNames
+        );
 
         if (summary.failedCount > 0) {
           setFormError(
@@ -3222,6 +3293,24 @@ export function BoardSheetSettingsModal({
   );
 }
 
+export function BoardCharacterRefreshFailureList({
+  failures
+}: {
+  failures: TableCharacterRefreshFailure[];
+}) {
+  if (failures.length === 0) return null;
+  return (
+    <ul className="board-character-refresh-failures" aria-label="업데이트 실패 캐릭터">
+      {failures.map((failure) => (
+        <li key={failure.id}>
+          <strong>{failure.name ?? failure.id}</strong>
+          <span>{failure.reason}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function BoardTableToolModal({
   isRefreshingCharacters,
   onClose,
@@ -3245,6 +3334,7 @@ export function BoardTableToolModal({
     tool === "characters" ? "캐릭터 추가/가져오기" : tool === "tasks" ? "숙제 추가" : "완료 열 추가";
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [refreshMessageTone, setRefreshMessageTone] = useState<"notice" | "error">("notice");
+  const [refreshFailures, setRefreshFailures] = useState<TableCharacterRefreshFailure[]>([]);
   const refreshLimitMessage = (refreshableCharacterCount ?? 0) > CHARACTER_REFRESH_BATCH_MAX_COUNT
     ? CHARACTER_REFRESH_BATCH_LIMIT_MESSAGE
     : null;
@@ -3253,6 +3343,7 @@ export function BoardTableToolModal({
     if (!onRefreshCharacters || isRefreshingCharacters || !refreshableCharacterCount || refreshLimitMessage) return;
 
     setRefreshMessage(null);
+    setRefreshFailures([]);
     try {
       const result = await onRefreshCharacters();
       if (result.message) {
@@ -3268,6 +3359,7 @@ export function BoardTableToolModal({
       if (result.failedCount > 0) {
         setRefreshMessageTone("error");
         setRefreshMessage(`${result.refreshedCount}명 업데이트, ${result.failedCount}명 실패했습니다.`);
+        setRefreshFailures(result.failures ?? []);
         return;
       }
       setRefreshMessageTone("notice");
@@ -3275,6 +3367,7 @@ export function BoardTableToolModal({
     } catch {
       setRefreshMessageTone("error");
       setRefreshMessage("캐릭터 정보를 업데이트하지 못했습니다. 잠시 후 다시 시도해주세요.");
+      setRefreshFailures([]);
     }
   }
 
@@ -3311,6 +3404,7 @@ export function BoardTableToolModal({
                     {refreshLimitMessage ?? refreshMessage}
                   </p>
                 ) : null}
+                <BoardCharacterRefreshFailureList failures={refreshFailures} />
               </section>
               <CharacterImport tableId={table.id} onSaved={onSaved} runMutation={runMutation} />
             </div>

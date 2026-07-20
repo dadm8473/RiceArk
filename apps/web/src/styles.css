@@ -171,6 +171,11 @@ body {
   color: #cbd5e1;
 }
 
+.app-shell[data-theme="dark"] .board-character-refresh-failures,
+.app-shell[data-theme="dark"] .board-character-refresh-failures li + li {
+  border-color: #334155;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -3250,6 +3255,42 @@ body {
   white-space: nowrap;
 }
 
+.board-character-refresh-failures {
+  grid-column: 1 / -1;
+  max-height: 156px;
+  margin: 0;
+  padding: 4px 0 0;
+  overflow-y: auto;
+  border-top: 1px solid #d8dee8;
+  list-style: none;
+}
+
+.board-character-refresh-failures li {
+  display: grid;
+  grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
+  gap: 8px;
+  padding: 5px 0;
+}
+
+.board-character-refresh-failures li + li {
+  border-top: 1px solid #e5e7eb;
+}
+
+.board-character-refresh-failures li strong,
+.board-character-refresh-failures li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.board-character-refresh-failures li strong {
+  font-size: 12px;
+}
+
+.board-character-refresh-failures li span {
+  font-weight: 600;
+}
+
 .tool-modal-header {
   position: sticky;
   top: 0;
@@ -4838,5 +4879,10 @@ button.task-preset-card {
   .compact-task-form select,
   .compact-task-form button {
     flex: 1 1 100%;
+  }
+
+  .board-character-refresh-failures li {
+    grid-template-columns: 1fr;
+    gap: 2px;
   }
 }

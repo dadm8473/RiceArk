@@ -126,7 +126,19 @@ type RefreshBoardTableCharactersRequest = (
     results: BoardCharacterRefreshBatchResult[];
     versions: { sheets: Array<{ id: string; version: number }> };
   }>
-) => Promise<{ failedCount: number; refreshedCount: number; totalCount: number }>;
+) => Promise<{
+  failedCount: number;
+  failures?: Array<{
+    code?: string;
+    id: string;
+    name?: string;
+    reason: string;
+    retryAfterSeconds?: number;
+    status?: "manual" | "not_found" | "not_available" | "rate_limited" | "failed";
+  }>;
+  refreshedCount: number;
+  totalCount: number;
+}>;
 
 function getSaveBoardTableSettingsRequest(): SaveBoardTableSettingsRequest {
   const candidate = (BoardOverviewModule as unknown as {
@@ -161,6 +173,43 @@ function getRefreshBoardTableCharactersRequest(): RefreshBoardTableCharactersReq
   }).refreshBoardTableCharactersRequest;
   expect(candidate).toBeTypeOf("function");
   if (!candidate) throw new Error("refreshBoardTableCharactersRequest is unavailable");
+  return candidate;
+}
+
+function getBoardCharacterNamesById(): (tableId: string, items: BoardAxisItem[]) => Map<string, string> {
+  const candidate = (BoardOverviewModule as unknown as {
+    getBoardCharacterNamesById?: (tableId: string, items: BoardAxisItem[]) => Map<string, string>;
+  }).getBoardCharacterNamesById;
+  expect(candidate).toBeTypeOf("function");
+  if (!candidate) throw new Error("getBoardCharacterNamesById is unavailable");
+  return candidate;
+}
+
+function getAddBoardCharacterRefreshFailureNames(): (
+  summary: Awaited<ReturnType<RefreshBoardTableCharactersRequest>>,
+  names: ReadonlyMap<string, string>
+) => Awaited<ReturnType<RefreshBoardTableCharactersRequest>> {
+  const candidate = (BoardOverviewModule as unknown as {
+    addBoardCharacterRefreshFailureNames?: (
+      summary: Awaited<ReturnType<RefreshBoardTableCharactersRequest>>,
+      names: ReadonlyMap<string, string>
+    ) => Awaited<ReturnType<RefreshBoardTableCharactersRequest>>;
+  }).addBoardCharacterRefreshFailureNames;
+  expect(candidate).toBeTypeOf("function");
+  if (!candidate) throw new Error("addBoardCharacterRefreshFailureNames is unavailable");
+  return candidate;
+}
+
+function getBoardCharacterRefreshFailureList(): (props: {
+  failures: Array<{ id: string; name?: string; reason: string }>;
+}) => ReactElement | null {
+  const candidate = (BoardOverviewModule as unknown as {
+    BoardCharacterRefreshFailureList?: (props: {
+      failures: Array<{ id: string; name?: string; reason: string }>;
+    }) => ReactElement | null;
+  }).BoardCharacterRefreshFailureList;
+  expect(candidate).toBeTypeOf("function");
+  if (!candidate) throw new Error("BoardCharacterRefreshFailureList is unavailable");
   return candidate;
 }
 
@@ -904,6 +953,33 @@ describe("BoardOverview", () => {
     expect(source).toContain("onRefreshCharacters={() => handleRefreshTableCharacters(activeTableTool.table)}");
   });
 
+  it("renders batch refresh failure names and reasons as a semantic list", () => {
+    const FailureList = getBoardCharacterRefreshFailureList();
+    const html = renderToStaticMarkup(createElement(FailureList, {
+      failures: [
+        { id: "character-1", name: "냠수나이스1", reason: "17초 뒤 다시 시도해주세요." },
+        { id: "character-2", name: "펄쩍수빈", reason: "일시적인 API 오류입니다." }
+      ]
+    }));
+
+    expect(html).toContain('class="board-character-refresh-failures"');
+    expect(html).toContain('aria-label="업데이트 실패 캐릭터"');
+    expect(html).toContain("냠수나이스1");
+    expect(html).toContain("17초 뒤 다시 시도해주세요.");
+    expect(html).toContain("펄쩍수빈");
+    expect(html).toContain("일시적인 API 오류입니다.");
+    expect(html.match(/<li/g)).toHaveLength(2);
+  });
+
+  it("wires the latest batch failures into the character update panel", () => {
+    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("const [refreshFailures, setRefreshFailures]");
+    expect(source).toContain("setRefreshFailures(result.failures ?? [])");
+    expect(source).toContain("<BoardCharacterRefreshFailureList failures={refreshFailures} />");
+    expect(source.match(/setRefreshFailures\(\[\]\)/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("collects only refreshable imported characters from the selected table", () => {
     expect(
       getRefreshableBoardCharacterIds("table-1", [
@@ -936,6 +1012,62 @@ describe("BoardOverview", () => {
         }
       ])
     ).toEqual(["character-1"]);
+  });
+
+  it("maps each current-table character id to one visible name", () => {
+    const items: BoardAxisItem[] = [
+      {
+        ...board.axisItems[1]!,
+        character_id: "character-1",
+        character_name: "냠냠수빈"
+      },
+      {
+        ...board.axisItems[1]!,
+        id: "character-1-reference",
+        character_id: "character-1",
+        character_name: "다른표시",
+        sort_order: 10
+      },
+      {
+        ...board.axisItems[1]!,
+        id: "character-2",
+        character_id: "character-2",
+        character_name: "펄쩍수빈",
+        sort_order: 20
+      },
+      {
+        ...board.axisItems[1]!,
+        id: "other-table-character",
+        table_id: "table-2",
+        character_id: "character-3",
+        character_name: "다른표캐릭터"
+      }
+    ];
+
+    expect(getBoardCharacterNamesById()("table-1", items)).toEqual(new Map([
+      ["character-1", "냠냠수빈"],
+      ["character-2", "펄쩍수빈"]
+    ]));
+  });
+
+  it("adds visible names to batch refresh failures and falls back to the id", () => {
+    expect(getAddBoardCharacterRefreshFailureNames()({
+      failedCount: 2,
+      failures: [
+        { id: "character-1", reason: "17초 뒤 다시 시도해주세요.", retryAfterSeconds: 17, status: "rate_limited" },
+        { id: "missing-character", reason: "저장된 캐릭터를 찾을 수 없습니다.", status: "not_found" }
+      ],
+      refreshedCount: 1,
+      totalCount: 3
+    }, new Map([["character-1", "냠냠수빈"]]))).toEqual({
+      failedCount: 2,
+      failures: [
+        { id: "character-1", name: "냠냠수빈", reason: "17초 뒤 다시 시도해주세요.", retryAfterSeconds: 17, status: "rate_limited" },
+        { id: "missing-character", name: "missing-character", reason: "저장된 캐릭터를 찾을 수 없습니다.", status: "not_found" }
+      ],
+      refreshedCount: 1,
+      totalCount: 3
+    });
   });
 
   it("refreshes 20 table characters with one batch request and applies every reference only after success", async () => {
@@ -1097,7 +1229,18 @@ describe("BoardOverview", () => {
         applyLocal,
         vi.fn(async () => ({ results, versions: { sheets: [] } }))
       )
-    ).resolves.toEqual({ failedCount: 5, refreshedCount: 1, totalCount: 6 });
+    ).resolves.toEqual({
+      failedCount: 5,
+      failures: [
+        { id: "manual", reason: "수동 캐릭터는 자동 갱신할 수 없습니다.", status: "manual" },
+        { id: "missing", reason: "저장된 캐릭터를 찾을 수 없습니다.", status: "not_found" },
+        { id: "unavailable", reason: "로스트아크에서 캐릭터 정보를 찾지 못했습니다.", status: "not_available" },
+        { id: "rate", reason: "17초 뒤 다시 시도해주세요.", retryAfterSeconds: 17, status: "rate_limited" },
+        { code: "lostark_api_error", id: "failed", reason: "일시적인 API 오류입니다.", status: "failed" }
+      ],
+      refreshedCount: 1,
+      totalCount: 6
+    });
     expect(applyLocal).toHaveBeenCalledWith([results[0]]);
   });
 
