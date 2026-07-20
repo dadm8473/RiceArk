@@ -62,6 +62,26 @@ describe("characterDetailsSchema", () => {
     });
   });
 
+  it("accepts independent boolean stat pins and rejects numeric pin values", () => {
+    expect(
+      characterDetailsSchema.safeParse({
+        displayName: null,
+        itemLevel: "1,700.00",
+        combatPower: "3,000.00",
+        itemLevelPinned: true,
+        combatPowerPinned: false
+      }).success
+    ).toBe(true);
+    expect(
+      characterDetailsSchema.safeParse({
+        displayName: null,
+        itemLevel: "1,700.00",
+        combatPower: null,
+        itemLevelPinned: 1
+      }).success
+    ).toBe(false);
+  });
+
   it("accepts blank optional manual details while keeping nickname required when supplied", () => {
     expect(
       characterDetailsSchema.parse({

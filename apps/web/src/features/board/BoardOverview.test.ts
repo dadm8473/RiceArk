@@ -6,6 +6,7 @@ import * as BoardOverviewModule from "./BoardOverview";
 import {
   applyBoardTableSettingsToAxisItems,
   applyBoardAxisItemSaveToAxisItems,
+  applyBoardCharacterSaveToAxisItems,
   BoardAxisItemEditModal,
   BoardCellMarkToolbar,
   BoardDisplayOptions,
@@ -972,7 +973,9 @@ describe("BoardOverview", () => {
         serverName: index % 2 === 0 ? "아만" : "카단",
         className: "환수사",
         itemLevel: "1,700.00",
-        combatPower: "3,000.00"
+        combatPower: "3,000.00",
+        itemLevelPinned: index % 2 === 0,
+        combatPowerPinned: index % 2 !== 0
       }
     }));
     const response = deferred<{
@@ -1006,7 +1009,9 @@ describe("BoardOverview", () => {
         character_name: "updated-0",
         character_class_name: "환수사",
         character_item_level: "1,700.00",
-        character_combat_power: "3,000.00"
+        character_combat_power: "3,000.00",
+        character_item_level_pinned: 1,
+        character_combat_power_pinned: 0
       }),
       expect.objectContaining({
         id: "axis-character-0-reference",
@@ -1014,6 +1019,38 @@ describe("BoardOverview", () => {
         character_name: "updated-0"
       })
     ]);
+  });
+
+  it("applies saved stat pins to every axis reference for the character", () => {
+    const references = [
+      { ...board.axisItems[1]!, character_id: "character-1" },
+      {
+        ...board.axisItems[1]!,
+        id: "character-reference",
+        table_id: "table-2",
+        character_id: "character-1"
+      }
+    ];
+
+    expect(applyBoardCharacterSaveToAxisItems(
+      references,
+      "character-1",
+      {
+        displayName: "서폿",
+        itemLevel: "1,700.00",
+        combatPower: "3,000.00",
+        itemLevelPinned: true,
+        combatPowerPinned: false
+      },
+      { itemLevelPinned: true, combatPowerPinned: false }
+    )).toEqual(references.map((item) => expect.objectContaining({
+      id: item.id,
+      character_display_name: "서폿",
+      character_item_level: "1,700.00",
+      character_combat_power: "3,000.00",
+      character_item_level_pinned: 1,
+      character_combat_power_pinned: 0
+    })));
   });
 
   it("keeps local character state untouched when the batch request fails", async () => {
@@ -2176,6 +2213,34 @@ describe("BoardOverview", () => {
     expect(html).not.toContain('value="브레이커"');
   });
 
+  it("renders independent accessible stat pin toggles in the character edit modal", () => {
+    const characterItem = {
+      ...board.axisItems[1]!,
+      character_source: "lostark",
+      character_item_level_pinned: 1 as const,
+      character_combat_power_pinned: 0 as const
+    };
+    const html = renderToStaticMarkup(
+      createElement(BoardAxisItemEditModal, {
+        item: characterItem,
+        settings: board.settings,
+        table: board.tables[0]!,
+        onClose: () => undefined,
+        onDelete: async () => undefined,
+        onSave: async () => undefined,
+        onCharacterSave: async () => undefined
+      })
+    );
+
+    expect(html).toContain('aria-label="레벨 자동 갱신 잠금"');
+    expect(html).toContain('title="레벨 자동 갱신 잠금"');
+    expect(html).toContain('aria-label="전투력 자동 갱신 잠금"');
+    expect(html).toContain('title="전투력 자동 갱신 잠금"');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('aria-pressed="false"');
+    expect(html.match(/class="character-stat-pin-button/g)).toHaveLength(2);
+  });
+
   it("keeps character axis sizing and display options in one layout row", () => {
     const characterItem = {
       ...board.axisItems[1]!,
@@ -2272,7 +2337,9 @@ describe("BoardOverview", () => {
           serverName: "",
           className: "",
           itemLevel: "",
-          combatPower: null
+          combatPower: null,
+          itemLevelPinned: false,
+          combatPowerPinned: false
         })
       })
     );
@@ -2577,6 +2644,19 @@ describe("BoardOverview", () => {
     expect(shouldSaveBoardCharacterDetails(characterItem, "냠1", "1,778.33", "2,549.41")).toBe(false);
     expect(shouldSaveBoardCharacterDetails(characterItem, "냠2", "1,778.33", "2,549.41")).toBe(true);
     expect(shouldSaveBoardCharacterDetails(characterItem, "냠1", "1,779.00", "2,549.41")).toBe(true);
+    expect(
+      shouldSaveBoardCharacterDetails(
+        characterItem,
+        "냠1",
+        "1,778.33",
+        "2,549.41",
+        undefined,
+        undefined,
+        undefined,
+        true,
+        false
+      )
+    ).toBe(true);
   });
 
   it("applies bulk table settings to character items even when size settings also apply", () => {

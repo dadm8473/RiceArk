@@ -56,7 +56,12 @@ describe("versioned character routes", () => {
   });
 
   it("returns versions for character details and display-name updates", async () => {
-    vi.mocked(updateCharacterDetails).mockResolvedValue({ ok: true, versions });
+    vi.mocked(updateCharacterDetails).mockResolvedValue({
+      ok: true,
+      itemLevelPinned: true,
+      combatPowerPinned: false,
+      versions
+    });
     vi.mocked(updateCharacterDisplayName).mockResolvedValue({ ok: true, versions });
 
     const detailsResponse = await app.request(
@@ -64,7 +69,13 @@ describe("versioned character routes", () => {
       {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ displayName: "레이드", itemLevel: "1,700.00", combatPower: "3,000.00" })
+        body: JSON.stringify({
+          displayName: "레이드",
+          itemLevel: "1,700.00",
+          combatPower: "3,000.00",
+          itemLevelPinned: true,
+          combatPowerPinned: false
+        })
       },
       env
     );
@@ -79,7 +90,19 @@ describe("versioned character routes", () => {
     );
 
     expect(detailsResponse.status).toBe(200);
-    expect(await detailsResponse.json()).toEqual({ ok: true, versions });
+    expect(await detailsResponse.json()).toEqual({
+      ok: true,
+      itemLevelPinned: true,
+      combatPowerPinned: false,
+      versions
+    });
+    expect(updateCharacterDetails).toHaveBeenCalledWith(env, "user-1", "character-1", {
+      displayName: "레이드",
+      itemLevel: "1,700.00",
+      combatPower: "3,000.00",
+      itemLevelPinned: true,
+      combatPowerPinned: false
+    });
     expect(displayNameResponse.status).toBe(200);
     expect(await displayNameResponse.json()).toEqual({ ok: true, versions });
   });
@@ -104,7 +127,9 @@ describe("versioned character routes", () => {
           serverName: "아만",
           className: "환수사",
           itemLevel: "1,700.00",
-          combatPower: "3,000.00"
+          combatPower: "3,000.00",
+          itemLevelPinned: true,
+          combatPowerPinned: false
         }
       }],
       versions
@@ -120,6 +145,8 @@ describe("versioned character routes", () => {
       className: "환수사",
       itemLevel: "1,700.00",
       combatPower: "3,000.00",
+      itemLevelPinned: true,
+      combatPowerPinned: false,
       versions
     });
   });

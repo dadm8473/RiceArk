@@ -349,6 +349,8 @@ function createBoardMutationDatabase(): DatabaseSync {
       class_name TEXT NOT NULL,
       item_level TEXT NOT NULL,
       combat_power TEXT,
+      item_level_pinned INTEGER NOT NULL DEFAULT 0 CHECK (item_level_pinned IN (0, 1)),
+      combat_power_pinned INTEGER NOT NULL DEFAULT 0 CHECK (combat_power_pinned IN (0, 1)),
       sort_order INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
       deleted_at TEXT,
@@ -2276,6 +2278,52 @@ describe("board db defaults", () => {
       ]);
       expect(database.prepare("SELECT class_name, item_level, combat_power FROM characters WHERE id = 'character-shared'").get())
         .toEqual({ class_name: "환수사", item_level: "1,700.00", combat_power: "3,000.00" });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("preserves pinned table-import stats without invalidating other sheets", async () => {
+    const database = createBoardMutationDatabase();
+    try {
+      seedSqliteBoard(database, ["sheet-1", "sheet-2"]);
+      database.prepare(
+        `INSERT INTO characters (
+           id, user_id, name, server_name, class_name, item_level, combat_power,
+           item_level_pinned, combat_power_pinned, source
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?)`
+      ).run("character-shared", "user-1", "공유캐릭터", "아만", "브레이커", "1,640.00", "2,500.00", "lostark");
+      database.prepare(
+        `INSERT INTO board_axis_items (
+           id, user_id, table_id, axis, kind, label, character_id, sort_order
+         ) VALUES (?, 'user-1', ?, 'column', 'character', '공유캐릭터', 'character-shared', 10),
+                  (?, 'user-1', ?, 'column', 'character', '공유캐릭터', 'character-shared', 0)`
+      ).run("axis-shared-1", "table-sheet-1", "axis-shared-2", "table-sheet-2");
+      const { env } = createSqliteD1Env(database);
+
+      await expect(importBoardCharactersForTable(env, "user-1", "table-sheet-1", [{
+        name: "공유캐릭터",
+        serverName: "아만",
+        className: "브레이커",
+        itemLevel: "1,700.00",
+        combatPower: "3,000.00"
+      }])).resolves.toEqual({
+        ok: true,
+        versions: { sheets: [{ id: "sheet-1", version: 1 }] }
+      });
+      expect(database.prepare(
+        `SELECT item_level, combat_power, item_level_pinned, combat_power_pinned
+         FROM characters WHERE id = 'character-shared'`
+      ).get()).toEqual({
+        item_level: "1,640.00",
+        combat_power: "2,500.00",
+        item_level_pinned: 1,
+        combat_power_pinned: 1
+      });
+      expect(database.prepare("SELECT content_version FROM sheets ORDER BY id").all()).toEqual([
+        { content_version: 1 },
+        { content_version: 0 }
+      ]);
     } finally {
       database.close();
     }

@@ -234,8 +234,14 @@ export function bumpBoardSheetVersionsForCharacterImportStatement(
        WHERE characters.user_id = ?1
          AND (
            characters.class_name IS NOT valid_input.class_name
-           OR characters.item_level IS NOT valid_input.item_level
-           OR characters.combat_power IS NOT valid_input.combat_power
+           OR (
+             characters.item_level_pinned = 0
+             AND characters.item_level IS NOT valid_input.item_level
+           )
+           OR (
+             characters.combat_power_pinned = 0
+             AND characters.combat_power IS NOT valid_input.combat_power
+           )
            OR characters.source <> 'lostark'
            OR characters.enabled <> 1
            OR characters.deleted_at IS NOT NULL
