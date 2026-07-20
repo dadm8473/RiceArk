@@ -133,6 +133,8 @@ function createBoardReadDatabase(path = ":memory:"): DatabaseSync {
       class_name TEXT NOT NULL DEFAULT '',
       item_level TEXT NOT NULL DEFAULT '',
       combat_power TEXT,
+      item_level_pinned INTEGER NOT NULL DEFAULT 0 CHECK (item_level_pinned IN (0, 1)),
+      combat_power_pinned INTEGER NOT NULL DEFAULT 0 CHECK (combat_power_pinned IN (0, 1)),
       source TEXT NOT NULL DEFAULT 'lostark',
       sort_order INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
@@ -414,10 +416,10 @@ function seedEstablishedBoard(database: DatabaseSync): void {
     .prepare(
       `INSERT INTO characters (
          id, user_id, name, display_name, server_name, class_name,
-         item_level, combat_power, source
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         item_level, combat_power, item_level_pinned, combat_power_pinned, source
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run("character-1", "user-1", "Character", "Display", "Server", "Class", "1700", "12345", "lostark");
+    .run("character-1", "user-1", "Character", "Display", "Server", "Class", "1700", "12345", 1, 0, "lostark");
 
   const dailyRule = '{"type":"daily","hour":6,"timezone":"Asia/Seoul"}';
   const weeklyRule = '{"type":"weekly","weekday":3,"hour":6,"timezone":"Asia/Seoul"}';
@@ -864,6 +866,11 @@ describe("sheet-aware board reads", () => {
         "axis-daily",
         "axis-daily-copy"
       ]);
+      expect((payload?.axisItems as Array<Record<string, unknown>>).find((row) => row.id === "axis-character"))
+        .toMatchObject({
+          character_item_level_pinned: 1,
+          character_combat_power_pinned: 0
+        });
       expect((payload?.cellStates as Array<{ row_item_id: string }>).map((row) => row.row_item_id).sort()).toEqual([
         "axis-daily",
         "axis-weekly"

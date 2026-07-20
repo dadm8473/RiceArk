@@ -33,6 +33,13 @@ describe("D1 schema", () => {
     expect(migration).toContain("combat_power TEXT");
   });
 
+  it("stores independently constrained character stat pins", () => {
+    expect(migration).toContain("item_level_pinned INTEGER NOT NULL DEFAULT 0");
+    expect(migration).toContain("item_level_pinned IN (0, 1)");
+    expect(migration).toContain("combat_power_pinned INTEGER NOT NULL DEFAULT 0");
+    expect(migration).toContain("combat_power_pinned IN (0, 1)");
+  });
+
   it("stores user-managed character memo text", () => {
     expect(migration).toContain("memo TEXT");
   });

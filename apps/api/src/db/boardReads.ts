@@ -103,6 +103,8 @@ interface BoardAxisItemRow {
   character_class_name: string | null;
   character_item_level: string | null;
   character_combat_power: string | null;
+  character_item_level_pinned: 0 | 1 | null;
+  character_combat_power_pinned: 0 | 1 | null;
   character_source: string | null;
 }
 
@@ -448,6 +450,8 @@ async function loadBoardSheetAttempt(
               characters.class_name AS character_class_name,
               characters.item_level AS character_item_level,
               characters.combat_power AS character_combat_power,
+              characters.item_level_pinned AS character_item_level_pinned,
+              characters.combat_power_pinned AS character_combat_power_pinned,
               characters.source AS character_source
        FROM board_axis_items
        JOIN board_tables

@@ -77,6 +77,8 @@ export interface BoardAxisItem {
   character_class_name?: string | null | undefined;
   character_item_level?: string | null | undefined;
   character_combat_power?: string | null | undefined;
+  character_item_level_pinned?: 0 | 1 | undefined;
+  character_combat_power_pinned?: 0 | 1 | undefined;
   character_source?: "lostark" | "manual" | string | null | undefined;
 }
 

@@ -1342,6 +1342,8 @@ export async function loadBoard(env: Env, userId: string): Promise<BoardPayload>
               characters.class_name AS character_class_name,
               characters.item_level AS character_item_level,
               characters.combat_power AS character_combat_power,
+              characters.item_level_pinned AS character_item_level_pinned,
+              characters.combat_power_pinned AS character_combat_power_pinned,
               characters.source AS character_source
        FROM board_axis_items
        LEFT JOIN characters
@@ -1580,6 +1582,8 @@ export async function loadSharedBoard(env: Env, shareId: string, now = new Date(
                   characters.class_name AS character_class_name,
                   characters.item_level AS character_item_level,
                   characters.combat_power AS character_combat_power,
+                  characters.item_level_pinned AS character_item_level_pinned,
+                  characters.combat_power_pinned AS character_combat_power_pinned,
                   characters.source AS character_source
            FROM board_axis_items
            LEFT JOIN characters
