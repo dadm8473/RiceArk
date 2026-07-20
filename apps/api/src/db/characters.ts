@@ -20,6 +20,8 @@ export interface CharacterSnapshot {
   className: string;
   itemLevel: string;
   combatPower: string | null;
+  itemLevelPinned: boolean;
+  combatPowerPinned: boolean;
 }
 
 export interface CharacterRefreshRateLimited {
@@ -87,6 +89,17 @@ interface CharacterRefreshEligibleCandidate {
 
 interface CharacterRefreshProfileSuccess extends CharacterRefreshEligibleCandidate {
   profile: ImportedCharacterCandidate;
+}
+
+interface CharacterRefreshAppliedRow {
+  id: string;
+  name: string;
+  server_name: string;
+  class_name: string;
+  item_level: string;
+  combat_power: string | null;
+  item_level_pinned: 0 | 1;
+  combat_power_pinned: 0 | 1;
 }
 
 function firstBatchRow<T>(result: unknown): T | null {
@@ -311,7 +324,7 @@ async function applyCharacterRefreshProfiles(
   env: Env,
   userId: string,
   successes: CharacterRefreshProfileSuccess[]
-): Promise<BoardSheetVersion[]> {
+): Promise<{ sheetVersions: BoardSheetVersion[]; characters: CharacterSnapshot[] }> {
   const profilesJson = JSON.stringify(successes.map(({ id, profile }) => ({
     id,
     className: profile.className,
@@ -345,8 +358,14 @@ async function applyCharacterRefreshProfiles(
            AND characters.source <> 'manual'
            AND (
              characters.class_name IS NOT valid_input.class_name
-             OR characters.item_level IS NOT valid_input.item_level
-             OR characters.combat_power IS NOT valid_input.combat_power
+             OR (
+               characters.item_level_pinned = 0
+               AND characters.item_level IS NOT valid_input.item_level
+             )
+             OR (
+               characters.combat_power_pinned = 0
+               AND characters.combat_power IS NOT valid_input.combat_power
+             )
              OR characters.source <> 'lostark'
            )
        ),
@@ -389,8 +408,14 @@ async function applyCharacterRefreshProfiles(
        )
        UPDATE characters
        SET class_name = (SELECT class_name FROM valid_input WHERE valid_input.id = characters.id),
-           item_level = (SELECT item_level FROM valid_input WHERE valid_input.id = characters.id),
-           combat_power = (SELECT combat_power FROM valid_input WHERE valid_input.id = characters.id),
+           item_level = CASE
+             WHEN item_level_pinned = 1 THEN item_level
+             ELSE (SELECT item_level FROM valid_input WHERE valid_input.id = characters.id)
+           END,
+           combat_power = CASE
+             WHEN combat_power_pinned = 1 THEN combat_power
+             ELSE (SELECT combat_power FROM valid_input WHERE valid_input.id = characters.id)
+           END,
            source = 'lostark',
            updated_at = CURRENT_TIMESTAMP
        WHERE characters.user_id = ?1
@@ -400,7 +425,8 @@ async function applyCharacterRefreshProfiles(
          AND characters.id IN (SELECT id FROM valid_input)
          AND (SELECT COUNT(*) FROM valid_input) = json_array_length(?2)
          AND (SELECT COUNT(DISTINCT id) FROM valid_input) = json_array_length(?2)
-       RETURNING id`
+       RETURNING id, name, server_name, class_name, item_level, combat_power,
+                 item_level_pinned, combat_power_pinned`
     ).bind(userId, profilesJson),
     env.DB.prepare(
       // The invalid JSON path is evaluated only on a count mismatch and gives this rollback guard a unique signature.
@@ -447,7 +473,38 @@ async function applyCharacterRefreshProfiles(
   if (guardIds === null || guardIds.length !== 0) {
     throw new Error("Character refresh batch returned an invalid exact-set guard result");
   }
-  return sheetVersions;
+  const updatedRows = updatedResult && typeof updatedResult === "object" && "results" in updatedResult
+    ? (updatedResult as { results?: unknown[] }).results
+    : undefined;
+  if (!Array.isArray(updatedRows)) {
+    throw new Error("Character refresh batch returned malformed character rows");
+  }
+  const characters = updatedRows.map((value): CharacterSnapshot => {
+    const row = value as Partial<CharacterRefreshAppliedRow>;
+    if (
+      typeof row.id !== "string" ||
+      typeof row.name !== "string" ||
+      typeof row.server_name !== "string" ||
+      typeof row.class_name !== "string" ||
+      typeof row.item_level !== "string" ||
+      (row.combat_power !== null && typeof row.combat_power !== "string") ||
+      (row.item_level_pinned !== 0 && row.item_level_pinned !== 1) ||
+      (row.combat_power_pinned !== 0 && row.combat_power_pinned !== 1)
+    ) {
+      throw new Error("Character refresh batch returned malformed character rows");
+    }
+    return {
+      id: row.id,
+      name: row.name,
+      serverName: row.server_name,
+      className: row.class_name,
+      itemLevel: row.item_level,
+      combatPower: row.combat_power,
+      itemLevelPinned: row.item_level_pinned === 1,
+      combatPowerPinned: row.combat_power_pinned === 1
+    };
+  });
+  return { sheetVersions, characters };
 }
 
 async function reloadEligibleCharacterRefreshProfiles(
@@ -578,7 +635,7 @@ export async function saveSelectedCharacters(env: Env, userId: string, selected:
 export async function createManualCharacter(
   env: Env,
   userId: string,
-  input: Omit<CharacterSnapshot, "id">
+  input: Omit<CharacterSnapshot, "id" | "itemLevelPinned" | "combatPowerPinned">
 ): Promise<{ id: string }> {
   const existing = await env.DB.prepare(
     `SELECT id
@@ -859,10 +916,13 @@ export async function refreshCharactersFromLostArk(
 
   let pendingSuccesses = successes;
   let appliedSuccesses: CharacterRefreshProfileSuccess[] = [];
+  let appliedCharacters = new Map<string, CharacterSnapshot>();
   let sheetVersions: BoardSheetVersion[] = [];
   for (let attempt = 0; attempt < CHARACTER_REFRESH_APPLY_MAX_ATTEMPTS && pendingSuccesses.length > 0; attempt += 1) {
     try {
-      sheetVersions = await applyCharacterRefreshProfiles(env, userId, pendingSuccesses);
+      const applied = await applyCharacterRefreshProfiles(env, userId, pendingSuccesses);
+      sheetVersions = applied.sheetVersions;
+      appliedCharacters = new Map(applied.characters.flatMap((character) => character.id ? [[character.id, character]] : []));
       appliedSuccesses = pendingSuccesses;
       break;
     } catch (error) {
@@ -882,17 +942,12 @@ export async function refreshCharactersFromLostArk(
     }
   }
   for (const success of appliedSuccesses) {
+    const character = appliedCharacters.get(success.id);
+    if (!character) throw new Error("Character refresh batch did not return every committed character");
     results[success.index] = {
       id: success.id,
       status: "updated",
-      character: {
-        id: success.id,
-        name: success.name,
-        serverName: success.serverName,
-        className: success.profile.className,
-        itemLevel: success.profile.itemLevel,
-        combatPower: success.profile.combatPower
-      }
+      character
     };
   }
 

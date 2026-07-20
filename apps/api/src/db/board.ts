@@ -374,7 +374,10 @@ export interface BoardCharacterSelectionInput {
   combatPower: string | null;
 }
 
-export type BoardManualCharacterInput = Omit<CharacterSnapshot, "id">;
+export type BoardManualCharacterInput = Omit<
+  CharacterSnapshot,
+  "id" | "itemLevelPinned" | "combatPowerPinned"
+>;
 
 export interface BoardTaskInput {
   name: string;

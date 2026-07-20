@@ -127,7 +127,9 @@ describe("versioned character routes", () => {
           serverName: "아만",
           className: "환수사",
           itemLevel: "1,700.00",
-          combatPower: "3,000.00"
+          combatPower: "3,000.00",
+          itemLevelPinned: true,
+          combatPowerPinned: false
         }
       }],
       versions
@@ -143,6 +145,8 @@ describe("versioned character routes", () => {
       className: "환수사",
       itemLevel: "1,700.00",
       combatPower: "3,000.00",
+      itemLevelPinned: true,
+      combatPowerPinned: false,
       versions
     });
   });
