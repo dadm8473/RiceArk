@@ -193,6 +193,19 @@ function getAddBoardCharacterRefreshFailureNames(): (
   return candidate;
 }
 
+function getBoardCharacterRefreshFailureList(): (props: {
+  failures: Array<{ id: string; name?: string; reason: string }>;
+}) => ReactElement | null {
+  const candidate = (BoardOverviewModule as unknown as {
+    BoardCharacterRefreshFailureList?: (props: {
+      failures: Array<{ id: string; name?: string; reason: string }>;
+    }) => ReactElement | null;
+  }).BoardCharacterRefreshFailureList;
+  expect(candidate).toBeTypeOf("function");
+  if (!candidate) throw new Error("BoardCharacterRefreshFailureList is unavailable");
+  return candidate;
+}
+
 type BoardSheetTabsComponent = (props: {
   activeSheetId: string | null;
   onSheetSelected: (sheetId: string) => void;
@@ -931,6 +944,33 @@ describe("BoardOverview", () => {
     expect(modalHtml).toContain("캐릭터 정보 일괄 업데이트");
     expect(modalHtml).toContain("가져온 캐릭터 1명");
     expect(source).toContain("onRefreshCharacters={() => handleRefreshTableCharacters(activeTableTool.table)}");
+  });
+
+  it("renders batch refresh failure names and reasons as a semantic list", () => {
+    const FailureList = getBoardCharacterRefreshFailureList();
+    const html = renderToStaticMarkup(createElement(FailureList, {
+      failures: [
+        { id: "character-1", name: "냠수나이스1", reason: "17초 뒤 다시 시도해주세요." },
+        { id: "character-2", name: "펄쩍수빈", reason: "일시적인 API 오류입니다." }
+      ]
+    }));
+
+    expect(html).toContain('class="board-character-refresh-failures"');
+    expect(html).toContain('aria-label="업데이트 실패 캐릭터"');
+    expect(html).toContain("냠수나이스1");
+    expect(html).toContain("17초 뒤 다시 시도해주세요.");
+    expect(html).toContain("펄쩍수빈");
+    expect(html).toContain("일시적인 API 오류입니다.");
+    expect(html.match(/<li/g)).toHaveLength(2);
+  });
+
+  it("wires the latest batch failures into the character update panel", () => {
+    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("const [refreshFailures, setRefreshFailures]");
+    expect(source).toContain("setRefreshFailures(result.failures ?? [])");
+    expect(source).toContain("<BoardCharacterRefreshFailureList failures={refreshFailures} />");
+    expect(source.match(/setRefreshFailures\(\[\]\)/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
   it("collects only refreshable imported characters from the selected table", () => {
