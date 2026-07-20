@@ -171,6 +171,13 @@ interface BoardCharacterSaveInput {
   displayName: string | null;
   itemLevel: string | null;
   combatPower: string | null;
+  itemLevelPinned: boolean;
+  combatPowerPinned: boolean;
+}
+
+interface BoardCharacterSaveResult {
+  itemLevelPinned: boolean;
+  combatPowerPinned: boolean;
 }
 
 interface BoardCharacterRefreshResult {
@@ -179,6 +186,8 @@ interface BoardCharacterRefreshResult {
   className: string;
   itemLevel: string;
   combatPower: string | null;
+  itemLevelPinned: boolean;
+  combatPowerPinned: boolean;
 }
 
 export type BoardCharacterRefreshUpdatedResult = {
@@ -327,10 +336,36 @@ export function applyBoardCharacterRefreshResultsToAxisItems(
           character_class_name: updated.className,
           character_item_level: updated.itemLevel,
           character_combat_power: updated.combatPower,
+          character_item_level_pinned: updated.itemLevelPinned ? 1 : 0,
+          character_combat_power_pinned: updated.combatPowerPinned ? 1 : 0,
           character_source: "lostark"
         }
       : item;
   });
+}
+
+export function applyBoardCharacterSaveToAxisItems(
+  items: BoardAxisItem[],
+  characterId: string,
+  input: BoardCharacterSaveInput,
+  result: BoardCharacterSaveResult
+): BoardAxisItem[] {
+  return items.map((item) =>
+    item.character_id === characterId
+      ? {
+          ...item,
+          label: input.name ?? item.label,
+          character_name: input.name ?? item.character_name,
+          character_server_name: input.serverName === undefined ? item.character_server_name : input.serverName,
+          character_class_name: input.className === undefined ? item.character_class_name : input.className,
+          character_display_name: input.displayName,
+          character_item_level: input.itemLevel,
+          character_combat_power: input.combatPower,
+          character_item_level_pinned: result.itemLevelPinned ? 1 : 0,
+          character_combat_power_pinned: result.combatPowerPinned ? 1 : 0
+        }
+      : item
+  );
 }
 
 export async function refreshBoardTableCharactersRequest(
@@ -1026,7 +1061,9 @@ export function shouldSaveBoardCharacterDetails(
   combatPower: string,
   name?: string,
   serverName?: string,
-  className?: string
+  className?: string,
+  itemLevelPinned = item.character_item_level_pinned === 1,
+  combatPowerPinned = item.character_combat_power_pinned === 1
 ): boolean {
   if (item.kind !== "character" || !item.character_id) return false;
 
@@ -1036,7 +1073,9 @@ export function shouldSaveBoardCharacterDetails(
     (item.character_source === "manual" && className !== undefined && className.trim() !== (item.character_class_name ?? "")) ||
     displayName.trim() !== (item.character_display_name ?? "") ||
     itemLevel.trim() !== (item.character_item_level ?? "") ||
-    combatPower.trim() !== (item.character_combat_power ?? "")
+    combatPower.trim() !== (item.character_combat_power ?? "") ||
+    itemLevelPinned !== (item.character_item_level_pinned === 1) ||
+    combatPowerPinned !== (item.character_combat_power_pinned === 1)
   );
 }
 
@@ -1683,23 +1722,11 @@ export function BoardOverview({
     characterId: string,
     input: BoardCharacterSaveInput
   ) {
-    await apiPatch("/api/characters/" + encodeURIComponent(characterId), input);
-    setAxisItems((current) =>
-      current.map((item) =>
-        item.character_id === characterId
-          ? {
-              ...item,
-              label: input.name ?? item.label,
-              character_name: input.name ?? item.character_name,
-              character_server_name: input.serverName === undefined ? item.character_server_name : input.serverName,
-              character_class_name: input.className === undefined ? item.character_class_name : input.className,
-              character_display_name: input.displayName,
-              character_item_level: input.itemLevel,
-              character_combat_power: input.combatPower
-            }
-          : item
-      )
+    const updated = await apiPatch<BoardCharacterSaveResult>(
+      "/api/characters/" + encodeURIComponent(characterId),
+      input
     );
+    setAxisItems((current) => applyBoardCharacterSaveToAxisItems(current, characterId, input, updated));
   }
 
   async function refreshBoardCharacter(characterId: string): Promise<BoardCharacterRefreshResult> {
@@ -1715,6 +1742,8 @@ export function BoardOverview({
               character_class_name: updated.className,
               character_item_level: updated.itemLevel,
               character_combat_power: updated.combatPower,
+              character_item_level_pinned: updated.itemLevelPinned ? 1 : 0,
+              character_combat_power_pinned: updated.combatPowerPinned ? 1 : 0,
               character_source: "lostark"
             }
           : item
@@ -5005,6 +5034,8 @@ export function BoardAxisItemEditModal({
   const [characterDisplayName, setCharacterDisplayName] = useState(item.character_display_name ?? "");
   const [characterItemLevel, setCharacterItemLevel] = useState(item.character_item_level ?? "");
   const [characterCombatPower, setCharacterCombatPower] = useState(item.character_combat_power ?? "");
+  const [characterItemLevelPinned, setCharacterItemLevelPinned] = useState(item.character_item_level_pinned === 1);
+  const [characterCombatPowerPinned, setCharacterCombatPowerPinned] = useState(item.character_combat_power_pinned === 1);
   const initialTaskColor = item.task_color ?? "#2563eb";
   const [taskColor, setTaskColor] = useState(initialTaskColor);
   const initialTaskResetType: BoardTaskResetType =
@@ -5058,7 +5089,9 @@ export function BoardAxisItemEditModal({
       characterCombatPower,
       isManualCharacterItem ? characterName : undefined,
       isManualCharacterItem ? characterServerName : undefined,
-      isManualCharacterItem ? characterClassName : undefined
+      isManualCharacterItem ? characterClassName : undefined,
+      characterItemLevelPinned,
+      characterCombatPowerPinned
     );
 
   useEffect(() => {
@@ -5083,7 +5116,9 @@ export function BoardAxisItemEditModal({
               className: isManualCharacterItem ? normalizedCharacterClassName : undefined,
               displayName: normalizedCharacterDisplayName ? normalizedCharacterDisplayName : null,
               itemLevel: normalizedCharacterItemLevel || null,
-              combatPower: normalizedCharacterCombatPower ? normalizedCharacterCombatPower : null
+              combatPower: normalizedCharacterCombatPower ? normalizedCharacterCombatPower : null,
+              itemLevelPinned: characterItemLevelPinned,
+              combatPowerPinned: characterCombatPowerPinned
             })
           : null,
         () => {
@@ -5135,6 +5170,8 @@ export function BoardAxisItemEditModal({
       setCharacterClassName(updated.className);
       setCharacterItemLevel(updated.itemLevel);
       setCharacterCombatPower(updated.combatPower ?? "");
+      setCharacterItemLevelPinned(updated.itemLevelPinned);
+      setCharacterCombatPowerPinned(updated.combatPowerPinned);
       setPending(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "캐릭터 정보를 갱신하지 못했습니다.");
@@ -5241,20 +5278,44 @@ export function BoardAxisItemEditModal({
               </label>
               <label>
                 레벨
-                <input
-                  maxLength={20}
-                  value={characterItemLevel}
-                  onChange={(event) => setCharacterItemLevel(event.currentTarget.value)}
-                />
+                <span className="character-stat-edit-row">
+                  <input
+                    maxLength={20}
+                    value={characterItemLevel}
+                    onChange={(event) => setCharacterItemLevel(event.currentTarget.value)}
+                  />
+                  <button
+                    aria-label="레벨 자동 갱신 잠금"
+                    aria-pressed={characterItemLevelPinned}
+                    className="character-stat-pin-button"
+                    title="레벨 자동 갱신 잠금"
+                    type="button"
+                    onClick={() => setCharacterItemLevelPinned((current) => !current)}
+                  >
+                    <Pin aria-hidden="true" size={15} />
+                  </button>
+                </span>
               </label>
               <label>
                 전투력
-                <input
-                  maxLength={20}
-                  placeholder="정보 없음"
-                  value={characterCombatPower}
-                  onChange={(event) => setCharacterCombatPower(event.currentTarget.value)}
-                />
+                <span className="character-stat-edit-row">
+                  <input
+                    maxLength={20}
+                    placeholder="정보 없음"
+                    value={characterCombatPower}
+                    onChange={(event) => setCharacterCombatPower(event.currentTarget.value)}
+                  />
+                  <button
+                    aria-label="전투력 자동 갱신 잠금"
+                    aria-pressed={characterCombatPowerPinned}
+                    className="character-stat-pin-button"
+                    title="전투력 자동 갱신 잠금"
+                    type="button"
+                    onClick={() => setCharacterCombatPowerPinned((current) => !current)}
+                  >
+                    <Pin aria-hidden="true" size={15} />
+                  </button>
+                </span>
               </label>
             </div>
           ) : null}

@@ -3632,6 +3632,62 @@ body {
   min-height: 32px;
 }
 
+.character-stat-edit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 4px;
+  min-width: 0;
+}
+
+.edit-form .character-stat-pin-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0;
+  color: #64748b;
+  background: #f8fafc;
+  cursor: pointer;
+}
+
+.edit-form .character-stat-pin-button:hover {
+  border-color: #94a3b8;
+  color: #334155;
+  background: #f1f5f9;
+}
+
+.edit-form .character-stat-pin-button[aria-pressed="true"] {
+  border-color: #0f766e;
+  color: #ffffff;
+  background: #0f766e;
+}
+
+.edit-form .character-stat-pin-button:focus-visible {
+  outline: 2px solid #14b8a6;
+  outline-offset: 2px;
+}
+
+.app-shell[data-theme="dark"] .edit-form .character-stat-pin-button {
+  border-color: #475569;
+  color: #cbd5e1;
+  background: #1e293b;
+}
+
+.app-shell[data-theme="dark"] .edit-form .character-stat-pin-button:hover {
+  border-color: #64748b;
+  color: #f8fafc;
+  background: #334155;
+}
+
+.app-shell[data-theme="dark"] .edit-form .character-stat-pin-button[aria-pressed="true"] {
+  border-color: #2dd4bf;
+  color: #ffffff;
+  background: #0f766e;
+}
+
 .color-edit-row {
   display: flex;
   align-items: center;
