@@ -12,9 +12,12 @@ import {
   getDirectSharedRiceBinHistoryUrls,
   getOwnerBoardInteractionProps,
   getSharedRiceBinInteractionProps,
+  getStoredAppTheme,
+  getAppThemeColor,
   getUrlWithoutSharedRiceBinId,
   recoverBoardAfterLogoutFailure,
-  runDurableLogout
+  runDurableLogout,
+  storeAppTheme
 } from "./App";
 import { createBoardMutationBarrier } from "./features/board/mutationBarrier";
 import { ReliablePatchQueueFlushError } from "./features/board/reliablePatchQueue";
@@ -150,6 +153,30 @@ describe("getAuthErrorMessage", () => {
 
   it("ignores normal URLs", () => {
     expect(getAuthErrorMessage("")).toBeNull();
+  });
+});
+
+describe("app theme storage", () => {
+  it("falls back to light mode when browser storage is unavailable", () => {
+    const storage = {
+      getItem: vi.fn(() => {
+        throw new Error("storage blocked");
+      })
+    };
+
+    expect(getStoredAppTheme(storage)).toBe("light");
+  });
+
+  it("ignores blocked theme writes and maps browser theme colors", () => {
+    const storage = {
+      setItem: vi.fn(() => {
+        throw new Error("storage blocked");
+      })
+    };
+
+    expect(() => storeAppTheme(storage, "dark")).not.toThrow();
+    expect(getAppThemeColor("light")).toBe("#f4f6f8");
+    expect(getAppThemeColor("dark")).toBe("#0f172a");
   });
 });
 
@@ -796,7 +823,8 @@ describe("App", () => {
   it("updates the popstate model with the sheet id", () => {
     const browser = installBrowserWindow("https://riceark.pages.dev/?sheet=sheet-1");
     vi.stubGlobal("document", {
-      documentElement: { dataset: {} }
+      documentElement: { dataset: {} },
+      querySelector: vi.fn(() => null)
     });
     hooks.useSession.mockReturnValue({
       status: "authenticated",
@@ -941,5 +969,17 @@ describe("app metadata", () => {
     expect(html).toContain('href="/icons/icon-192.png"');
     expect(html).toContain('rel="manifest"');
     expect(html).toContain('href="/site.webmanifest"');
+  });
+
+  it("applies the stored theme before the application module loads", () => {
+    const html = readFileSync(new URL("../index.html", import.meta.url), "utf-8");
+    const bootstrapIndex = html.indexOf('localStorage.getItem("riceark-theme")');
+    const applicationIndex = html.indexOf('type="module" src="/src/main.tsx"');
+
+    expect(bootstrapIndex).toBeGreaterThan(-1);
+    expect(html).toContain("document.documentElement.dataset.theme");
+    expect(html).toContain('meta[name="theme-color"]');
+    expect(html).toContain('const themeColor = storedTheme === "dark" ? "#0f172a" : "#f4f6f8"');
+    expect(bootstrapIndex).toBeLessThan(applicationIndex);
   });
 });

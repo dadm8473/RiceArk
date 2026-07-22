@@ -134,8 +134,27 @@ export function getAuthErrorMessage(search: string): string | null {
 }
 
 export function getStoredAppTheme(storage: Pick<Storage, "getItem"> | null | undefined): AppTheme {
-  const value = storage?.getItem("riceark-theme");
-  return value === "dark" ? "dark" : "light";
+  try {
+    const value = storage?.getItem("riceark-theme");
+    return value === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
+
+export function storeAppTheme(
+  storage: Pick<Storage, "setItem"> | null | undefined,
+  theme: AppTheme
+): void {
+  try {
+    storage?.setItem("riceark-theme", theme);
+  } catch {
+    // Keep theme switching usable when browser storage is restricted.
+  }
+}
+
+export function getAppThemeColor(theme: AppTheme): string {
+  return theme === "dark" ? "#0f172a" : "#f4f6f8";
 }
 
 export function getUrlWithoutSharedRiceBinId(href: string): string {
@@ -283,7 +302,8 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem("riceark-theme", theme);
+    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute("content", getAppThemeColor(theme));
+    storeAppTheme(window.localStorage, theme);
   }, [theme]);
 
   useEffect(() => {

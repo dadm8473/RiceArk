@@ -1,8 +1,30 @@
 :root {
   color-scheme: light;
+  --app-background: #f4f6f8;
+  --surface: #ffffff;
+  --surface-subtle: #f8fafc;
+  --surface-raised: #ffffff;
+  --text-primary: #111827;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --border: #d9e0ea;
+  --border-strong: #8a96a8;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #111827;
-  background: #f4f6f8;
+  color: var(--text-primary);
+  background: var(--app-background);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --app-background: #0f172a;
+  --surface: #020617;
+  --surface-subtle: #0f172a;
+  --surface-raised: #111827;
+  --text-primary: #e5e7eb;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --border: #334155;
+  --border-strong: #475569;
 }
 
 * {
@@ -10,11 +32,16 @@
 }
 
 body {
+  min-height: 100vh;
   margin: 0;
+  color: var(--text-primary);
+  background: var(--app-background);
 }
 
 .app-shell {
   min-height: 100vh;
+  color: var(--text-primary);
+  background: var(--app-background);
 }
 
 .app-shell[data-theme="dark"] {
@@ -174,6 +201,181 @@ body {
 .app-shell[data-theme="dark"] .board-character-refresh-failures,
 .app-shell[data-theme="dark"] .board-character-refresh-failures li + li {
   border-color: #334155;
+}
+
+.app-shell[data-theme="dark"] .tool-modal-header {
+  border-color: var(--border);
+  color: var(--text-primary);
+  background: var(--surface-raised);
+}
+
+.app-shell[data-theme="dark"] .tool-modal-header h2,
+.app-shell[data-theme="dark"] .sheet-settings-edit-zone h3,
+.app-shell[data-theme="dark"] .tool-panel h2,
+.app-shell[data-theme="dark"] .manual-character-heading,
+.app-shell[data-theme="dark"] :is(.character-summary-title) {
+  color: var(--text-primary);
+}
+
+.app-shell[data-theme="dark"] .edit-form label,
+.app-shell[data-theme="dark"] .color-edit-row,
+.app-shell[data-theme="dark"] .inline-check,
+.app-shell[data-theme="dark"] .edit-form .toggle-row,
+.app-shell[data-theme="dark"] .sheet-settings-label,
+.app-shell[data-theme="dark"] .candidate-header,
+.app-shell[data-theme="dark"] .compact-task-color,
+.app-shell[data-theme="dark"] .compact-task-reset {
+  color: var(--text-secondary);
+}
+
+.app-shell[data-theme="dark"] .readonly-value,
+.app-shell[data-theme="dark"] .orientation-option,
+.app-shell[data-theme="dark"] .character-detail-panel,
+.app-shell[data-theme="dark"] .character-summary-card,
+.app-shell[data-theme="dark"] .checkbox-target-row,
+.app-shell[data-theme="dark"] .sheet-settings-selected-card,
+.app-shell[data-theme="dark"] .sheet-settings-edit-zone,
+.app-shell[data-theme="dark"] .tool-panel,
+.app-shell[data-theme="dark"] :is(.task-preset-card) {
+  border-color: var(--border);
+  color: var(--text-primary);
+  background: var(--surface-subtle);
+}
+
+.app-shell[data-theme="dark"] .readonly-value strong,
+.app-shell[data-theme="dark"] .sheet-settings-selected-card strong,
+.app-shell[data-theme="dark"] :is(.task-preset-card strong) {
+  color: var(--text-primary);
+}
+
+.app-shell[data-theme="dark"] .orientation-option small,
+.app-shell[data-theme="dark"] .character-detail-panel,
+.app-shell[data-theme="dark"] .character-summary-chip,
+.app-shell[data-theme="dark"] :is(.task-preset-card span) {
+  color: var(--text-secondary);
+}
+
+.app-shell[data-theme="dark"] :is(.character-summary-chip) {
+  border-color: var(--border);
+  background: var(--surface-raised);
+}
+
+.app-shell[data-theme="dark"] .visibility-fieldset {
+  border-color: var(--border);
+}
+
+.app-shell[data-theme="dark"] .visibility-fieldset legend {
+  color: var(--text-secondary);
+}
+
+.app-shell[data-theme="dark"] .sheet-settings-tab {
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+}
+
+.app-shell[data-theme="dark"] .sheet-settings-tab.active {
+  color: #93c5fd;
+  box-shadow: inset 0 -2px 0 #60a5fa;
+  background: #1e293b;
+}
+
+.app-shell[data-theme="dark"] .task-preset-card:hover:not(:disabled) {
+  border-color: #60a5fa;
+  background: #172554;
+}
+
+.app-shell[data-theme="dark"] .task-preset-card small {
+  color: #93c5fd;
+}
+
+.app-shell[data-theme="dark"] .candidate-row {
+  color: var(--text-primary);
+}
+
+.app-shell[data-theme="dark"] .primary-button {
+  border-color: #60a5fa;
+  color: #ffffff;
+  background: #2563eb;
+}
+
+.app-shell[data-theme="dark"] .primary-button:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.app-shell[data-theme="dark"] .danger-button {
+  border-color: #ef4444;
+  color: #ffffff;
+  background: #b91c1c;
+}
+
+.app-shell[data-theme="dark"] .danger-button:hover:not(:disabled) {
+  background: #991b1b;
+}
+
+.app-shell[data-theme="dark"] .board-character-meta,
+.app-shell[data-theme="dark"] .board-schedule-meta {
+  color: var(--text-secondary);
+}
+
+.app-shell[data-theme="dark"] .board-schedule-title strong,
+.app-shell[data-theme="dark"] .board-schedule-island strong {
+  color: var(--text-primary);
+}
+
+.app-shell[data-theme="dark"] .board-schedule-interest {
+  color: #7dd3fc;
+}
+
+.app-shell[data-theme="dark"] .board-schedule-badge {
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+  background: #1e293b;
+}
+
+.app-shell[data-theme="dark"] .board-schedule-badge.available {
+  border-color: #15803d;
+  color: #86efac;
+  background: #052e16;
+}
+
+.app-shell[data-theme="dark"] .board-schedule-badge.warning {
+  border-color: #c2410c;
+  color: #fdba74;
+  background: #431407;
+}
+
+.app-shell[data-theme="dark"] .board-schedule-badge.neutral {
+  border-color: #7c3aed;
+  color: #c4b5fd;
+  background: #2e1065;
+}
+
+.app-shell[data-theme="dark"] .board-schedule-badge.muted,
+.app-shell[data-theme="dark"] .board-schedule-row-label.muted,
+.app-shell[data-theme="dark"] .board-schedule-rule,
+.app-shell[data-theme="dark"] .board-schedule-subtle {
+  color: var(--text-muted);
+}
+
+.app-shell[data-theme="dark"] .board-schedule-island {
+  border-color: var(--border);
+  background: var(--surface-raised);
+}
+
+.app-shell[data-theme="dark"] .board-schedule-island small {
+  color: var(--text-secondary);
+}
+
+.app-shell[data-theme="dark"] .board-check-placeholder {
+  border-color: #64748b;
+  background: #1e293b;
+}
+
+:root[data-theme="dark"] .board-drag-overlay {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  background: var(--surface-raised);
+  box-shadow: 0 8px 20px rgb(0 0 0 / 45%);
 }
 
 .topbar {
@@ -2359,13 +2561,13 @@ body {
   box-shadow: 0 1px 3px #00000066;
 }
 
-.app-shell[data-theme="dark"] .board-cell-mark-tooltip {
+:root[data-theme="dark"] .board-cell-mark-tooltip {
   border-color: #475569;
   color: #e5e7eb;
   background: #111827;
 }
 
-.app-shell[data-theme="dark"] .board-cell-mark-tooltip strong {
+:root[data-theme="dark"] .board-cell-mark-tooltip strong {
   color: #93c5fd;
 }
 

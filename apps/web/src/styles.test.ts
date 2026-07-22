@@ -262,7 +262,7 @@ describe("matrix styles", () => {
     expect(styles).not.toContain(".board-check-icon-overlay");
     expect(styles).not.toContain(".board-check-wrap.has-icon .board-check:checked::before");
     expect(styles).toContain('.app-shell[data-theme="dark"] .board-check-badge');
-    expect(styles).toContain('.app-shell[data-theme="dark"] .board-cell-mark-tooltip');
+    expect(styles).toContain(':root[data-theme="dark"] .board-cell-mark-tooltip');
     expect(styles).toContain('.app-shell[data-theme="dark"] .board-cell-mark-option.active');
   });
 
@@ -497,5 +497,52 @@ describe("matrix styles", () => {
     expect(darkThemeBlock).toContain("color-scheme: dark;");
     expect(darkThemeBlock).toContain("background: #0f172a;");
     expect(darkThemeBlock).toContain("color: #e5e7eb;");
+  });
+
+  it("themes the document root and body with shared semantic colors", () => {
+    const darkRootBlock = styles.match(/:root\[data-theme="dark"\]\s*{[^}]+}/)?.[0] ?? "";
+    const bodyBlock = styles.match(/body\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(darkRootBlock).toContain("color-scheme: dark;");
+    expect(darkRootBlock).toContain("--app-background: #0f172a;");
+    expect(darkRootBlock).toContain("--surface-raised: #111827;");
+    expect(darkRootBlock).toContain("--text-primary: #e5e7eb;");
+    expect(bodyBlock).toContain("background: var(--app-background);");
+    expect(bodyBlock).toContain("color: var(--text-primary);");
+  });
+
+  it("keeps shared modal and edit surfaces readable in dark mode", () => {
+    expect(styles).toContain('.app-shell[data-theme="dark"] .tool-modal-header');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .edit-form label');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .readonly-value');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .sheet-settings-selected-card');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .sheet-settings-edit-zone');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .tool-panel');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .candidate-row');
+  });
+
+  it("preserves primary and destructive button meaning in dark mode", () => {
+    const primaryBlock = styles.match(/\.app-shell\[data-theme="dark"\] \.primary-button\s*{[^}]+}/)?.[0] ?? "";
+    const dangerBlock = styles.match(/\.app-shell\[data-theme="dark"\] \.danger-button\s*{[^}]+}/)?.[0] ?? "";
+
+    expect(primaryBlock).toContain("background: #2563eb;");
+    expect(primaryBlock).toContain("color: #ffffff;");
+    expect(dangerBlock).toContain("background: #b91c1c;");
+    expect(dangerBlock).toContain("color: #ffffff;");
+  });
+
+  it("keeps board metadata and schedules readable in dark mode", () => {
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-character-meta');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-schedule-title strong');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-schedule-interest');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-schedule-badge');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-schedule-island');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-check-placeholder');
+  });
+
+  it("themes board elements rendered through document body portals", () => {
+    expect(styles).toContain(':root[data-theme="dark"] .board-cell-mark-tooltip');
+    expect(styles).toContain(':root[data-theme="dark"] .board-drag-overlay');
+    expect(styles).not.toContain('.app-shell[data-theme="dark"] .board-cell-mark-tooltip');
   });
 });

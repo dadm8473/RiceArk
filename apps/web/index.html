@@ -3,11 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#111827" />
+    <meta name="theme-color" content="#f4f6f8" />
     <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
     <link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192.png" />
     <link rel="manifest" href="/site.webmanifest" />
     <title>RiceArk</title>
+    <script>
+      try {
+        const storedTheme = localStorage.getItem("riceark-theme");
+        if (storedTheme === "dark" || storedTheme === "light") {
+          document.documentElement.dataset.theme = storedTheme;
+          const themeColor = storedTheme === "dark" ? "#0f172a" : "#f4f6f8";
+          document.querySelector('meta[name="theme-color"]')?.setAttribute("content", themeColor);
+        }
+      } catch {
+        // Storage can be unavailable in restricted browser contexts.
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
