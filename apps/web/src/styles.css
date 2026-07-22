@@ -1676,7 +1676,7 @@ body {
   min-height: 64px;
   border: 1px solid #c9a934;
   border-radius: 0;
-  color: #111827;
+  color: var(--board-note-ink, #111827);
   box-shadow: 0 10px 24px rgb(15 23 42 / 14%);
 }
 
@@ -1701,7 +1701,7 @@ body {
   min-width: 0;
   min-height: 32px;
   padding: 6px;
-  border-bottom: 1px solid rgb(17 24 39 / 12%);
+  border-bottom: 1px solid var(--board-note-line, rgb(17 24 39 / 12%));
   cursor: grab;
 }
 
@@ -1730,7 +1730,7 @@ body {
 .board-note-title-input:focus,
 .board-note-body-input:focus {
   outline: 2px solid rgb(37 99 235 / 45%);
-  background: rgb(255 255 255 / 52%);
+  background: var(--board-note-focus, rgb(255 255 255 / 52%));
 }
 
 .board-note-title-input:disabled,
@@ -1753,7 +1753,7 @@ body {
   padding: 0;
   border: 0;
   border-radius: 0;
-  color: #111827;
+  color: var(--board-note-ink, #111827);
   background: transparent;
   box-shadow: none;
   letter-spacing: 0;
@@ -1761,7 +1761,7 @@ body {
 }
 
 .board-note-menu-button:hover {
-  color: #2563eb;
+  color: var(--board-note-link, #2563eb);
   background: transparent;
 }
 
@@ -1822,7 +1822,7 @@ body {
   margin: 0;
   border: 0;
   padding: 8px;
-  color: #1f2937;
+  color: var(--board-note-ink, #1f2937);
   background: transparent;
   font: inherit;
   font-size: 13px;
@@ -1847,7 +1847,7 @@ body {
 .board-note-markdown h3,
 .board-note-markdown h4,
 .board-note-markdown h5 {
-  color: #111827;
+  color: var(--board-note-ink, #111827);
   line-height: 1.25;
 }
 
@@ -1866,22 +1866,22 @@ body {
 }
 
 .board-note-markdown code {
-  border: 1px solid rgb(17 24 39 / 12%);
+  border: 1px solid var(--board-note-line, rgb(17 24 39 / 12%));
   padding: 1px 4px;
-  background: rgb(255 255 255 / 44%);
+  background: var(--board-note-surface, rgb(255 255 255 / 44%));
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.92em;
 }
 
 .board-note-markdown a {
-  color: #1d4ed8;
+  color: var(--board-note-link, #1d4ed8);
   font-weight: 800;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
 .board-note-markdown-empty {
-  color: #64748b;
+  color: var(--board-note-muted, #64748b);
 }
 
 .board-note-markdown-table-wrap {
@@ -1893,22 +1893,22 @@ body {
   width: max-content;
   min-width: 100%;
   border-collapse: collapse;
-  background: rgb(255 255 255 / 28%);
+  background: var(--board-note-surface-subtle, rgb(255 255 255 / 28%));
   font-size: 12px;
   white-space: nowrap;
 }
 
 .board-note-markdown th,
 .board-note-markdown td {
-  border: 1px solid rgb(17 24 39 / 18%);
+  border: 1px solid var(--board-note-line-strong, rgb(17 24 39 / 18%));
   padding: 4px 6px;
   text-align: left;
   vertical-align: top;
 }
 
 .board-note-markdown th {
-  background: rgb(255 255 255 / 44%);
-  color: #111827;
+  background: var(--board-note-surface, rgb(255 255 255 / 44%));
+  color: var(--board-note-ink, #111827);
   font-weight: 900;
 }
 
@@ -1923,11 +1923,11 @@ body {
   min-height: 18px;
   height: 18px;
   border: 0;
-  border-left: 1px solid rgb(17 24 39 / 16%);
-  border-top: 1px solid rgb(17 24 39 / 16%);
+  border-left: 1px solid var(--board-note-line, rgb(17 24 39 / 16%));
+  border-top: 1px solid var(--board-note-line, rgb(17 24 39 / 16%));
   border-radius: 0;
   padding: 0;
-  background: rgb(255 255 255 / 55%);
+  background: var(--board-note-control, rgb(255 255 255 / 55%));
   cursor: nwse-resize;
   touch-action: none;
 }
@@ -1940,7 +1940,7 @@ body {
 .board-note-resize-lock-icon {
   width: 12px;
   height: 12px;
-  color: #334155;
+  color: var(--board-note-muted, #334155);
   pointer-events: none;
 }
 
@@ -4957,6 +4957,35 @@ button.task-preset-card {
 .app-shell[data-theme="dark"] .shared-rice-bin-row small,
 .app-shell[data-theme="dark"] .shared-rice-bin-lookup label {
   color: #cbd5e1;
+}
+
+.app-shell[data-theme="dark"] .board-note-menu-button,
+.app-shell[data-theme="dark"] .board-note-title-input,
+.app-shell[data-theme="dark"] .board-note-body-input {
+  border: 0;
+  color: var(--board-note-ink, #111827);
+  background: transparent;
+}
+
+.app-shell[data-theme="dark"] .board-note-menu-button:hover:not(:disabled) {
+  color: var(--board-note-link, #2563eb);
+  background: transparent;
+}
+
+.app-shell[data-theme="dark"] .board-note-resize-handle {
+  border: 0;
+  border-left: 1px solid var(--board-note-line, rgb(17 24 39 / 16%));
+  border-top: 1px solid var(--board-note-line, rgb(17 24 39 / 16%));
+  color: var(--board-note-ink, #111827);
+  background: var(--board-note-control, rgb(255 255 255 / 55%));
+}
+
+.app-shell[data-theme="dark"] .board-note-menu label {
+  color: #e5e7eb;
+}
+
+.app-shell[data-theme="dark"] .board-note-menu .danger-menu-item {
+  color: #fca5a5;
 }
 
 @media (max-width: 560px) {

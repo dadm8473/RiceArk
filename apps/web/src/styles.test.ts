@@ -491,6 +491,16 @@ describe("matrix styles", () => {
     expect(noteResizeLockIconBlock).toContain("height: 12px;");
   });
 
+  it("keeps note paper controls theme-neutral and the dark note menu readable", () => {
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-note-menu-button');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-note-title-input');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-note-body-input');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-note-resize-handle');
+    expect(styles).toContain('.app-shell[data-theme="dark"] .board-note-menu label');
+    expect(styles).toContain("color: var(--board-note-ink, #111827);");
+    expect(styles).toContain("background: var(--board-note-control, rgb(255 255 255 / 55%));");
+  });
+
   it("defines a dark app theme for the profile menu toggle", () => {
     const darkThemeBlock = styles.match(/\.app-shell\[data-theme="dark"\]\s*{[^}]+}/)?.[0] ?? "";
 

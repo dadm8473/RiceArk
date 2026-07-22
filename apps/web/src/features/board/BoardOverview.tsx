@@ -1337,15 +1337,85 @@ function getBoardTableStyle(table: BoardTable): CSSProperties {
   };
 }
 
+export interface BoardNoteColorPalette {
+  control: string;
+  focus: string;
+  ink: string;
+  line: string;
+  lineStrong: string;
+  link: string;
+  muted: string;
+  surface: string;
+  surfaceSubtle: string;
+}
+
+function getHexColorLuminance(color: string): number | null {
+  const match = color.trim().match(/^#([0-9a-f]{6})$/i);
+  if (!match) return null;
+  const hex = match[1];
+  if (!hex) return null;
+  const getLinearChannel = (value: string): number => {
+    const channel = Number.parseInt(value, 16) / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  };
+  const red = getLinearChannel(hex.slice(0, 2));
+  const green = getLinearChannel(hex.slice(2, 4));
+  const blue = getLinearChannel(hex.slice(4, 6));
+  return red * 0.2126 + green * 0.7152 + blue * 0.0722;
+}
+
+export function getBoardNoteColorPalette(color: string): BoardNoteColorPalette {
+  const backgroundLuminance = getHexColorLuminance(color) ?? getHexColorLuminance("#fef3c7") ?? 1;
+  const darkInkLuminance = getHexColorLuminance("#111827") ?? 0;
+  const lightInkLuminance = getHexColorLuminance("#f8fafc") ?? 1;
+  const darkInkContrast = (backgroundLuminance + 0.05) / (darkInkLuminance + 0.05);
+  const lightInkContrast = (lightInkLuminance + 0.05) / (backgroundLuminance + 0.05);
+  const useLightInk = lightInkContrast >= darkInkContrast;
+
+  return useLightInk
+    ? {
+        control: "rgb(0 0 0 / 32%)",
+        focus: "rgb(255 255 255 / 12%)",
+        ink: "#f8fafc",
+        line: "rgb(248 250 252 / 18%)",
+        lineStrong: "rgb(248 250 252 / 28%)",
+        link: "#7dd3fc",
+        muted: "#cbd5e1",
+        surface: "rgb(0 0 0 / 24%)",
+        surfaceSubtle: "rgb(0 0 0 / 16%)"
+      }
+    : {
+        control: "rgb(255 255 255 / 55%)",
+        focus: "rgb(255 255 255 / 52%)",
+        ink: "#111827",
+        line: "rgb(17 24 39 / 12%)",
+        lineStrong: "rgb(17 24 39 / 18%)",
+        link: "#1d4ed8",
+        muted: "#64748b",
+        surface: "rgb(255 255 255 / 44%)",
+        surfaceSubtle: "rgb(255 255 255 / 28%)"
+      };
+}
+
 function getBoardNoteStyle(note: BoardNote, zDepth: number | undefined): CSSProperties {
+  const palette = getBoardNoteColorPalette(note.color);
   return {
     left: `${note.x}px`,
     top: `${note.y}px`,
     width: `${note.width}px`,
     height: `${note.height}px`,
     background: note.color,
+    "--board-note-control": palette.control,
+    "--board-note-focus": palette.focus,
+    "--board-note-ink": palette.ink,
+    "--board-note-line": palette.line,
+    "--board-note-line-strong": palette.lineStrong,
+    "--board-note-link": palette.link,
+    "--board-note-muted": palette.muted,
+    "--board-note-surface": palette.surface,
+    "--board-note-surface-subtle": palette.surfaceSubtle,
     ...(zDepth ? { zIndex: zDepth } : {})
-  };
+  } as CSSProperties;
 }
 
 function clampBoardNoteLayoutValue(value: number, min: number, max: number): number {

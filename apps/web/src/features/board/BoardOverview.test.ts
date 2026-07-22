@@ -33,6 +33,7 @@ import {
   getStoredBoardEventNotificationSettings,
   getRefreshableBoardCharacterIds,
   getBoardCellMarkTooltipContent,
+  getBoardNoteColorPalette,
   getBoardWriteLockRollback,
   isBoardInteractionLocked,
   normalizeBoardEventNotificationMinutes,
@@ -54,6 +55,24 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+describe("board note colors", () => {
+  it("keeps dark note paper colors while switching their ink to a light palette", () => {
+    expect(getBoardNoteColorPalette("#111827")).toMatchObject({
+      ink: "#f8fafc",
+      link: "#7dd3fc",
+      muted: "#cbd5e1"
+    });
+  });
+
+  it("keeps dark ink on light note paper colors", () => {
+    expect(getBoardNoteColorPalette("#fef3c7")).toMatchObject({
+      ink: "#111827",
+      link: "#1d4ed8",
+      muted: "#64748b"
+    });
+  });
+});
 
 type BoardTableSettingsRequestInput = {
   name: string;
