@@ -13,6 +13,8 @@ const TABLE_ID = "table-1";
 const CHARACTER_ID = "character-1";
 const CHARACTER_REFRESH_GUARD_PATH = "$[riceark_character_refresh_exact_set_guard_constraint_v1";
 const CHARACTER_REFRESH_GUARD_SIGNATURE = `bad JSON path: '${CHARACTER_REFRESH_GUARD_PATH}'`;
+const BOARD_BULK_GUARD_PATH = "$[riceark_board_bulk_exact_set_guard_v1";
+const BOARD_BULK_GUARD_SIGNATURE = `bad JSON path: '${BOARD_BULK_GUARD_PATH}'`;
 const SUCCESS_LINE = "board bulk SQL verified: cells=2, completed=2, version=1";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
@@ -34,7 +36,7 @@ function sqlBatch(...statements) {
 // prepareBoardAxisOrderUpdate (board.ts), and applyCharacterRefreshProfiles/refreshCharactersFromLostArk
 // (characters.ts); source drift weakens this verifier.
 function boardInputCte(payloadJson) {
-  return `input AS (
+  return `input AS MATERIALIZED (
     SELECT CAST(key AS INTEGER) AS ordinal,
            json_extract(value, '$.id') AS id,
            json_extract(value, '$.table_id') AS table_id,
@@ -59,7 +61,7 @@ function boardInputCte(payloadJson) {
 }
 
 function boardValidCte() {
-  return `valid AS (
+  return `valid AS MATERIALIZED (
     SELECT input.*
     FROM input
     JOIN board_tables AS tables
@@ -94,12 +96,12 @@ function boardValidCte() {
 const completeBoardGuard = `(SELECT COUNT(*) FROM valid) = (SELECT COUNT(*) FROM input)`;
 
 function boardCompletionUpsertSql(payloadJson) {
-  return `WITH ${boardInputCte(payloadJson)}, ${boardValidCte()}
+  return `WITH ${boardInputCte(payloadJson)}
     INSERT INTO board_cell_completions
       (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
     SELECT id, ${sqlLiteral(USER_ID)}, table_id, row_item_id, column_item_id, period_key, completed, CURRENT_TIMESTAMP
-    FROM valid
-    WHERE ${completeBoardGuard}
+    FROM input
+    WHERE 1 = 1
     ON CONFLICT(user_id, table_id, row_item_id, column_item_id, period_key)
     DO UPDATE SET completed = excluded.completed, updated_at = CURRENT_TIMESTAMP
     RETURNING table_id AS tableId, row_item_id AS rowItemId,
@@ -108,42 +110,38 @@ function boardCompletionUpsertSql(payloadJson) {
 
 function boardGuardAssertionSql(payloadJson) {
   return `WITH ${boardInputCte(payloadJson)}, ${boardValidCte()}
-    INSERT INTO board_cell_completions
-      (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
-    SELECT 'board-bulk-guard', NULL, '', '', '', '', 0, CURRENT_TIMESTAMP
+    SELECT json_extract('[]', ${sqlLiteral(BOARD_BULK_GUARD_PATH)})
     WHERE NOT (${completeBoardGuard})`;
 }
 
 function boardVersionUpdateSql(payloadJson) {
-  return `WITH ${boardInputCte(payloadJson)}, ${boardValidCte()}
+  return `WITH ${boardInputCte(payloadJson)}
     UPDATE sheets
     SET content_version = content_version + 1,
         updated_at = CURRENT_TIMESTAMP
     WHERE sheets.user_id = ${sqlLiteral(USER_ID)}
-      AND ${completeBoardGuard}
-      AND sheets.id IN (SELECT DISTINCT sheet_id FROM valid)
+      AND sheets.id IN (SELECT DISTINCT sheet_id FROM input)
     RETURNING id, content_version AS version`;
 }
 
 function boardCellStateDeleteSql(payloadJson) {
-  return `WITH ${boardInputCte(payloadJson)}, ${boardValidCte()}
+  return `WITH ${boardInputCte(payloadJson)}
     DELETE FROM board_cell_states
     WHERE user_id = ${sqlLiteral(USER_ID)}
-      AND ${completeBoardGuard}
       AND (table_id, row_item_id, column_item_id) IN (
-        SELECT table_id, row_item_id, column_item_id FROM valid WHERE delete_state = 1
+        SELECT table_id, row_item_id, column_item_id FROM input WHERE delete_state = 1
       )
     RETURNING table_id AS tableId, row_item_id AS rowItemId, column_item_id AS columnItemId`;
 }
 
 function boardCellStateUpsertSql(payloadJson) {
-  return `WITH ${boardInputCte(payloadJson)}, ${boardValidCte()}
+  return `WITH ${boardInputCte(payloadJson)}
     INSERT INTO board_cell_states
       (id, user_id, table_id, row_item_id, column_item_id, checkbox_visible, mark_type, mark_icon, memo, mark_period_key, updated_at)
     SELECT id, ${sqlLiteral(USER_ID)}, table_id, row_item_id, column_item_id,
            checkbox_visible, mark_type, mark_icon, memo, mark_period_key, CURRENT_TIMESTAMP
-    FROM valid
-    WHERE delete_state = 0 AND ${completeBoardGuard}
+    FROM input
+    WHERE delete_state = 0
     ON CONFLICT(table_id, row_item_id, column_item_id)
     DO UPDATE SET checkbox_visible = excluded.checkbox_visible,
                   mark_type = excluded.mark_type,
@@ -584,11 +582,11 @@ async function verifyBoardBulkSql(stateDirectory) {
     stateDirectory,
     sqlBatch(
       `UPDATE sheets SET name = 'board-guard-rollback-marker' WHERE id = ${sqlLiteral(SHEET_ID)} RETURNING id`,
-      boardCompletionUpsertSql(rejectedCompletionPayload),
-      boardGuardAssertionSql(rejectedCompletionPayload)
+      boardGuardAssertionSql(rejectedCompletionPayload),
+      boardCompletionUpsertSql(rejectedCompletionPayload)
     ),
     "Board guard rollback batch",
-    ["NOT NULL constraint failed", "board_cell_completions.user_id"]
+    [BOARD_BULK_GUARD_SIGNATURE]
   );
 
   const statePayload = JSON.stringify([
@@ -662,17 +660,17 @@ async function verifyBoardBulkSql(stateDirectory) {
               (SELECT COUNT(*) FROM board_cell_states) AS cells,
               (SELECT COUNT(*) FROM board_cell_completions) AS completions
        FROM sheets WHERE id = ${sqlLiteral(SHEET_ID)}`,
+      boardGuardAssertionSql(statePayload),
       boardCellStateDeleteSql(statePayload),
       boardCellStateUpsertSql(statePayload),
-      boardGuardAssertionSql(statePayload),
       boardOrderUpdateSql(orderedColumns, true),
       boardOrderUpdateSql(orderedColumns, false),
       `UPDATE board_tables
        SET x = 12, y = 34, updated_at = CURRENT_TIMESTAMP
        WHERE id = ${sqlLiteral(TABLE_ID)} AND user_id = ${sqlLiteral(USER_ID)} AND locked = 0
        RETURNING id`,
-      boardCompletionUpsertSql(completionPayload),
       boardGuardAssertionSql(completionPayload),
+      boardCompletionUpsertSql(completionPayload),
       boardVersionUpdateSql(completionPayload),
       characterProfileUpdateSql(profilePayload),
       characterExactSetGuardSql(profilePayload)
@@ -683,23 +681,23 @@ async function verifyBoardBulkSql(stateDirectory) {
   assert.deepEqual(rowsAt(mainResults, 0, "Board rollback verification"), [
     { name: "Fixture", version: 0, cells: 1, completions: 0 }
   ]);
-  assert.deepEqual(rowsAt(mainResults, 1, "Cell-state delete"), [
+  assert.deepEqual(rowsAt(mainResults, 1, "Cell-state guard"), []);
+  assert.deepEqual(rowsAt(mainResults, 2, "Cell-state delete"), [
     { tableId: TABLE_ID, rowItemId: "row-1", columnItemId: "column-1" }
   ]);
-  assert.deepEqual(sortedCellRows(rowsAt(mainResults, 2, "Cell-state upsert")), [
+  assert.deepEqual(sortedCellRows(rowsAt(mainResults, 3, "Cell-state upsert")), [
     { tableId: TABLE_ID, rowItemId: "row-1", columnItemId: "column-2" },
     { tableId: TABLE_ID, rowItemId: "row-2", columnItemId: "column-1" }
   ]);
-  assert.deepEqual(rowsAt(mainResults, 3, "Cell-state guard"), []);
   assert.deepEqual(new Set(rowsAt(mainResults, 4, "Temporary ordering update").map((row) => row.id)), new Set(["column-1", "column-2"]));
   assert.deepEqual(new Set(rowsAt(mainResults, 5, "Final ordering update").map((row) => row.id)), new Set(["column-1", "column-2"]));
   assert.deepEqual(rowsAt(mainResults, 6, "UPDATE RETURNING"), [{ id: TABLE_ID }]);
-  assert.equal(rowsAt(mainResults, 7, "Completion upsert").length, 2, "Completion upsert did not accept exactly two cells");
-  assert.deepEqual(sortedCellRows(rowsAt(mainResults, 7, "Completion upsert")), [
+  assert.deepEqual(rowsAt(mainResults, 7, "Completion guard"), []);
+  assert.equal(rowsAt(mainResults, 8, "Completion upsert").length, 2, "Completion upsert did not accept exactly two cells");
+  assert.deepEqual(sortedCellRows(rowsAt(mainResults, 8, "Completion upsert")), [
     { tableId: TABLE_ID, rowItemId: "row-1", columnItemId: "column-2" },
     { tableId: TABLE_ID, rowItemId: "row-2", columnItemId: "column-1" }
   ]);
-  assert.deepEqual(rowsAt(mainResults, 8, "Completion guard"), []);
   assert.deepEqual(rowsAt(mainResults, 9, "Sheet version increment"), [{ id: SHEET_ID, version: 1 }]);
   assert.deepEqual(rowsAt(mainResults, 10, "Character exact-set update"), [{ id: CHARACTER_ID }]);
   assert.deepEqual(rowsAt(mainResults, 11, "Character exact-set guard"), []);

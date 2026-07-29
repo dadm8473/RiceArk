@@ -89,7 +89,7 @@ export function buildBoardCellStatePayloadRows(
   });
 }
 
-const inputCte = `input AS (
+const inputCte = `input AS MATERIALIZED (
   SELECT CAST(key AS INTEGER) AS ordinal,
          json_extract(value, '$.id') AS id,
          json_extract(value, '$.table_id') AS table_id,
@@ -112,7 +112,7 @@ const inputCte = `input AS (
   FROM json_each(?2)
 )`;
 
-const guardedValidCte = `valid AS (
+const guardedValidCte = `valid AS MATERIALIZED (
   SELECT input.*
   FROM input
   JOIN board_tables AS tables
@@ -187,14 +187,11 @@ export function prepareBoardBulkPreflightStatement(env: Env, userId: string, pay
 }
 
 function prepareGuardAssertionStatement(env: Env, userId: string, payloadJson: string) {
-  // An invalid guard deliberately violates NOT NULL so D1 rolls the whole batch back.
   return bindPayload(
     env,
     `WITH ${inputCte}, ${guardedValidCte}
      -- guard assertion
-     INSERT INTO board_cell_completions
-       (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
-     SELECT 'board-bulk-guard', NULL, '', '', '', '', 0, CURRENT_TIMESTAMP
+     SELECT json_extract('[]', '$[riceark_board_bulk_exact_set_guard_v1')
      WHERE NOT (${completeGuard})`,
     userId,
     payloadJson
@@ -204,13 +201,12 @@ function prepareGuardAssertionStatement(env: Env, userId: string, payloadJson: s
 function prepareVersionStatement(env: Env, userId: string, payloadJson: string) {
   return bindPayload(
     env,
-    `WITH ${inputCte}, ${guardedValidCte}
+    `WITH ${inputCte}
      UPDATE sheets
      SET content_version = content_version + 1,
          updated_at = CURRENT_TIMESTAMP
      WHERE sheets.user_id = ?1
-       AND ${completeGuard}
-       AND sheets.id IN (SELECT DISTINCT sheet_id FROM valid)
+       AND sheets.id IN (SELECT DISTINCT sheet_id FROM input)
      RETURNING id, content_version AS version`,
     userId,
     payloadJson
@@ -220,12 +216,12 @@ function prepareVersionStatement(env: Env, userId: string, payloadJson: string) 
 export function prepareBoardCompletionWriteStatements(env: Env, userId: string, payloadJson: string) {
   const upsert = bindPayload(
     env,
-    `WITH ${inputCte}, ${guardedValidCte}
+    `WITH ${inputCte}
      INSERT INTO board_cell_completions
        (id, user_id, table_id, row_item_id, column_item_id, period_key, completed, updated_at)
      SELECT id, ?1, table_id, row_item_id, column_item_id, period_key, completed, CURRENT_TIMESTAMP
-     FROM valid
-     WHERE ${completeGuard}
+     FROM input
+     WHERE 1 = 1
      ON CONFLICT(user_id, table_id, row_item_id, column_item_id, period_key)
      DO UPDATE SET completed = excluded.completed, updated_at = CURRENT_TIMESTAMP
      RETURNING table_id AS tableId, row_item_id AS rowItemId,
@@ -233,18 +229,17 @@ export function prepareBoardCompletionWriteStatements(env: Env, userId: string, 
     userId,
     payloadJson
   );
-  return [upsert, prepareGuardAssertionStatement(env, userId, payloadJson), prepareVersionStatement(env, userId, payloadJson)];
+  return [prepareGuardAssertionStatement(env, userId, payloadJson), upsert, prepareVersionStatement(env, userId, payloadJson)];
 }
 
 export function prepareBoardCellStateWriteStatements(env: Env, userId: string, payloadJson: string) {
   const deleteStatement = bindPayload(
     env,
-    `WITH ${inputCte}, ${guardedValidCte}
+    `WITH ${inputCte}
      DELETE FROM board_cell_states
      WHERE user_id = ?1
-       AND ${completeGuard}
        AND (table_id, row_item_id, column_item_id) IN (
-         SELECT table_id, row_item_id, column_item_id FROM valid WHERE delete_state = 1
+         SELECT table_id, row_item_id, column_item_id FROM input WHERE delete_state = 1
        )
      RETURNING table_id AS tableId, row_item_id AS rowItemId, column_item_id AS columnItemId`,
     userId,
@@ -252,12 +247,12 @@ export function prepareBoardCellStateWriteStatements(env: Env, userId: string, p
   );
   const upsert = bindPayload(
     env,
-    `WITH ${inputCte}, ${guardedValidCte}
+    `WITH ${inputCte}
      INSERT INTO board_cell_states
        (id, user_id, table_id, row_item_id, column_item_id, checkbox_visible, mark_type, mark_icon, memo, mark_period_key, updated_at)
      SELECT id, ?1, table_id, row_item_id, column_item_id, checkbox_visible, mark_type, mark_icon, memo, mark_period_key, CURRENT_TIMESTAMP
-     FROM valid
-     WHERE delete_state = 0 AND ${completeGuard}
+     FROM input
+     WHERE delete_state = 0
      ON CONFLICT(table_id, row_item_id, column_item_id)
      DO UPDATE SET checkbox_visible = excluded.checkbox_visible,
                    mark_type = excluded.mark_type,
@@ -270,9 +265,9 @@ export function prepareBoardCellStateWriteStatements(env: Env, userId: string, p
     payloadJson
   );
   return [
+    prepareGuardAssertionStatement(env, userId, payloadJson),
     deleteStatement,
     upsert,
-    prepareGuardAssertionStatement(env, userId, payloadJson),
     prepareVersionStatement(env, userId, payloadJson)
   ];
 }

@@ -120,14 +120,53 @@ describe("board bulk SQL", () => {
     }];
     const { env, prepared } = captureEnv();
 
-    prepareBoardCellStateWriteStatements(env as never, "user-1", JSON.stringify(guarded));
+    const statements = prepareBoardCellStateWriteStatements(
+      env as never,
+      "user-1",
+      JSON.stringify(guarded)
+    ) as unknown as CapturedStatement[];
 
     expect(prepared).toHaveLength(4);
     expect(prepared.map((statement) => statement.values.length)).toEqual([2, 2, 2, 2]);
-    expect(prepared[0]?.sql).toMatch(/^WITH[\s\S]*DELETE FROM board_cell_states/);
-    expect(prepared[1]?.sql).toMatch(/^WITH[\s\S]*INSERT INTO board_cell_states/);
-    expect(prepared[1]?.sql).toMatch(/WHERE[\s\S]*ON CONFLICT/);
-    expect(prepared[2]?.sql).toContain("guard assertion");
-    expect(prepared[3]?.sql).toMatch(/^WITH[\s\S]*UPDATE sheets/);
+    expect(statements[0]?.sql).toContain("guard assertion");
+    expect(statements[0]?.sql).toContain("SELECT json_extract");
+    expect(statements[0]?.sql).not.toContain("INSERT INTO board_cell_completions");
+    expect(statements[1]?.sql).toMatch(/^WITH[\s\S]*DELETE FROM board_cell_states/);
+    expect(statements[2]?.sql).toMatch(/^WITH[\s\S]*INSERT INTO board_cell_states/);
+    expect(statements[2]?.sql).toMatch(/WHERE[\s\S]*ON CONFLICT/);
+    expect(statements[3]?.sql).toMatch(/^WITH[\s\S]*UPDATE sheets/);
+    expect(statements.slice(1).every((statement) => !statement.sql.includes("JOIN board_axis_items"))).toBe(true);
+  });
+
+  it("validates a completion batch once before writing the already guarded input", () => {
+    const base = buildBoardCompletionPayloadRows(
+      [{ tableId: "t", rowItemId: "r", columnItemId: "c", periodKey: "weekly:2026-07-27", completed: true }],
+      () => "completion-1"
+    )[0]!;
+    const guarded: GuardedBoardCompletionPayloadRow[] = [{
+      ...base,
+      sheet_id: "sheet-1",
+      row_kind: "task",
+      column_kind: "character",
+      row_task_reset_rule_json: '{"type":"weekly","dayOfWeek":3,"hour":6}',
+      column_task_reset_rule_json: null,
+      guard_expires_at: 1_800_000_000
+    }];
+    const { env, prepared } = captureEnv();
+
+    const statements = prepareBoardCompletionWriteStatements(
+      env as never,
+      "user-1",
+      JSON.stringify(guarded)
+    ) as unknown as CapturedStatement[];
+
+    expect(prepared).toHaveLength(3);
+    expect(statements[0]?.sql).toContain("guard assertion");
+    expect(statements[0]?.sql).toContain("SELECT json_extract");
+    expect(statements[0]?.sql).not.toContain("INSERT INTO board_cell_completions");
+    expect(statements[1]?.sql).toMatch(/^WITH[\s\S]*INSERT INTO board_cell_completions/);
+    expect(statements[1]?.sql).toContain("FROM input");
+    expect(statements[2]?.sql).toMatch(/^WITH[\s\S]*UPDATE sheets/);
+    expect(statements.slice(1).every((statement) => !statement.sql.includes("JOIN board_axis_items"))).toBe(true);
   });
 });

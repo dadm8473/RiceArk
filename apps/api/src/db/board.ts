@@ -3748,10 +3748,10 @@ export async function saveBoardCompletionPatches(
     if (isBoardBulkGuardAssertionError(error)) return incompleteBoardMutation();
     throw error;
   }
-  if (results.length !== 3 || !results.every(isSuccessfulBatchResult) || !hasEmptyBatchRows(results[1])) {
+  if (results.length !== 3 || !results.every(isSuccessfulBatchResult) || !hasEmptyBatchRows(results[0])) {
     return incompleteBoardMutation();
   }
-  const returnedKeys = returnedObjectKeySet(results[0], completionRowKey);
+  const returnedKeys = returnedObjectKeySet(results[1], completionRowKey);
   const expectedKeys = new Set(guardedRows.map(completionPayloadKey));
   const sheetVersions = returnedSheetVersions(results[2]);
   const expectedSheetIds = new Set(guardedRows.map((row) => row.sheet_id));
@@ -3801,11 +3801,11 @@ export async function saveBoardCellStatePatches(
     if (isBoardBulkGuardAssertionError(error)) return incompleteBoardMutation();
     throw error;
   }
-  if (results.length !== 4 || !results.every(isSuccessfulBatchResult) || !hasEmptyBatchRows(results[2])) {
+  if (results.length !== 4 || !results.every(isSuccessfulBatchResult) || !hasEmptyBatchRows(results[0])) {
     return incompleteBoardMutation();
   }
-  const returnedDeleteKeys = returnedObjectKeySet(results[0], cellStateRowKey);
-  const returnedUpsertKeys = returnedObjectKeySet(results[1], cellStateRowKey);
+  const returnedDeleteKeys = returnedObjectKeySet(results[1], cellStateRowKey);
+  const returnedUpsertKeys = returnedObjectKeySet(results[2], cellStateRowKey);
   const requestedDeleteKeys = new Set(guardedRows.filter((row) => row.delete_state === 1).map(cellStatePayloadKey));
   const expectedUpsertKeys = new Set(guardedRows.filter((row) => row.delete_state === 0).map(cellStatePayloadKey));
   const sheetVersions = returnedSheetVersions(results[3]);
@@ -3970,7 +3970,11 @@ function hasExactSheetVersions(actual: BoardSheetVersion[] | null, expectedIds: 
 }
 
 function isBoardBulkGuardAssertionError(error: unknown): boolean {
-  return /NOT NULL constraint failed:\s*board_cell_completions\.user_id/i.test(String(error));
+  const message = String(error);
+  return (
+    /bad JSON path:\s*'\$\[riceark_board_bulk_exact_set_guard_v1'/i.test(message) ||
+    /NOT NULL constraint failed:\s*board_cell_completions\.user_id/i.test(message)
+  );
 }
 
 function isBoardTableSettingsPreconditionAssertionError(error: unknown): boolean {
