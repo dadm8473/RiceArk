@@ -17,13 +17,18 @@ import {
   type BoardMutationBarrier
 } from "../board/mutationBarrier";
 import { useBoard } from "../board/useBoard";
-import type { AdminUserPage, AdminUserSummary } from "./types";
+import type {
+  AdminBoardNavigationGuardChange,
+  AdminUserPage,
+  AdminUserSummary
+} from "./types";
 
 export const ADMIN_USER_SEARCH_DEBOUNCE_MS = 300;
 
 type AdminUserBoardsTabProps = {
   selectedUserId: string | null;
   selectedSheetId: string | null;
+  onNavigationGuardChange: AdminBoardNavigationGuardChange;
   onUserSelected: (userId: string | null) => void;
   onSheetSelected: (sheetId: string) => void;
   onReplaceSheetId: (sheetId: string | null) => void;
@@ -41,6 +46,18 @@ type AdminUserResultsProps = {
 };
 
 type SubjectTransitionMode = "flush" | "retry" | "discard";
+
+export type AdminUsersPageRequest = {
+  cursor: string | null;
+  append: boolean;
+};
+
+export function retryAdminUsersPage(
+  request: AdminUsersPageRequest,
+  loadUsers: (cursor: string | null, append: boolean) => Promise<void>
+): Promise<void> {
+  return loadUsers(request.cursor, request.append);
+}
 
 function formatAdminUserDate(value: string | null): string {
   if (!value) return "기록 없음";
@@ -287,12 +304,14 @@ export function SelectedUserLookupState({
 function SelectedUserBoard({
   selectedUser,
   selectedSheetId,
+  onNavigationGuardChange,
   onUserSelected,
   onSheetSelected,
   onReplaceSheetId
 }: {
   selectedUser: AdminUserSummary;
   selectedSheetId: string | null;
+  onNavigationGuardChange: AdminBoardNavigationGuardChange;
   onUserSelected: (userId: string | null) => void;
   onSheetSelected: (sheetId: string) => void;
   onReplaceSheetId: (sheetId: string | null) => void;
@@ -314,38 +333,84 @@ function SelectedUserBoard({
   const mutationBarrier = mutationBarrierRef.current;
   const [transitionPending, setTransitionPending] = useState(false);
   const [transitionBlocked, setTransitionBlocked] = useState(false);
+  const navigationRequestRef = useRef<{
+    promise: Promise<boolean>;
+    resolve: (proceed: boolean) => void;
+  } | null>(null);
+  const transitionActionsRef = useRef({
+    discardPendingWrites: board.discardPendingWrites,
+    flushPendingWrites: board.flushPendingWrites,
+    retryPendingWrites: board.retryPendingWrites
+  });
+  transitionActionsRef.current = {
+    discardPendingWrites: board.discardPendingWrites,
+    flushPendingWrites: board.flushPendingWrites,
+    retryPendingWrites: board.retryPendingWrites
+  };
 
-  const changeUser = useCallback(
+  const resolveNavigation = useCallback((proceed: boolean) => {
+    const request = navigationRequestRef.current;
+    if (!request) return;
+    navigationRequestRef.current = null;
+    request.resolve(proceed);
+  }, []);
+
+  const attemptNavigation = useCallback(
     async (mode: SubjectTransitionMode) => {
       setTransitionPending(true);
       setTransitionBlocked(false);
+      const actions = transitionActionsRef.current;
       try {
         await runAdminSubjectTransition({
           mode,
           waitForMutations: mutationBarrier.lockAndDrain,
-          flushPendingWrites: board.flushPendingWrites,
-          retryPendingWrites: board.retryPendingWrites,
-          discardPendingWrites: board.discardPendingWrites,
-          changeSubject: () => onUserSelected(null)
+          flushPendingWrites: actions.flushPendingWrites,
+          retryPendingWrites: actions.retryPendingWrites,
+          discardPendingWrites: actions.discardPendingWrites,
+          changeSubject: () => undefined
         });
+        resolveNavigation(true);
       } catch {
         setTransitionBlocked(true);
       } finally {
         setTransitionPending(false);
       }
     },
-    [
-      board.discardPendingWrites,
-      board.flushPendingWrites,
-      board.retryPendingWrites,
-      mutationBarrier,
-      onUserSelected
-    ]
+    [mutationBarrier, resolveNavigation]
   );
+
+  const requestNavigation = useCallback((): Promise<boolean> => {
+    if (navigationRequestRef.current) {
+      return navigationRequestRef.current.promise;
+    }
+
+    let resolve!: (proceed: boolean) => void;
+    const promise = new Promise<boolean>((resolvePromise) => {
+      resolve = resolvePromise;
+    });
+    navigationRequestRef.current = { promise, resolve };
+    void attemptNavigation("flush");
+    return promise;
+  }, [attemptNavigation]);
+
+  useEffect(() => {
+    onNavigationGuardChange(requestNavigation);
+    return () => {
+      onNavigationGuardChange(null);
+      resolveNavigation(false);
+      mutationBarrier.unlock();
+    };
+  }, [
+    mutationBarrier,
+    onNavigationGuardChange,
+    requestNavigation,
+    resolveNavigation
+  ]);
 
   const cancelChange = () => {
     mutationBarrier.unlock();
     setTransitionBlocked(false);
+    resolveNavigation(false);
   };
 
   const handleSheetSelected = (sheetId: string) => {
@@ -357,8 +422,8 @@ function SelectedUserBoard({
     <section className="admin-selected-user-board">
       <SelectedUserContext
         user={selectedUser}
-        busy={transitionPending}
-        onChooseAnother={() => void changeUser("flush")}
+        busy={transitionPending || transitionBlocked}
+        onChooseAnother={() => onUserSelected(null)}
       />
 
       {transitionBlocked ? (
@@ -371,10 +436,10 @@ function SelectedUserBoard({
             <button className="secondary-button" disabled={transitionPending} type="button" onClick={cancelChange}>
               보드로 돌아가기
             </button>
-            <button className="secondary-button" disabled={transitionPending} type="button" onClick={() => void changeUser("discard")}>
+            <button className="secondary-button" disabled={transitionPending} type="button" onClick={() => void attemptNavigation("discard")}>
               변경사항 버리기
             </button>
-            <button className="primary-button" disabled={transitionPending} type="button" onClick={() => void changeUser("retry")}>
+            <button className="primary-button" disabled={transitionPending} type="button" onClick={() => void attemptNavigation("retry")}>
               다시 저장
             </button>
           </div>
@@ -423,6 +488,7 @@ function SelectedUserBoard({
 export function AdminUserBoardsTab({
   selectedUserId,
   selectedSheetId,
+  onNavigationGuardChange,
   onUserSelected,
   onSheetSelected,
   onReplaceSheetId
@@ -437,6 +503,10 @@ export function AdminUserBoardsTab({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
+  const failedRequestRef = useRef<AdminUsersPageRequest>({
+    cursor: null,
+    append: false
+  });
 
   useEffect(() => {
     const timeout = window.setTimeout(
@@ -472,6 +542,7 @@ export function AdminUserBoardsTab({
         setSelectionResolved(true);
       } catch (loadError) {
         if (requestId !== requestIdRef.current) return;
+        failedRequestRef.current = { cursor, append };
         setError(getAdminUsersErrorMessage(loadError));
       } finally {
         if (requestId === requestIdRef.current) {
@@ -497,6 +568,7 @@ export function AdminUserBoardsTab({
       <SelectedUserBoard
         selectedUser={selectedUser}
         selectedSheetId={selectedSheetId}
+        onNavigationGuardChange={onNavigationGuardChange}
         onUserSelected={onUserSelected}
         onSheetSelected={onSheetSelected}
         onReplaceSheetId={onReplaceSheetId}
@@ -511,7 +583,7 @@ export function AdminUserBoardsTab({
           error={error}
           loading={loading}
           resolved={selectionResolved}
-          onRetry={() => void loadUsers(null, false)}
+          onRetry={() => void retryAdminUsersPage(failedRequestRef.current, loadUsers)}
           onChooseAnother={() => onUserSelected(null)}
         />
       </section>
@@ -542,7 +614,7 @@ export function AdminUserBoardsTab({
         loadingMore={loadingMore}
         error={error}
         nextCursor={nextCursor}
-        onRetry={() => void loadUsers(null, false)}
+        onRetry={() => void retryAdminUsersPage(failedRequestRef.current, loadUsers)}
         onLoadMore={() => void loadUsers(nextCursor, true)}
         onSelect={selectUser}
       />

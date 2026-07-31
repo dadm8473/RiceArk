@@ -9,6 +9,7 @@ import {
   SelectedUserLookupState,
   SelectedUserContext,
   buildAdminUsersPath,
+  retryAdminUsersPage,
   runAdminSubjectTransition
 } from "./AdminUserBoardsTab";
 import type { AdminUserSummary } from "./types";
@@ -137,6 +138,18 @@ describe("AdminUserBoardsTab", () => {
     );
   });
 
+  it("retries the exact failed user page without replacing accumulated results", async () => {
+    const loadUsers = vi.fn(async () => undefined);
+
+    await retryAdminUsersPage(
+      { cursor: "users-next-page", append: true },
+      loadUsers
+    );
+
+    expect(loadUsers).toHaveBeenCalledOnce();
+    expect(loadUsers).toHaveBeenCalledWith("users-next-page", true);
+  });
+
   it("drains mutations and flushes pending writes before changing subjects", async () => {
     const events: string[] = [];
 
@@ -203,5 +216,6 @@ describe("AdminUserBoardsTab", () => {
     expect(source.slice(childStart, tabStart)).toContain("useBoard({");
     expect(source).toContain("createApiClient({ adminTargetUserId: selectedUser.id })");
     expect(source).toMatch(/<BoardOverview[\s\S]*apiClient=\{apiClient\}/);
+    expect(source.slice(childStart, tabStart)).toContain("onNavigationGuardChange(requestNavigation)");
   });
 });

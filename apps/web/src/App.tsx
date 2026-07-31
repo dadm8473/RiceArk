@@ -2,7 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, Calculator, FileText } from "lucide-react";
 import { apiPatch, apiPostNoContent } from "./api/client";
 import { AdminDashboard } from "./features/admin/AdminDashboard";
-import type { AdminTab } from "./features/admin/types";
+import type {
+  AdminBoardNavigationGuard,
+  AdminBoardNavigationGuardChange,
+  AdminTab
+} from "./features/admin/types";
 import { AuctionCalculatorModal } from "./features/auction-calculator/AuctionCalculatorModal";
 import { AuthMenu, type AppTheme } from "./features/auth/AuthMenu";
 import { useSession, type AuthUser } from "./features/auth/useSession";
@@ -278,9 +282,29 @@ function getHistoryState(currentState: unknown): Record<string, unknown> {
     : { ricearkRoute: true };
 }
 
+export function shouldGuardAdminBoardNavigation(
+  currentRoute: AppRouteState,
+  nextRoute: AppRouteState
+): boolean {
+  return (
+    currentRoute.activeView === "admin" &&
+    currentRoute.adminTab === "users" &&
+    currentRoute.adminUserId !== null &&
+    (
+      nextRoute.activeView !== "admin" ||
+      nextRoute.adminTab !== "users" ||
+      nextRoute.adminUserId !== currentRoute.adminUserId
+    )
+  );
+}
+
 export function App() {
   const session = useSession();
   const initialRouteRef = useRef<AppRouteState>(typeof window === "undefined" ? { activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null } : getAppRouteState(window.location.href));
+  const currentRouteRef = useRef<AppRouteState>(initialRouteRef.current);
+  const adminBoardNavigationGuardRef = useRef<AdminBoardNavigationGuard | null>(null);
+  const pendingGuardedPopstateRouteRef = useRef<AppRouteState | null>(null);
+  const routeRequestIdRef = useRef(0);
   const seededSharedHistoryRef = useRef(false);
   const [routeShareId, setRouteShareId] = useState<string | null>(() => initialRouteRef.current.shareId);
   const [routeSheetId, setRouteSheetId] = useState<string | null>(() => initialRouteRef.current.sheetId);
@@ -293,6 +317,7 @@ export function App() {
     route: AppRouteState,
     mode: "push" | "replace" | "pop" = "push"
   ) => {
+    currentRouteRef.current = route;
     setActiveView(route.activeView);
     setRouteShareId(route.shareId);
     setRouteSheetId(route.sheetId);
@@ -308,6 +333,66 @@ export function App() {
     const historyMethod = mode === "replace" ? "replaceState" : "pushState";
     window.history[historyMethod](getHistoryState(window.history.state), "", nextUrl);
   }, []);
+  const handleAdminBoardNavigationGuardChange = useCallback<AdminBoardNavigationGuardChange>((guard) => {
+    adminBoardNavigationGuardRef.current = guard;
+  }, []);
+  const requestAppRoute = useCallback((
+    route: AppRouteState,
+    mode: "push" | "replace" | "pop" = "push"
+  ): Promise<boolean> => {
+    const currentRoute = currentRouteRef.current;
+    const guard = shouldGuardAdminBoardNavigation(currentRoute, route)
+      ? adminBoardNavigationGuardRef.current
+      : null;
+
+    if (!guard) {
+      applyAppRoute(route, mode);
+      return Promise.resolve(true);
+    }
+
+    const requestId = ++routeRequestIdRef.current;
+    if (mode === "pop") {
+      pendingGuardedPopstateRouteRef.current = currentRoute;
+    }
+    const restorePendingPopstateRoute = () => {
+      const restoreRoute = pendingGuardedPopstateRouteRef.current;
+      if (!restoreRoute || typeof window === "undefined") return;
+      pendingGuardedPopstateRouteRef.current = null;
+      const currentUrl = getAppRouteUrl(restoreRoute, window.location.href);
+      window.history.replaceState(
+        getHistoryState(window.history.state),
+        "",
+        currentUrl
+      );
+    };
+
+    let navigationDecision: Promise<boolean>;
+    try {
+      navigationDecision = guard();
+    } catch {
+      restorePendingPopstateRoute();
+      return Promise.resolve(false);
+    }
+
+    return navigationDecision.then(
+      (proceed) => {
+        if (requestId !== routeRequestIdRef.current) return false;
+        if (!proceed) {
+          restorePendingPopstateRoute();
+          return false;
+        }
+        pendingGuardedPopstateRouteRef.current = null;
+        applyAppRoute(route, mode);
+        return true;
+      },
+      () => {
+        if (requestId === routeRequestIdRef.current) {
+          restorePendingPopstateRoute();
+        }
+        return false;
+      }
+    );
+  }, [applyAppRoute]);
   const handleReplaceBoardSheetId = useCallback((sheetId: string | null) => {
     applyAppRoute({ activeView: "board", shareId: null, sheetId, adminTab: null, adminUserId: null, adminSheetId: null }, "replace");
   }, [applyAppRoute]);
@@ -364,7 +449,7 @@ export function App() {
 
     function handlePopState() {
       const route = getAppRouteState(window.location.href);
-      applyAppRoute(route, "pop");
+      void requestAppRoute(route, "pop");
       setCalculatorOpen(false);
     }
 
@@ -372,7 +457,7 @@ export function App() {
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [applyAppRoute]);
+  }, [requestAppRoute]);
 
   useEffect(() => {
     if (activeView !== "admin" || session.status === "checking") return;
@@ -430,22 +515,22 @@ export function App() {
 
   const handleOwnBoardSelected = () => {
     setCalculatorOpen(false);
-    applyAppRoute({ activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
+    void requestAppRoute({ activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
   };
 
   const handleSharedRiceBinSelected = () => {
     if (activeView === "shared") setSharedRiceBinLookupResetKey((key) => key + 1);
     setCalculatorOpen(false);
-    applyAppRoute({ activeView: "shared", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
+    void requestAppRoute({ activeView: "shared", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
   };
 
   const handleAdminSelected = () => {
     setCalculatorOpen(false);
-    applyAppRoute({ activeView: "admin", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
+    void requestAppRoute({ activeView: "admin", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
   };
 
   const handleAdminTabSelected = useCallback((adminTab: AdminTab) => {
-    applyAppRoute({
+    void requestAppRoute({
       activeView: "admin",
       shareId: null,
       sheetId: null,
@@ -453,10 +538,10 @@ export function App() {
       adminUserId: routeAdminUserId,
       adminSheetId: routeAdminSheetId
     });
-  }, [applyAppRoute, routeAdminSheetId, routeAdminUserId]);
+  }, [requestAppRoute, routeAdminSheetId, routeAdminUserId]);
 
   const handleAdminUserSelected = useCallback((adminUserId: string | null) => {
-    applyAppRoute({
+    void requestAppRoute({
       activeView: "admin",
       shareId: null,
       sheetId: null,
@@ -464,7 +549,7 @@ export function App() {
       adminUserId,
       adminSheetId: null
     });
-  }, [applyAppRoute]);
+  }, [requestAppRoute]);
 
   const handleAdminSheetSelected = useCallback((adminSheetId: string) => {
     applyAppRoute({
@@ -559,6 +644,7 @@ export function App() {
               activeTab={routeAdminTab}
               selectedUserId={routeAdminUserId}
               selectedSheetId={routeAdminSheetId}
+              onNavigationGuardChange={handleAdminBoardNavigationGuardChange}
               onTabSelected={handleAdminTabSelected}
               onUserSelected={handleAdminUserSelected}
               onSheetSelected={handleAdminSheetSelected}

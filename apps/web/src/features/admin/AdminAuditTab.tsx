@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, RefreshCw } from "lucide-react";
 import { ApiClientError, apiGet } from "../../api/client";
 import type { AdminAuditLog, AdminAuditLogPage } from "./types";
@@ -9,6 +9,18 @@ const ACTION_LABELS: Record<string, string> = {
   "characters.refresh": "캐릭터 정보 갱신",
   "settings.update": "보드 표시 설정 변경"
 };
+
+export type AdminAuditPageRequest = {
+  cursor: string | null;
+  append: boolean;
+};
+
+export function retryAdminAuditPage(
+  request: AdminAuditPageRequest,
+  loadLogs: (cursor: string | null, append: boolean) => Promise<void>
+): Promise<void> {
+  return loadLogs(request.cursor, request.append);
+}
 
 function formatAuditDate(value: string): string {
   return new Intl.DateTimeFormat("ko-KR", {
@@ -182,6 +194,10 @@ export function AdminAuditTab() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const failedRequestRef = useRef<AdminAuditPageRequest>({
+    cursor: null,
+    append: false
+  });
 
   const loadLogs = useCallback(async (cursor: string | null, append: boolean) => {
     if (append) setLoadingMore(true);
@@ -195,6 +211,7 @@ export function AdminAuditTab() {
       setLogs((current) => append ? mergeAuditLogs(current, page.logs) : page.logs);
       setNextCursor(page.nextCursor);
     } catch (loadError) {
+      failedRequestRef.current = { cursor, append };
       setError(getAuditErrorMessage(loadError));
     } finally {
       setLoading(false);
@@ -218,7 +235,7 @@ export function AdminAuditTab() {
         loadingMore={loadingMore}
         error={error}
         nextCursor={nextCursor}
-        onRetry={() => void loadLogs(null, false)}
+        onRetry={() => void retryAdminAuditPage(failedRequestRef.current, loadLogs)}
         onLoadMore={() => void loadLogs(nextCursor, true)}
       />
     </section>

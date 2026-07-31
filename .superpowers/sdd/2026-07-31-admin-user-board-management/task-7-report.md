@@ -125,3 +125,96 @@ Limitations:
 - Updated shared admin header copy so user and audit tabs do not claim to contain aggregate metrics only.
 - Removed an unrelated mobile workspace padding override.
 - No unresolved code findings remain. The remaining concerns are limited to live-authenticated visual follow-up.
+
+## Fix Round 1/5
+
+### Resolved Findings
+
+- Added an `App`-owned route guard for a selected administrator board. User A remains mounted while its mutation barrier drains and its pending-write queue flushes.
+- Routed A-to-B, A-to-no-subject, users-tab exits, top-level view exits, and browser `popstate` through the same guard.
+- Kept retry, explicit discard, and cancel behavior in the selected-user child. Navigation proceeds only after flush/retry/discard succeeds; cancel keeps the current route.
+- Preserved immutable scoped clients. A route change cannot mount the replacement subject until the current subject's guard resolves.
+- Stored the failed `{ cursor, append }` request independently in both user and audit pagination. Retry now requests that exact page, so later-page failures retain accumulated rows.
+- Left the deferred ARIA tab-semantics finding unchanged as requested.
+
+### RED
+
+Command:
+
+```text
+pnpm vitest run apps/web/src/App.test.ts apps/web/src/features/admin/AdminUserBoardsTab.test.ts apps/web/src/features/admin/AdminAuditTab.test.ts apps/web/src/features/admin/AdminDashboard.test.ts
+```
+
+Output:
+
+```text
+Test Files  3 failed | 1 passed (4)
+Tests       7 failed | 79 passed (86)
+Exit code   1
+```
+
+The new failures covered missing A-to-B, A-to-null, users-tab, and `popstate` guards; missing exact user/audit pagination retry helpers; and missing selected-child guard registration.
+
+### GREEN
+
+Command:
+
+```text
+pnpm vitest run apps/web/src/App.test.ts apps/web/src/features/admin/AdminUserBoardsTab.test.ts apps/web/src/features/admin/AdminAuditTab.test.ts apps/web/src/features/admin/AdminDashboard.test.ts
+```
+
+Output:
+
+```text
+✓ apps/web/src/features/admin/AdminAuditTab.test.ts (6 tests)
+✓ apps/web/src/features/admin/AdminUserBoardsTab.test.ts (9 tests)
+✓ apps/web/src/features/admin/AdminDashboard.test.ts (12 tests)
+✓ apps/web/src/App.test.ts (60 tests)
+
+Test Files  4 passed (4)
+Tests       87 passed (87)
+Exit code   0
+```
+
+Command:
+
+```text
+pnpm check
+```
+
+Output:
+
+```text
+Scope: 3 of 4 workspace projects
+packages/core check$ tsc -p tsconfig.json --noEmit
+packages/core check: Done
+apps/api check$ tsc -p tsconfig.json --noEmit
+apps/api check: Done
+apps/web check$ tsc -p tsconfig.json --noEmit
+apps/web check: Done
+Exit code 0
+```
+
+### Files
+
+- `apps/web/src/App.tsx`
+- `apps/web/src/App.test.ts`
+- `apps/web/src/features/admin/AdminDashboard.tsx`
+- `apps/web/src/features/admin/AdminUserBoardsTab.tsx`
+- `apps/web/src/features/admin/AdminUserBoardsTab.test.ts`
+- `apps/web/src/features/admin/AdminAuditTab.tsx`
+- `apps/web/src/features/admin/AdminAuditTab.test.ts`
+- `apps/web/src/features/admin/types.ts`
+- `.superpowers/sdd/2026-07-31-admin-user-board-management/task-7-report.md`
+
+### Visual QA
+
+No layout or styling was changed in this round. Authenticated visual QA was not repeated; the existing Task 7 mock-auth desktop/mobile evidence and its live-authentication limitation still apply. Controller follow-up should verify the blocked flush prompt while navigating by tab, subject route, and browser history in a real authenticated administrator session.
+
+### Concerns And Self-Review
+
+- Overlapping guarded exits share the selected child lifecycle and use the latest guarded destination.
+- Reselecting a route that does not change the current subject does not supersede an in-flight guarded exit.
+- A canceled `popstate` restores the current administrator route URL.
+- Exact-page retries preserve `append: true`, so existing user cards and audit rows are merged rather than replaced.
+- The deferred ARIA tab-semantics minor remains open for final review by instruction.

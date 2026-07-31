@@ -19,6 +19,7 @@ import {
   runDurableLogout,
   storeAppTheme
 } from "./App";
+import type { AdminTab } from "./features/admin/types";
 import { createBoardMutationBarrier } from "./features/board/mutationBarrier";
 import { ReliablePatchQueueFlushError } from "./features/board/reliablePatchQueue";
 
@@ -147,6 +148,34 @@ function deferred<T>() {
   });
   return { promise, reject, resolve };
 }
+
+type GuardedAdminDashboardProps = {
+  onNavigationGuardChange?: (guard: (() => Promise<boolean>) | null) => void;
+  onTabSelected?: (tab: AdminTab) => void;
+  onUserSelected?: (userId: string | null) => void;
+};
+
+const guardedAdminTransitions: Array<{
+  name: string;
+  navigate: (props: GuardedAdminDashboardProps) => void;
+  expectedUrl: string;
+}> = [
+  {
+    name: "user A to user B",
+    navigate: (props) => props.onUserSelected?.("user-b"),
+    expectedUrl: "/?view=admin&adminTab=users&adminUser=user-b"
+  },
+  {
+    name: "user A to no selected user",
+    navigate: (props) => props.onUserSelected?.(null),
+    expectedUrl: "/?view=admin&adminTab=users"
+  },
+  {
+    name: "users tab to audit tab",
+    navigate: (props) => props.onTabSelected?.("audit"),
+    expectedUrl: "/?view=admin&adminTab=audit&adminUser=user-a&adminSheet=sheet-a"
+  }
+];
 
 describe("getAuthErrorMessage", () => {
   it("wraps login start errors in a Korean app message", () => {
@@ -934,6 +963,119 @@ describe("App", () => {
     expect(browser.replaceState).toHaveBeenCalledWith(expect.any(Object), "", "/?foo=1&view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-3#memo");
   });
 
+  it.each(guardedAdminTransitions)(
+    "waits for the selected board guard before navigating $name",
+    async ({ navigate, expectedUrl }) => {
+      const browser = installBrowserWindow(
+        "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a&adminSheet=sheet-a"
+      );
+      hooks.useSession.mockReturnValue({
+        status: "authenticated",
+        user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+        error: null
+      });
+      const pendingWrites = deferred<boolean>();
+      const guard = vi.fn(() => pendingWrites.promise);
+
+      renderToStaticMarkup(createElement(App));
+      const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
+      dashboardProps.onNavigationGuardChange?.(guard);
+
+      navigate(dashboardProps);
+
+      expect(guard).toHaveBeenCalledOnce();
+      expect(browser.pushState).not.toHaveBeenCalled();
+
+      pendingWrites.resolve(true);
+      await vi.waitFor(() => {
+        expect(browser.pushState).toHaveBeenCalledWith(expect.any(Object), "", expectedUrl);
+      });
+    }
+  );
+
+  it("waits for the selected board guard before applying a popstate user change", async () => {
+    const browser = installBrowserWindow(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a"
+    );
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+      error: null
+    });
+    vi.stubGlobal("document", {
+      documentElement: { dataset: {} },
+      querySelector: vi.fn(() => null)
+    });
+    const pendingWrites = deferred<boolean>();
+    const guard = vi.fn(() => pendingWrites.promise);
+
+    renderToStaticMarkup(createElement(App));
+    const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
+    dashboardProps.onNavigationGuardChange?.(guard);
+    for (const effect of hooks.effects) effect.callback();
+    const popstate = browser.addEventListener.mock.calls.find(([event]) => event === "popstate")?.[1];
+    const next = new URL(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-b"
+    );
+    Object.assign(window.location, {
+      hash: next.hash,
+      href: next.href,
+      pathname: next.pathname,
+      search: next.search
+    });
+
+    popstate?.();
+
+    expect(guard).toHaveBeenCalledOnce();
+    expect(hooks.stateUpdates).not.toContain("user-b");
+
+    pendingWrites.resolve(true);
+    await vi.waitFor(() => {
+      expect(hooks.stateUpdates).toContain("user-b");
+    });
+  });
+
+  it("restores the selected user route when a guarded popstate change is canceled", async () => {
+    const browser = installBrowserWindow(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a"
+    );
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+      error: null
+    });
+    vi.stubGlobal("document", {
+      documentElement: { dataset: {} },
+      querySelector: vi.fn(() => null)
+    });
+
+    renderToStaticMarkup(createElement(App));
+    const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
+    dashboardProps.onNavigationGuardChange?.(async () => false);
+    for (const effect of hooks.effects) effect.callback();
+    const popstate = browser.addEventListener.mock.calls.find(([event]) => event === "popstate")?.[1];
+    const next = new URL(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-b"
+    );
+    Object.assign(window.location, {
+      hash: next.hash,
+      href: next.href,
+      pathname: next.pathname,
+      search: next.search
+    });
+
+    popstate?.();
+
+    await vi.waitFor(() => {
+      expect(browser.replaceState).toHaveBeenCalledWith(
+        expect.any(Object),
+        "",
+        "/?view=admin&adminTab=users&adminUser=user-a"
+      );
+    });
+    expect(hooks.stateUpdates).not.toContain("user-b");
+  });
+
   it("restores administrator tab, user, and sheet state from browser history", () => {
     const browser = installBrowserWindow("https://riceark.pages.dev/?view=admin&adminTab=overview");
     vi.stubGlobal("document", {
@@ -1060,7 +1202,7 @@ describe("App", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain("const handleOwnBoardSelected = () =>");
-    expect(source).toContain('applyAppRoute({ activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });');
+    expect(source).toContain('requestAppRoute({ activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });');
     expect(source).toContain('onClick={handleOwnBoardSelected}');
   });
 

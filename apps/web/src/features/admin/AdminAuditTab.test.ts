@@ -1,10 +1,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AdminAuditTable,
   AdminAuditToolbar,
-  getAdminAuditActionLabel
+  getAdminAuditActionLabel,
+  retryAdminAuditPage
 } from "./AdminAuditTab";
 import type { AdminAuditLog } from "./types";
 
@@ -134,5 +135,17 @@ describe("AdminAuditTab", () => {
     expect(html).toContain('aria-label="관리 기록 새로고침"');
     expect(html).toContain('title="관리 기록 새로고침"');
     expect(html).not.toMatch(/>새로고침</);
+  });
+
+  it("retries the exact failed audit page without replacing accumulated rows", async () => {
+    const loadLogs = vi.fn(async () => undefined);
+
+    await retryAdminAuditPage(
+      { cursor: "audit-next-page", append: true },
+      loadLogs
+    );
+
+    expect(loadLogs).toHaveBeenCalledOnce();
+    expect(loadLogs).toHaveBeenCalledWith("audit-next-page", true);
   });
 });

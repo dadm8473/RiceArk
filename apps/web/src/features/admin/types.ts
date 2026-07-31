@@ -111,6 +111,12 @@ export type AdminHealth = {
 
 export type AdminTab = "overview" | "usage" | "health" | "data" | "users" | "audit";
 
+export type AdminBoardNavigationGuard = () => Promise<boolean>;
+
+export type AdminBoardNavigationGuardChange = (
+  guard: AdminBoardNavigationGuard | null
+) => void;
+
 export type AdminUserSummary = {
   id: string;
   displayName: string;

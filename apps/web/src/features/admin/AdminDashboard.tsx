@@ -8,7 +8,12 @@ import { HealthTab } from "./HealthTab";
 import { OverviewTab } from "./OverviewTab";
 import { UsageTab } from "./UsageTab";
 import { formatGeneratedAt } from "./format";
-import type { AdminHealth, AdminSummary, AdminTab } from "./types";
+import type {
+  AdminBoardNavigationGuardChange,
+  AdminHealth,
+  AdminSummary,
+  AdminTab
+} from "./types";
 
 export type { AdminHealth, AdminSummary, AdminTab } from "./types";
 
@@ -31,6 +36,7 @@ type AdminDashboardContentProps = {
   onTabSelected?: (tab: AdminTab) => void;
   selectedUserId?: string | null;
   selectedSheetId?: string | null;
+  onNavigationGuardChange?: AdminBoardNavigationGuardChange;
   onUserSelected?: (userId: string | null) => void;
   onSheetSelected?: (sheetId: string) => void;
   onReplaceSheetId?: (sheetId: string | null) => void;
@@ -46,6 +52,7 @@ export function AdminDashboardContent({
   onTabSelected = () => undefined,
   selectedUserId = null,
   selectedSheetId = null,
+  onNavigationGuardChange = () => undefined,
   onUserSelected = () => undefined,
   onSheetSelected = () => undefined,
   onReplaceSheetId = () => undefined
@@ -95,6 +102,7 @@ export function AdminDashboardContent({
         <AdminUserBoardsTab
           selectedUserId={selectedUserId}
           selectedSheetId={selectedSheetId}
+          onNavigationGuardChange={onNavigationGuardChange}
           onUserSelected={onUserSelected}
           onSheetSelected={onSheetSelected}
           onReplaceSheetId={onReplaceSheetId}
@@ -109,6 +117,7 @@ export type AdminDashboardProps = {
   activeTab: AdminTab | null;
   selectedUserId: string | null;
   selectedSheetId: string | null;
+  onNavigationGuardChange: AdminBoardNavigationGuardChange;
   onTabSelected: (tab: AdminTab) => void;
   onUserSelected: (userId: string | null) => void;
   onSheetSelected: (sheetId: string) => void;
@@ -125,6 +134,7 @@ export function AdminDashboard({
   activeTab,
   selectedUserId,
   selectedSheetId,
+  onNavigationGuardChange,
   onTabSelected,
   onUserSelected,
   onSheetSelected,
@@ -175,6 +185,7 @@ export function AdminDashboard({
         onTabSelected={onTabSelected}
         selectedUserId={selectedUserId}
         selectedSheetId={selectedSheetId}
+        onNavigationGuardChange={onNavigationGuardChange}
         onUserSelected={onUserSelected}
         onSheetSelected={onSheetSelected}
         onReplaceSheetId={onReplaceSheetId}
