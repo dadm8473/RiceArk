@@ -23,6 +23,7 @@ import type {
   AdminBoardNavigationGuard,
   AdminTab
 } from "./features/admin/types";
+import { createAdminSubjectNavigationController } from "./features/admin/AdminUserBoardsTab";
 import { createBoardMutationBarrier } from "./features/board/mutationBarrier";
 import { ReliablePatchQueueFlushError } from "./features/board/reliablePatchQueue";
 
@@ -1152,6 +1153,66 @@ describe("App", () => {
     expect(hooks.stateUpdates).not.toContain("user-b");
     expect(window.location.search).toBe("?view=admin&adminTab=users&adminUser=user-a");
   });
+
+  it.each(["user-b", "user-c"])(
+    "applies latest route %s when it reclaims the same delayed subject flush",
+    async (latestUserId) => {
+      const browser = installBrowserWindow(
+        "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a"
+      );
+      hooks.useSession.mockReturnValue({
+        status: "authenticated",
+        user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+        error: null
+      });
+      vi.stubGlobal("document", {
+        documentElement: { dataset: {} },
+        querySelector: vi.fn(() => null)
+      });
+      const pendingWrites = deferred<void>();
+      const runTransition = vi.fn(() => pendingWrites.promise);
+      const unlock = vi.fn();
+      const controller = createAdminSubjectNavigationController({
+        runTransition,
+        unlock
+      });
+
+      renderToStaticMarkup(createElement(App));
+      const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
+      dashboardProps.onNavigationGuardChange?.(controller.navigationGuard);
+      for (const effect of hooks.effects) effect.callback();
+      const popstate = browser.addEventListener.mock.calls.find(([event]) => event === "popstate")?.[1];
+
+      for (const userId of ["user-b", "user-a", latestUserId]) {
+        const route = new URL(
+          `https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=${userId}`
+        );
+        Object.assign(window.location, {
+          hash: route.hash,
+          href: route.href,
+          pathname: route.pathname,
+          search: route.search
+        });
+        popstate?.();
+      }
+      hooks.stateUpdates.length = 0;
+
+      expect(runTransition).toHaveBeenCalledOnce();
+      expect(unlock).not.toHaveBeenCalled();
+
+      pendingWrites.resolve();
+      await vi.waitFor(() => {
+        expect(hooks.stateUpdates).toContain(latestUserId);
+      });
+
+      expect(hooks.stateUpdates).not.toContain("user-a");
+      expect(window.location.search).toBe(
+        `?view=admin&adminTab=users&adminUser=${latestUserId}`
+      );
+      expect(runTransition).toHaveBeenCalledOnce();
+      expect(unlock).not.toHaveBeenCalled();
+    }
+  );
 
   it("restores administrator tab, user, and sheet state from browser history", () => {
     const browser = installBrowserWindow("https://riceark.pages.dev/?view=admin&adminTab=overview");

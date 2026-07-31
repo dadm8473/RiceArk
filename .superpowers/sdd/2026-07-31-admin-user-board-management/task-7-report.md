@@ -321,3 +321,98 @@ Exit code 0
 - This round changes route arbitration and pending-write lifecycle only; no layout or style code changed.
 - Authenticated visual QA was not repeated. Controller follow-up should exercise rapid Back-to-Forward navigation with a real delayed board write.
 - The deferred ARIA tab-semantics minor remains untouched.
+
+## Fix Round 3/5
+
+### Resolved Remaining Invariant
+
+- Replaced the selected-user guard's disconnected navigation refs with a production `AdminSubjectNavigationController` that owns one pending route promise and one in-flight subject transition.
+- Every guarded claimant clears the superseded marker before checking for an existing request. A third B or C route can therefore reclaim the same delayed drain after Forward temporarily supersedes it.
+- Reclaimed requests receive the original pending promise and do not start another mutation drain or queue flush.
+- `App` request IDs still decide which promise callback may apply route state. Earlier B callbacks stay stale; only the latest B/C callback can update the UI.
+- If A remains latest, the controller resolves false and unlocks after the transition settles. If B/C becomes latest, it resolves true, stays locked through route application, and releases exactly once when the selected subject unmounts.
+- Transition failures remain recoverable: an active latest route keeps the retry/discard prompt, while an abandoned route unlocks without reviving stale navigation.
+
+### Behavioral Coverage
+
+- `A -> B`, `-> A`, `-> B` before one delayed flush settles: final UI user is B and URL is B.
+- `A -> B`, `-> A`, `-> C` before the same delayed flush settles: final UI user is C and URL is C.
+- Both sequences assert one transition start, no early unlock, and no stale A/B route mutation.
+- Controller coverage asserts the reclaimed request is the same promise, starts no duplicate flush, and unlocks exactly once on final release.
+
+### RED
+
+Command:
+
+```text
+pnpm vitest run apps/web/src/App.test.ts apps/web/src/features/admin/AdminUserBoardsTab.test.ts
+```
+
+Output:
+
+```text
+Test Files  2 failed (2)
+Tests       3 failed | 71 passed (74)
+Exit code   1
+```
+
+Failures:
+
+```text
+App > applies latest route user-b when it reclaims the same delayed subject flush
+App > applies latest route user-c when it reclaims the same delayed subject flush
+AdminUserBoardsTab > reclaims one delayed transition for the latest guarded route without another flush
+```
+
+### GREEN
+
+Focused App/admin command:
+
+```text
+pnpm vitest run apps/web/src/App.test.ts apps/web/src/features/admin/AdminUserBoardsTab.test.ts apps/web/src/features/admin/AdminAuditTab.test.ts apps/web/src/features/admin/AdminDashboard.test.ts
+```
+
+Output:
+
+```text
+✓ apps/web/src/features/admin/AdminAuditTab.test.ts (6 tests)
+✓ apps/web/src/features/admin/AdminUserBoardsTab.test.ts (11 tests)
+✓ apps/web/src/features/admin/AdminDashboard.test.ts (12 tests)
+✓ apps/web/src/App.test.ts (63 tests)
+
+Test Files  4 passed (4)
+Tests       92 passed (92)
+Exit code   0
+```
+
+Workspace check command:
+
+```text
+pnpm check
+```
+
+Output:
+
+```text
+Scope: 3 of 4 workspace projects
+packages/core check$ tsc -p tsconfig.json --noEmit
+packages/core check: Done
+apps/api check$ tsc -p tsconfig.json --noEmit
+apps/api check: Done
+apps/web check$ tsc -p tsconfig.json --noEmit
+apps/web check: Done
+Exit code 0
+```
+
+### Files
+
+- `apps/web/src/App.test.ts`
+- `apps/web/src/features/admin/AdminUserBoardsTab.tsx`
+- `apps/web/src/features/admin/AdminUserBoardsTab.test.ts`
+- `.superpowers/sdd/2026-07-31-admin-user-board-management/task-7-report.md`
+
+### Visual QA And Concerns
+
+- No layout, styling, or visible copy changed in round 3.
+- Authenticated visual QA was not repeated. Controller follow-up should exercise B/A/B and B/A/C browser-history sequences against a genuinely delayed write.
+- The deferred ARIA tab-semantics minor remains untouched.

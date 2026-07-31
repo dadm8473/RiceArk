@@ -9,8 +9,8 @@ import {
   SelectedUserLookupState,
   SelectedUserContext,
   buildAdminUsersPath,
+  createAdminSubjectNavigationController,
   retryAdminUsersPage,
-  runAdminSubjectNavigationAttempt,
   runAdminSubjectTransition
 } from "./AdminUserBoardsTab";
 import type { AdminUserSummary } from "./types";
@@ -216,21 +216,48 @@ describe("AdminUserBoardsTab", () => {
 
   it("unlocks user A only after a superseded in-flight transition settles", async () => {
     const transition = deferred<void>();
+    const runTransition = vi.fn(() => transition.promise);
     const unlock = vi.fn();
-    let superseded = false;
-
-    const result = runAdminSubjectNavigationAttempt({
-      runTransition: () => transition.promise,
-      isSuperseded: () => superseded,
+    const controller = createAdminSubjectNavigationController({
+      runTransition,
       unlock
     });
 
-    superseded = true;
+    const result = controller.navigationGuard();
+    controller.navigationGuard.supersede();
     expect(unlock).not.toHaveBeenCalled();
 
     transition.resolve();
 
     await expect(result).resolves.toBe(false);
+    expect(runTransition).toHaveBeenCalledOnce();
+    expect(unlock).toHaveBeenCalledOnce();
+  });
+
+  it("reclaims one delayed transition for the latest guarded route without another flush", async () => {
+    const transition = deferred<void>();
+    const runTransition = vi.fn(() => transition.promise);
+    const unlock = vi.fn();
+    const controller = createAdminSubjectNavigationController({
+      runTransition,
+      unlock
+    });
+
+    const firstRequest = controller.navigationGuard();
+    controller.navigationGuard.supersede();
+    const latestRequest = controller.navigationGuard();
+
+    expect(latestRequest).toBe(firstRequest);
+    expect(runTransition).toHaveBeenCalledOnce();
+    expect(unlock).not.toHaveBeenCalled();
+
+    transition.resolve();
+
+    await expect(latestRequest).resolves.toBe(true);
+    expect(runTransition).toHaveBeenCalledOnce();
+    expect(unlock).not.toHaveBeenCalled();
+
+    controller.release();
     expect(unlock).toHaveBeenCalledOnce();
   });
 
@@ -245,6 +272,6 @@ describe("AdminUserBoardsTab", () => {
     expect(source.slice(childStart, tabStart)).toContain("useBoard({");
     expect(source).toContain("createApiClient({ adminTargetUserId: selectedUser.id })");
     expect(source).toMatch(/<BoardOverview[\s\S]*apiClient=\{apiClient\}/);
-    expect(source.slice(childStart, tabStart)).toContain("onNavigationGuardChange(navigationGuard)");
+    expect(source.slice(childStart, tabStart)).toContain("onNavigationGuardChange(navigationController.navigationGuard)");
   });
 });

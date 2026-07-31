@@ -145,7 +145,7 @@ export async function runAdminSubjectTransition({
   await changeSubject();
 }
 
-export async function runAdminSubjectNavigationAttempt({
+async function runAdminSubjectNavigationAttempt({
   runTransition,
   isSuperseded,
   unlock
@@ -163,6 +163,113 @@ export async function runAdminSubjectNavigationAttempt({
   if (!isSuperseded()) return true;
   unlock();
   return false;
+}
+
+export type AdminSubjectNavigationController = {
+  navigationGuard: AdminBoardNavigationGuard;
+  attempt: (mode: SubjectTransitionMode) => Promise<void>;
+  cancel: () => void;
+  release: () => void;
+};
+
+export function createAdminSubjectNavigationController({
+  runTransition,
+  unlock,
+  onPendingChange = () => undefined,
+  onBlockedChange = () => undefined
+}: {
+  runTransition: (mode: SubjectTransitionMode) => Promise<void>;
+  unlock: () => void;
+  onPendingChange?: (pending: boolean) => void;
+  onBlockedChange?: (blocked: boolean) => void;
+}): AdminSubjectNavigationController {
+  let currentRequest: {
+    promise: Promise<boolean>;
+    resolve: (proceed: boolean) => void;
+  } | null = null;
+  let superseded = false;
+  let transitionInFlight = false;
+
+  const resolveNavigation = (proceed: boolean) => {
+    const request = currentRequest;
+    if (!request) return;
+    currentRequest = null;
+    request.resolve(proceed);
+  };
+
+  const attempt = async (mode: SubjectTransitionMode) => {
+    if (!currentRequest) return;
+    transitionInFlight = true;
+    onPendingChange(true);
+    onBlockedChange(false);
+    try {
+      const proceed = await runAdminSubjectNavigationAttempt({
+        runTransition: () => runTransition(mode),
+        isSuperseded: () => superseded,
+        unlock
+      });
+      resolveNavigation(proceed);
+    } catch {
+      onBlockedChange(true);
+    } finally {
+      transitionInFlight = false;
+      onPendingChange(false);
+    }
+  };
+
+  const requestNavigation = (): Promise<boolean> => {
+    superseded = false;
+    if (currentRequest) return currentRequest.promise;
+
+    let resolve!: (proceed: boolean) => void;
+    const promise = new Promise<boolean>((resolvePromise) => {
+      resolve = resolvePromise;
+    });
+    currentRequest = { promise, resolve };
+    void attempt("flush");
+    return promise;
+  };
+
+  const supersedeNavigation = () => {
+    if (!currentRequest) return;
+    superseded = true;
+    if (transitionInFlight) return;
+
+    unlock();
+    onBlockedChange(false);
+    onPendingChange(false);
+    resolveNavigation(false);
+  };
+
+  const navigationGuard = Object.assign(requestNavigation, {
+    supersede: supersedeNavigation
+  });
+
+  const cancel = () => {
+    if (transitionInFlight) {
+      supersedeNavigation();
+      return;
+    }
+    unlock();
+    onBlockedChange(false);
+    onPendingChange(false);
+    resolveNavigation(false);
+  };
+
+  const release = () => {
+    if (currentRequest) {
+      supersedeNavigation();
+    } else {
+      unlock();
+    }
+  };
+
+  return {
+    navigationGuard,
+    attempt,
+    cancel,
+    release
+  };
 }
 
 export function AdminUserResultCard({
@@ -354,12 +461,6 @@ function SelectedUserBoard({
   const mutationBarrier = mutationBarrierRef.current;
   const [transitionPending, setTransitionPending] = useState(false);
   const [transitionBlocked, setTransitionBlocked] = useState(false);
-  const navigationRequestRef = useRef<{
-    promise: Promise<boolean>;
-    resolve: (proceed: boolean) => void;
-  } | null>(null);
-  const navigationSupersededRef = useRef(false);
-  const transitionInFlightRef = useRef(false);
   const transitionActionsRef = useRef({
     discardPendingWrites: board.discardPendingWrites,
     flushPendingWrites: board.flushPendingWrites,
@@ -371,94 +472,37 @@ function SelectedUserBoard({
     retryPendingWrites: board.retryPendingWrites
   };
 
-  const resolveNavigation = useCallback((proceed: boolean) => {
-    const request = navigationRequestRef.current;
-    if (!request) return;
-    navigationRequestRef.current = null;
-    request.resolve(proceed);
-  }, []);
-
-  const attemptNavigation = useCallback(
-    async (mode: SubjectTransitionMode) => {
-      transitionInFlightRef.current = true;
-      setTransitionPending(true);
-      setTransitionBlocked(false);
-      const actions = transitionActionsRef.current;
-      try {
-        const proceed = await runAdminSubjectNavigationAttempt({
-          runTransition: () => runAdminSubjectTransition({
-            mode,
-            waitForMutations: mutationBarrier.lockAndDrain,
-            flushPendingWrites: actions.flushPendingWrites,
-            retryPendingWrites: actions.retryPendingWrites,
-            discardPendingWrites: actions.discardPendingWrites,
-            changeSubject: () => undefined
-          }),
-          isSuperseded: () => navigationSupersededRef.current,
-          unlock: mutationBarrier.unlock
+  const navigationControllerRef = useRef<AdminSubjectNavigationController | null>(null);
+  if (!navigationControllerRef.current) {
+    navigationControllerRef.current = createAdminSubjectNavigationController({
+      runTransition: (mode) => {
+        const actions = transitionActionsRef.current;
+        return runAdminSubjectTransition({
+          mode,
+          waitForMutations: mutationBarrier.lockAndDrain,
+          flushPendingWrites: actions.flushPendingWrites,
+          retryPendingWrites: actions.retryPendingWrites,
+          discardPendingWrites: actions.discardPendingWrites,
+          changeSubject: () => undefined
         });
-        resolveNavigation(proceed);
-      } catch {
-        setTransitionBlocked(true);
-      } finally {
-        transitionInFlightRef.current = false;
-        setTransitionPending(false);
-      }
-    },
-    [mutationBarrier, resolveNavigation]
-  );
-
-  const requestNavigation = useCallback((): Promise<boolean> => {
-    if (navigationRequestRef.current) {
-      return navigationRequestRef.current.promise;
-    }
-
-    let resolve!: (proceed: boolean) => void;
-    const promise = new Promise<boolean>((resolvePromise) => {
-      resolve = resolvePromise;
+      },
+      unlock: mutationBarrier.unlock,
+      onPendingChange: setTransitionPending,
+      onBlockedChange: setTransitionBlocked
     });
-    navigationSupersededRef.current = false;
-    navigationRequestRef.current = { promise, resolve };
-    void attemptNavigation("flush");
-    return promise;
-  }, [attemptNavigation]);
-
-  const supersedeNavigation = useCallback(() => {
-    if (!navigationRequestRef.current) return;
-    navigationSupersededRef.current = true;
-    if (transitionInFlightRef.current) return;
-
-    mutationBarrier.unlock();
-    setTransitionBlocked(false);
-    setTransitionPending(false);
-    resolveNavigation(false);
-  }, [mutationBarrier, resolveNavigation]);
-
-  const navigationGuard = useMemo<AdminBoardNavigationGuard>(
-    () => Object.assign(requestNavigation, {
-      supersede: supersedeNavigation
-    }),
-    [requestNavigation, supersedeNavigation]
-  );
+  }
+  const navigationController = navigationControllerRef.current;
 
   useEffect(() => {
-    onNavigationGuardChange(navigationGuard);
+    onNavigationGuardChange(navigationController.navigationGuard);
     return () => {
       onNavigationGuardChange(null);
-      resolveNavigation(false);
-      mutationBarrier.unlock();
+      navigationController.release();
     };
-  }, [
-    mutationBarrier,
-    navigationGuard,
-    onNavigationGuardChange,
-    resolveNavigation
-  ]);
+  }, [navigationController, onNavigationGuardChange]);
 
   const cancelChange = () => {
-    mutationBarrier.unlock();
-    setTransitionBlocked(false);
-    resolveNavigation(false);
+    navigationController.cancel();
   };
 
   const handleSheetSelected = (sheetId: string) => {
@@ -484,10 +528,10 @@ function SelectedUserBoard({
             <button className="secondary-button" disabled={transitionPending} type="button" onClick={cancelChange}>
               보드로 돌아가기
             </button>
-            <button className="secondary-button" disabled={transitionPending} type="button" onClick={() => void attemptNavigation("discard")}>
+            <button className="secondary-button" disabled={transitionPending} type="button" onClick={() => void navigationController.attempt("discard")}>
               변경사항 버리기
             </button>
-            <button className="primary-button" disabled={transitionPending} type="button" onClick={() => void attemptNavigation("retry")}>
+            <button className="primary-button" disabled={transitionPending} type="button" onClick={() => void navigationController.attempt("retry")}>
               다시 저장
             </button>
           </div>
