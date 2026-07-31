@@ -1,11 +1,11 @@
 import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
-import { requireUser } from "../auth/requireUser";
+import { requireSubjectUser } from "../auth/userAccess";
 import { saveUserSettings, updateCharacterDisplaySettings, updateChecklistOrientation } from "../db/settings";
-import type { Env } from "../env";
+import type { AppEnv } from "../env";
 
-export const settingsRoutes = new Hono<{ Bindings: Env }>();
+export const settingsRoutes = new Hono<AppEnv>();
 
 const densitySettingsSchema = z.object({
   density: z.enum(["comfortable", "default", "compact"]),
@@ -35,7 +35,7 @@ settingsRoutes.patch(
   "/settings",
   zValidator("json", settingsPatchSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const input = c.req.valid("json");
     if ("checklistOrientation" in input) {
       await updateChecklistOrientation(c.env, user.id, input.checklistOrientation);

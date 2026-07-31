@@ -2,6 +2,7 @@ import { zValidator } from "@hono/zod-validator";
 import { buildTaskDefinition } from "@riceark/core";
 import { Hono, type MiddlewareHandler } from "hono";
 import { z } from "zod";
+import { requireSubjectUser } from "../auth/userAccess";
 import { requireUser } from "../auth/requireUser";
 import {
   addBoardShareFavorite,
@@ -48,7 +49,7 @@ import {
   loadBoardSharingOverview,
   loadBoardSheet
 } from "../db/boardReads";
-import type { Env } from "../env";
+import type { AppEnv } from "../env";
 import { ApiError } from "../http/errors";
 import { periodKeySchema, resourceIdSchema, safeText } from "../http/input";
 import type { LostArkEventRewardFilter } from "../lostark/events";
@@ -304,9 +305,9 @@ export const boardNoteLayoutPatchSchema = z.object({
   height: boardNoteHeightSchema
 }).strict();
 
-export const boardRoutes = new Hono<{ Bindings: Env }>();
+export const boardRoutes = new Hono<AppEnv>();
 
-const privateBoardReadHeaders: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+const privateBoardReadHeaders: MiddlewareHandler<AppEnv> = async (c, next) => {
   c.header("Cache-Control", "private, no-store");
   c.header("Vary", "Cookie");
   await next();
@@ -329,7 +330,7 @@ boardRoutes.get(
   privateBoardReadHeaders,
   zValidator("query", boardBootstrapQuerySchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     try {
       const payload = await loadBoardBootstrap(c.env, user.id, c.req.valid("query").sheetId);
       return c.json(payload);
@@ -340,13 +341,13 @@ boardRoutes.get(
 );
 
 boardRoutes.get("/board/versions", privateBoardReadHeaders, async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const versions = await loadBoardVersionSummary(c.env, user.id);
   return c.json(versions);
 });
 
 boardRoutes.get("/board", privateBoardReadHeaders, async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const board = await loadBoard(c.env, user.id);
   return c.json(board);
 });
@@ -356,7 +357,7 @@ boardRoutes.get(
   privateBoardReadHeaders,
   zValidator("param", boardSheetIdParamSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     try {
       const { id } = c.req.valid("param");
       const sheet = await loadBoardSheet(c.env, user.id, id);
@@ -438,7 +439,7 @@ boardRoutes.get("/shared-rice-bins/:shareId/version", zValidator("param", boardS
 });
 
 boardRoutes.post("/board/sheets", zValidator("json", createBoardSheetSchema), async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const input = c.req.valid("json");
   const sheet = await createBoardSheet(c.env, user.id, input);
   if (!sheet) {
@@ -465,7 +466,7 @@ boardRoutes.delete("/board/sheets/:id/share", zValidator("param", boardSheetIdPa
 });
 
 boardRoutes.delete("/board/sheets/:id", zValidator("param", boardSheetIdParamSchema), async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const { id } = c.req.valid("param");
   const result = await deleteBoardSheet(c.env, user.id, id);
   if (result.type === "not_found") {
@@ -482,7 +483,7 @@ boardRoutes.patch(
   zValidator("param", boardSheetIdParamSchema),
   zValidator("json", updateBoardSheetSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
     const result = await updateBoardSheet(c.env, user.id, id, input);
@@ -497,7 +498,7 @@ boardRoutes.patch(
 );
 
 boardRoutes.post("/board/tables", zValidator("json", createBoardTableSchema), async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const input = c.req.valid("json");
   const table = await createBoardTable(c.env, user.id, input);
   if (!table) {
@@ -507,7 +508,7 @@ boardRoutes.post("/board/tables", zValidator("json", createBoardTableSchema), as
 });
 
 boardRoutes.post("/board/notes", zValidator("json", createBoardNoteSchema), async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const input = c.req.valid("json");
   const note = await createBoardNote(c.env, user.id, input);
   if (!note) {
@@ -521,7 +522,7 @@ boardRoutes.patch(
   zValidator("param", boardNoteIdParamSchema),
   zValidator("json", updateBoardNoteSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
     const updated = await updateBoardNote(c.env, user.id, id, input);
@@ -533,7 +534,7 @@ boardRoutes.patch(
 );
 
 boardRoutes.delete("/board/notes/:id", zValidator("param", boardNoteIdParamSchema), async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const { id } = c.req.valid("param");
   const deleted = await deleteBoardNote(c.env, user.id, id);
   if (!deleted) {
@@ -547,7 +548,7 @@ boardRoutes.patch(
   zValidator("param", boardTableIdParamSchema),
   zValidator("json", updateBoardTableSettingsSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
     const updated = await updateBoardTableSettings(c.env, user.id, id, input);
@@ -565,7 +566,7 @@ boardRoutes.patch(
 );
 
 boardRoutes.delete("/board/tables/:id", zValidator("param", boardTableIdParamSchema), async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const { id } = c.req.valid("param");
   const deleted = await deleteBoardTable(c.env, user.id, id);
   if (!deleted) {
@@ -579,7 +580,7 @@ boardRoutes.post(
   zValidator("param", boardTableIdParamSchema),
   zValidator("json", importBoardCharactersSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const { characters } = c.req.valid("json");
     const imported = await importBoardCharactersForTable(
@@ -600,7 +601,7 @@ boardRoutes.post(
   zValidator("param", boardTableIdParamSchema),
   zValidator("json", manualBoardCharacterSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
     const created = await createManualBoardCharacterForTable(c.env, user.id, id, {
@@ -622,7 +623,7 @@ boardRoutes.post(
   zValidator("param", boardTableIdParamSchema),
   zValidator("json", createTaskSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
     const task = buildTaskDefinition(input);
@@ -641,7 +642,7 @@ boardRoutes.post(
 );
 
 boardRoutes.post("/board/axis-items", zValidator("json", createBoardAxisItemSchema), async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const input = c.req.valid("json");
   const axisItem = await createBoardAxisItem(c.env, user.id, input);
   if (!axisItem) {
@@ -651,7 +652,7 @@ boardRoutes.post("/board/axis-items", zValidator("json", createBoardAxisItemSche
 });
 
 boardRoutes.patch("/board/axis-items/order", zValidator("json", boardAxisOrderSchema), async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const input = c.req.valid("json");
   const updated = await reorderBoardAxisItems(c.env, user.id, input);
   if (!updated) {
@@ -665,7 +666,7 @@ boardRoutes.patch(
   zValidator("param", boardTableIdParamSchema),
   zValidator("json", boardTableLayoutPatchSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const patch = c.req.valid("json");
     const updated = await updateBoardTableLayout(c.env, user.id, id, patch as BoardTableLayoutPatch);
@@ -681,7 +682,7 @@ boardRoutes.patch(
   zValidator("param", boardNoteIdParamSchema),
   zValidator("json", boardNoteLayoutPatchSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const patch = c.req.valid("json");
     const updated = await updateBoardNoteLayout(c.env, user.id, id, patch as BoardNoteLayoutPatch);
@@ -693,7 +694,7 @@ boardRoutes.patch(
 );
 
 boardRoutes.post("/board/tables/:id/transpose", zValidator("param", boardTableIdParamSchema), async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const { id } = c.req.valid("param");
   const updated = await transposeBoardTable(c.env, user.id, id);
   if (!updated) {
@@ -707,7 +708,7 @@ boardRoutes.patch(
   zValidator("param", boardAxisItemIdParamSchema),
   zValidator("json", updateBoardAxisItemSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
     const taskResetRule = input.taskResetType
@@ -725,7 +726,7 @@ boardRoutes.patch(
 );
 
 boardRoutes.delete("/board/axis-items/:id", zValidator("param", boardAxisItemIdParamSchema), async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const { id } = c.req.valid("param");
   const deleted = await hideBoardAxisItem(c.env, user.id, id);
   if (!deleted) {
@@ -735,7 +736,7 @@ boardRoutes.delete("/board/axis-items/:id", zValidator("param", boardAxisItemIdP
 });
 
 boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchSchema), async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const { patches } = c.req.valid("json");
   const saved = await saveBoardCompletionPatches(c.env, user.id, patches as BoardCompletionPatch[]);
   if (saved.ok === false) {
@@ -747,7 +748,7 @@ boardRoutes.patch("/board/completions", zValidator("json", boardCompletionPatchS
 });
 
 boardRoutes.patch("/board/cell-states", zValidator("json", boardCellStatePatchBatchSchema), async (c) => {
-  const user = await requireUser(c);
+  const user = await requireSubjectUser(c, { allowAdminTarget: true });
   const { patches } = c.req.valid("json");
   const saved = await saveBoardCellStatePatches(c.env, user.id, patches as BoardCellStatePatch[]);
   if (saved.ok === false) {
@@ -763,7 +764,7 @@ boardRoutes.patch(
   zValidator("param", boardAxisItemIdParamSchema),
   zValidator("json", boardAxisSizePatchSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const patch = c.req.valid("json");
     const updated = await updateBoardAxisItemSize(c.env, user.id, id, patch);
