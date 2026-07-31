@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { ApiClientError, apiGet } from "../../api/client";
+import { AdminAuditTab } from "./AdminAuditTab";
+import { AdminUserBoardsTab } from "./AdminUserBoardsTab";
 import { DataTab } from "./DataTab";
 import { HealthTab } from "./HealthTab";
 import { OverviewTab } from "./OverviewTab";
@@ -27,6 +29,11 @@ type AdminDashboardContentProps = {
   refreshing?: boolean;
   onRefresh?: () => void;
   onTabSelected?: (tab: AdminTab) => void;
+  selectedUserId?: string | null;
+  selectedSheetId?: string | null;
+  onUserSelected?: (userId: string | null) => void;
+  onSheetSelected?: (sheetId: string) => void;
+  onReplaceSheetId?: (sheetId: string | null) => void;
 };
 
 export function AdminDashboardContent({
@@ -36,14 +43,26 @@ export function AdminDashboardContent({
   activeTab = "overview",
   refreshing = false,
   onRefresh,
-  onTabSelected = () => undefined
+  onTabSelected = () => undefined,
+  selectedUserId = null,
+  selectedSheetId = null,
+  onUserSelected = () => undefined,
+  onSheetSelected = () => undefined,
+  onReplaceSheetId = () => undefined
 }: AdminDashboardContentProps) {
+  const headerDescription =
+    activeTab === "users"
+      ? "승인된 사용자 메타데이터와 보드 관리 기능을 표시합니다."
+      : activeTab === "audit"
+        ? "콘텐츠 내용 없이 관리자 보드 변경 이력만 표시합니다."
+        : "개인정보 없이 집계 지표만 표시합니다.";
+
   return (
-    <div className="admin-dashboard">
+    <div className={`admin-dashboard${activeTab === "users" ? " admin-dashboard-wide" : ""}`}>
       <div className="admin-dashboard-header">
         <div>
           <h2>운영 현황</h2>
-          <p>개인정보 없이 집계 지표만 표시합니다. 기준 시각 {formatGeneratedAt(summary.generatedAt)}</p>
+          <p>{headerDescription} 기준 시각 {formatGeneratedAt(summary.generatedAt)}</p>
         </div>
         {onRefresh ? (
           <button className="secondary-button admin-refresh-button" disabled={refreshing} type="button" onClick={onRefresh}>
@@ -72,6 +91,16 @@ export function AdminDashboardContent({
       {activeTab === "usage" ? <UsageTab summary={summary} /> : null}
       {activeTab === "health" ? <HealthTab health={health} healthError={healthError} /> : null}
       {activeTab === "data" ? <DataTab summary={summary} /> : null}
+      {activeTab === "users" ? (
+        <AdminUserBoardsTab
+          selectedUserId={selectedUserId}
+          selectedSheetId={selectedSheetId}
+          onUserSelected={onUserSelected}
+          onSheetSelected={onSheetSelected}
+          onReplaceSheetId={onReplaceSheetId}
+        />
+      ) : null}
+      {activeTab === "audit" ? <AdminAuditTab /> : null}
     </div>
   );
 }
@@ -92,7 +121,15 @@ function getAdminErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : "운영 현황을 불러오지 못했습니다.";
 }
 
-export function AdminDashboard({ activeTab, onTabSelected }: AdminDashboardProps) {
+export function AdminDashboard({
+  activeTab,
+  selectedUserId,
+  selectedSheetId,
+  onTabSelected,
+  onUserSelected,
+  onSheetSelected,
+  onReplaceSheetId
+}: AdminDashboardProps) {
   const [summary, setSummary] = useState<AdminSummary | null>(null);
   const [health, setHealth] = useState<AdminHealth | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
@@ -136,6 +173,11 @@ export function AdminDashboard({ activeTab, onTabSelected }: AdminDashboardProps
         refreshing={loading}
         onRefresh={loadAll}
         onTabSelected={onTabSelected}
+        selectedUserId={selectedUserId}
+        selectedSheetId={selectedSheetId}
+        onUserSelected={onUserSelected}
+        onSheetSelected={onSheetSelected}
+        onReplaceSheetId={onReplaceSheetId}
       />
     );
   }

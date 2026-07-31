@@ -137,7 +137,12 @@ function renderTab(tab: AdminTab, props?: { summary?: AdminSummary; health?: Adm
       summary: props?.summary ?? cloudflareSummary,
       health: props?.health === undefined ? health : props.health,
       healthError: props?.healthError ?? null,
-      activeTab: tab
+      activeTab: tab,
+      selectedUserId: null,
+      selectedSheetId: null,
+      onUserSelected: () => undefined,
+      onSheetSelected: () => undefined,
+      onReplaceSheetId: () => undefined
     })
   );
 }
@@ -169,6 +174,25 @@ describe("AdminDashboardContent", () => {
     expect(html).toContain("관리 기록");
     expect(html).toMatch(/사용자 보드<\/button>/);
     expect(html).toMatch(/aria-selected="true"[^>]*>사용자 보드/);
+  });
+
+  it("renders the user-board tab from controlled route state without mounting a board before selection", () => {
+    const html = renderTab("users");
+
+    expect(html).toContain("사용자 검색");
+    expect(html).toContain("이름 또는 사용자 ID 끝자리");
+    expect(html).toContain("승인된 사용자 메타데이터");
+    expect(html).not.toContain("관리 중:");
+    expect(html).not.toContain("board-overview");
+  });
+
+  it("renders the audit management tab", () => {
+    const html = renderTab("audit");
+
+    expect(html).toContain("관리 기록");
+    expect(html).toContain("콘텐츠 내용 없이");
+    expect(html).toContain('aria-label="관리 기록 새로고침"');
+    expect(html).toContain("관리 기록을 불러오는 중");
   });
 
   it("shows the status strip, core metrics and compact usage bars on the overview tab", () => {
