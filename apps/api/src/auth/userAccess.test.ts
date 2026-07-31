@@ -109,6 +109,13 @@ describe("requireUserAccess", () => {
 });
 
 describe("getAdminAuditAction", () => {
+  it("maps table character import and manual mutations", () => {
+    expect([
+      getAdminAuditAction("POST", "/api/board/tables/table-1/characters/import"),
+      getAdminAuditAction("POST", "/api/board/tables/table-1/characters/manual")
+    ]).toEqual(["board.update", "board.update"]);
+  });
+
   it("maps only supported user-owned mutations", () => {
     expect([
       getAdminAuditAction("PATCH", "/api/board/completions"),

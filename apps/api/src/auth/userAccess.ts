@@ -61,7 +61,7 @@ export async function requireSubjectUser(
 const boardMutations: Record<string, RegExp[]> = {
   POST: [
     /^\/api\/board\/(?:sheets|tables|notes|axis-items)$/,
-    /^\/api\/board\/tables\/[^/]+\/(?:characters|tasks|transpose)$/
+    /^\/api\/board\/tables\/[^/]+\/(?:characters(?:\/(?:import|manual))?|tasks|transpose)$/
   ],
   PATCH: [
     /^\/api\/board\/sheets\/[^/]+$/,
