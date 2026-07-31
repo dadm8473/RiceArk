@@ -6,6 +6,10 @@ const migration = readdirSync("apps/api/migrations")
   .sort()
   .map((file) => readFileSync(`apps/api/migrations/${file}`, "utf8"))
   .join("\n");
+const adminUserBoardManagementMigration = readFileSync(
+  "apps/api/migrations/0028_admin_user_board_management.sql",
+  "utf8"
+);
 
 describe("D1 schema", () => {
   it("defines required application tables", () => {
@@ -175,5 +179,12 @@ describe("D1 schema", () => {
     ]) {
       expect(migration).toContain(fragment);
     }
+  });
+
+  it("defines content-free administrator audit storage", () => {
+    expect(adminUserBoardManagementMigration).toContain("CREATE TABLE admin_audit_logs");
+    expect(adminUserBoardManagementMigration).toContain("admin_user_id TEXT NOT NULL");
+    expect(adminUserBoardManagementMigration).toContain("target_user_id TEXT NOT NULL");
+    expect(adminUserBoardManagementMigration).not.toMatch(/\b(body|payload|memo|content)\b/i);
   });
 });
