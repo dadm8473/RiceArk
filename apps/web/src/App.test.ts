@@ -31,6 +31,7 @@ const hooks = vi.hoisted(() => ({
   useBoard: vi.fn(),
   BoardOverview: vi.fn(),
   SharedRiceBinPanel: vi.fn(),
+  AdminDashboard: vi.fn(),
   useSession: vi.fn()
 }));
 
@@ -67,7 +68,10 @@ vi.mock("./features/shared-rice-bin/SharedRiceBinPanel", () => ({
 }));
 
 vi.mock("./features/admin/AdminDashboard", () => ({
-  AdminDashboard: () => "admin dashboard"
+  AdminDashboard: (props: unknown) => {
+    hooks.AdminDashboard(props);
+    return "admin dashboard";
+  }
 }));
 
 vi.mock("./features/dashboard/ChecklistMatrix", () => ({
@@ -194,32 +198,77 @@ describe("app route helpers", () => {
     expect(getAppRouteState("https://riceark.pages.dev/?sheet=sheet-2")).toEqual({
       activeView: "board",
       shareId: null,
-      sheetId: "sheet-2"
+      sheetId: "sheet-2",
+      adminTab: null,
+      adminUserId: null,
+      adminSheetId: null
     });
     expect(getAppRouteState("https://riceark.pages.dev/?view=shared")).toEqual({
       activeView: "shared",
       shareId: null,
-      sheetId: null
+      sheetId: null,
+      adminTab: null,
+      adminUserId: null,
+      adminSheetId: null
     });
     expect(getAppRouteState(`https://riceark.pages.dev/?share=${shareId}`)).toEqual({
       activeView: "shared",
       shareId,
-      sheetId: null
+      sheetId: null,
+      adminTab: null,
+      adminUserId: null,
+      adminSheetId: null
     });
     expect(getAppRouteState("https://riceark.pages.dev/?view=admin")).toEqual({
       activeView: "admin",
       shareId: null,
-      sheetId: null
+      sheetId: null,
+      adminTab: null,
+      adminUserId: null,
+      adminSheetId: null
     });
   });
 
   it("builds client-side URLs while preserving unrelated query parameters", () => {
     const currentUrl = "https://riceark.pages.dev/?foo=1&share=old&sheet=old-sheet#memo";
 
-    expect(getAppRouteUrl({ activeView: "board", shareId: null, sheetId: "sheet-2" }, currentUrl)).toBe("/?foo=1&sheet=sheet-2#memo");
-    expect(getAppRouteUrl({ activeView: "shared", shareId: null, sheetId: null }, currentUrl)).toBe("/?foo=1&view=shared#memo");
-    expect(getAppRouteUrl({ activeView: "shared", shareId, sheetId: null }, currentUrl)).toBe(`/?foo=1&share=${shareId}#memo`);
-    expect(getAppRouteUrl({ activeView: "admin", shareId: null, sheetId: null }, currentUrl)).toBe("/?foo=1&view=admin#memo");
+    expect(getAppRouteUrl({ activeView: "board", shareId: null, sheetId: "sheet-2", adminTab: null, adminUserId: null, adminSheetId: null }, currentUrl)).toBe("/?foo=1&sheet=sheet-2#memo");
+    expect(getAppRouteUrl({ activeView: "shared", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null }, currentUrl)).toBe("/?foo=1&view=shared#memo");
+    expect(getAppRouteUrl({ activeView: "shared", shareId, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null }, currentUrl)).toBe(`/?foo=1&share=${shareId}#memo`);
+    expect(getAppRouteUrl({ activeView: "admin", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null }, currentUrl)).toBe("/?foo=1&view=admin#memo");
+  });
+
+  it("parses and serializes valid administrator route state while clearing it from other views", () => {
+    const adminRoute = getAppRouteState(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-3"
+    );
+
+    expect(adminRoute).toMatchObject({
+      activeView: "admin",
+      adminTab: "users",
+      adminUserId: "user-2",
+      adminSheetId: "sheet-3"
+    });
+    expect(getAppRouteUrl(adminRoute, "https://riceark.pages.dev/")).toBe(
+      "/?view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-3"
+    );
+    expect(
+      getAppRouteUrl(
+        { ...adminRoute, activeView: "board", sheetId: "owner-sheet" },
+        "https://riceark.pages.dev/?foo=1&view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-3"
+      )
+    ).toBe("/?foo=1&sheet=owner-sheet");
+  });
+
+  it("ignores invalid administrator tab keys and blank internal ids", () => {
+    expect(
+      getAppRouteState("https://riceark.pages.dev/?view=admin&adminTab=unexpected&adminUser=%20%20&adminSheet=%20")
+    ).toMatchObject({
+      activeView: "admin",
+      adminTab: null,
+      adminUserId: null,
+      adminSheetId: null
+    });
   });
 
   it("seeds direct shared detail links with a lookup history entry behind them", () => {
@@ -480,6 +529,7 @@ describe("App", () => {
     hooks.useBoard.mockClear();
     hooks.BoardOverview.mockClear();
     hooks.SharedRiceBinPanel.mockClear();
+    hooks.AdminDashboard.mockClear();
     hooks.useSession.mockClear();
     hooks.useBoard.mockReturnValue({
       activeSheetId: "sheet-1",
@@ -848,6 +898,70 @@ describe("App", () => {
     expect(hooks.stateUpdates).toContain("sheet-3");
   });
 
+  it("pushes administrator user and sheet selections while replacing normalized sheets", () => {
+    const browser = installBrowserWindow(
+      "https://riceark.pages.dev/?foo=1&view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-1#memo"
+    );
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+      error: null
+    });
+
+    renderToStaticMarkup(createElement(App));
+    const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as {
+      activeTab?: string | null;
+      selectedUserId?: string | null;
+      selectedSheetId?: string | null;
+      onUserSelected?: (userId: string) => void;
+      onSheetSelected?: (sheetId: string) => void;
+      onReplaceSheetId?: (sheetId: string | null) => void;
+    };
+
+    expect(dashboardProps).toMatchObject({
+      activeTab: "users",
+      selectedUserId: "user-2",
+      selectedSheetId: "sheet-1"
+    });
+
+    dashboardProps.onUserSelected?.("user-4");
+    expect(browser.pushState).toHaveBeenCalledWith(expect.any(Object), "", "/?foo=1&view=admin&adminTab=users&adminUser=user-4#memo");
+
+    dashboardProps.onSheetSelected?.("sheet-5");
+    expect(browser.pushState).toHaveBeenLastCalledWith(expect.any(Object), "", "/?foo=1&view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-5#memo");
+
+    dashboardProps.onReplaceSheetId?.("sheet-3");
+    expect(browser.replaceState).toHaveBeenCalledWith(expect.any(Object), "", "/?foo=1&view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-3#memo");
+  });
+
+  it("restores administrator tab, user, and sheet state from browser history", () => {
+    const browser = installBrowserWindow("https://riceark.pages.dev/?view=admin&adminTab=overview");
+    vi.stubGlobal("document", {
+      documentElement: { dataset: {} },
+      querySelector: vi.fn(() => null)
+    });
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+      error: null
+    });
+
+    renderToStaticMarkup(createElement(App));
+    for (const effect of hooks.effects) effect.callback();
+    const popstate = browser.addEventListener.mock.calls.find(([event]) => event === "popstate")?.[1];
+    const next = new URL("https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-3&adminSheet=sheet-2");
+    Object.assign(window.location, {
+      hash: next.hash,
+      href: next.href,
+      pathname: next.pathname,
+      search: next.search
+    });
+
+    popstate?.();
+
+    expect(hooks.stateUpdates).toEqual(expect.arrayContaining(["users", "user-3", "sheet-2"]));
+  });
+
   it("replaces an invalid route sheet while preserving unrelated URL state", () => {
     const browser = installBrowserWindow("https://riceark.pages.dev/?foo=1&sheet=missing#memo");
     hooks.useSession.mockReturnValue({
@@ -946,7 +1060,7 @@ describe("App", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain("const handleOwnBoardSelected = () =>");
-    expect(source).toMatch(/handleOwnBoardSelected[\s\S]{0,220}applyAppRoute\(\{ activeView: "board", shareId: null, sheetId: null \}\)/);
+    expect(source).toContain('applyAppRoute({ activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });');
     expect(source).toContain('onClick={handleOwnBoardSelected}');
   });
 

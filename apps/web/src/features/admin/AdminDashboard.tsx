@@ -14,28 +14,30 @@ const TAB_LABELS: Array<{ key: AdminTab; label: string }> = [
   { key: "overview", label: "개요" },
   { key: "usage", label: "사용량·비용" },
   { key: "health", label: "헬스·에러" },
-  { key: "data", label: "데이터" }
+  { key: "data", label: "데이터" },
+  { key: "users", label: "사용자 보드" },
+  { key: "audit", label: "관리 기록" }
 ];
 
 type AdminDashboardContentProps = {
   summary: AdminSummary;
   health: AdminHealth | null;
   healthError?: string | null;
-  initialTab?: AdminTab;
+  activeTab?: AdminTab;
   refreshing?: boolean;
   onRefresh?: () => void;
+  onTabSelected?: (tab: AdminTab) => void;
 };
 
 export function AdminDashboardContent({
   summary,
   health,
   healthError = null,
-  initialTab = "overview",
+  activeTab = "overview",
   refreshing = false,
-  onRefresh
+  onRefresh,
+  onTabSelected = () => undefined
 }: AdminDashboardContentProps) {
-  const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
-
   return (
     <div className="admin-dashboard">
       <div className="admin-dashboard-header">
@@ -59,7 +61,7 @@ export function AdminDashboardContent({
             role="tab"
             aria-selected={activeTab === tab.key}
             className={`admin-tab${activeTab === tab.key ? " active" : ""}`}
-            onClick={() => setActiveTab(tab.key)}
+            onClick={() => onTabSelected(tab.key)}
           >
             {tab.label}
           </button>
@@ -74,13 +76,23 @@ export function AdminDashboardContent({
   );
 }
 
+export type AdminDashboardProps = {
+  activeTab: AdminTab | null;
+  selectedUserId: string | null;
+  selectedSheetId: string | null;
+  onTabSelected: (tab: AdminTab) => void;
+  onUserSelected: (userId: string | null) => void;
+  onSheetSelected: (sheetId: string) => void;
+  onReplaceSheetId: (sheetId: string | null) => void;
+};
+
 function getAdminErrorMessage(err: unknown): string {
   if (err instanceof ApiClientError && err.code === "forbidden") return "관리자 권한이 없습니다.";
   if (err instanceof ApiClientError && err.code === "unauthorized") return "로그인이 필요합니다.";
   return err instanceof Error ? err.message : "운영 현황을 불러오지 못했습니다.";
 }
 
-export function AdminDashboard() {
+export function AdminDashboard({ activeTab, onTabSelected }: AdminDashboardProps) {
   const [summary, setSummary] = useState<AdminSummary | null>(null);
   const [health, setHealth] = useState<AdminHealth | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
@@ -120,8 +132,10 @@ export function AdminDashboard() {
         summary={summary}
         health={health}
         healthError={healthError}
+        activeTab={activeTab ?? "overview"}
         refreshing={loading}
         onRefresh={loadAll}
+        onTabSelected={onTabSelected}
       />
     );
   }

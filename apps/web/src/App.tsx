@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, Calculator, FileText } from "lucide-react";
 import { apiPatch, apiPostNoContent } from "./api/client";
 import { AdminDashboard } from "./features/admin/AdminDashboard";
+import type { AdminTab } from "./features/admin/types";
 import { AuctionCalculatorModal } from "./features/auction-calculator/AuctionCalculatorModal";
 import { AuthMenu, type AppTheme } from "./features/auth/AuthMenu";
 import { useSession, type AuthUser } from "./features/auth/useSession";
@@ -17,6 +18,7 @@ import { SharedRiceBinPanel } from "./features/shared-rice-bin/SharedRiceBinPane
 
 const SHARE_ID_PATH_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const SHARE_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+const ADMIN_TABS: readonly AdminTab[] = ["overview", "usage", "health", "data", "users", "audit"];
 
 export type DurableLogoutMode = "normal" | "retry" | "discard";
 
@@ -175,6 +177,9 @@ export interface AppRouteState {
   activeView: AppView;
   shareId: string | null;
   sheetId: string | null;
+  adminTab: AdminTab | null;
+  adminUserId: string | null;
+  adminSheetId: string | null;
 }
 
 function getSharedRiceBinIdFromUrl(href: string): string | null {
@@ -191,17 +196,42 @@ function getRelativeUrl(url: URL): string {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
+function getNonEmptyRouteId(value: string | null): string | null {
+  const id = value?.trim();
+  return id || null;
+}
+
+function getAdminTab(value: string | null): AdminTab | null {
+  return ADMIN_TABS.includes(value as AdminTab) ? (value as AdminTab) : null;
+}
+
 export function getAppRouteState(href: string): AppRouteState {
   const url = new URL(href, "https://riceark.pages.dev");
   const shareId = getSharedRiceBinIdFromUrl(href);
-  if (shareId) return { activeView: "shared", shareId, sheetId: null };
+  if (shareId) return { activeView: "shared", shareId, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null };
 
   const view = url.searchParams.get("view");
-  if (view === "shared") return { activeView: "shared", shareId: null, sheetId: null };
-  if (view === "admin") return { activeView: "admin", shareId: null, sheetId: null };
+  if (view === "shared") return { activeView: "shared", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null };
+  if (view === "admin") {
+    return {
+      activeView: "admin",
+      shareId: null,
+      sheetId: null,
+      adminTab: getAdminTab(url.searchParams.get("adminTab")),
+      adminUserId: getNonEmptyRouteId(url.searchParams.get("adminUser")),
+      adminSheetId: getNonEmptyRouteId(url.searchParams.get("adminSheet"))
+    };
+  }
 
   const sheetId = url.searchParams.get("sheet");
-  return { activeView: "board", shareId: null, sheetId: sheetId?.trim() ? sheetId : null };
+  return {
+    activeView: "board",
+    shareId: null,
+    sheetId: sheetId?.trim() ? sheetId : null,
+    adminTab: null,
+    adminUserId: null,
+    adminSheetId: null
+  };
 }
 
 export function getAppRouteUrl(route: AppRouteState, href: string): string {
@@ -210,6 +240,9 @@ export function getAppRouteUrl(route: AppRouteState, href: string): string {
   url.searchParams.delete("view");
   url.searchParams.delete("share");
   url.searchParams.delete("sheet");
+  url.searchParams.delete("adminTab");
+  url.searchParams.delete("adminUser");
+  url.searchParams.delete("adminSheet");
 
   if (route.activeView === "shared") {
     if (route.shareId) {
@@ -219,6 +252,9 @@ export function getAppRouteUrl(route: AppRouteState, href: string): string {
     }
   } else if (route.activeView === "admin") {
     url.searchParams.set("view", "admin");
+    if (route.adminTab) url.searchParams.set("adminTab", route.adminTab);
+    if (route.adminUserId?.trim()) url.searchParams.set("adminUser", route.adminUserId);
+    if (route.adminSheetId?.trim()) url.searchParams.set("adminSheet", route.adminSheetId);
   } else if (route.sheetId?.trim()) {
     url.searchParams.set("sheet", route.sheetId);
   }
@@ -231,7 +267,7 @@ export function getDirectSharedRiceBinHistoryUrls(href: string): [string, string
   if (route.activeView !== "shared" || !route.shareId) return null;
 
   return [
-    getAppRouteUrl({ activeView: "shared", shareId: null, sheetId: null }, href),
+    getAppRouteUrl({ activeView: "shared", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null }, href),
     getAppRouteUrl(route, href)
   ];
 }
@@ -244,10 +280,13 @@ function getHistoryState(currentState: unknown): Record<string, unknown> {
 
 export function App() {
   const session = useSession();
-  const initialRouteRef = useRef<AppRouteState>(typeof window === "undefined" ? { activeView: "board", shareId: null, sheetId: null } : getAppRouteState(window.location.href));
+  const initialRouteRef = useRef<AppRouteState>(typeof window === "undefined" ? { activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null } : getAppRouteState(window.location.href));
   const seededSharedHistoryRef = useRef(false);
   const [routeShareId, setRouteShareId] = useState<string | null>(() => initialRouteRef.current.shareId);
   const [routeSheetId, setRouteSheetId] = useState<string | null>(() => initialRouteRef.current.sheetId);
+  const [routeAdminTab, setRouteAdminTab] = useState<AdminTab | null>(() => initialRouteRef.current.adminTab);
+  const [routeAdminUserId, setRouteAdminUserId] = useState<string | null>(() => initialRouteRef.current.adminUserId);
+  const [routeAdminSheetId, setRouteAdminSheetId] = useState<string | null>(() => initialRouteRef.current.adminSheetId);
   const [activeView, setActiveView] = useState<AppView>(() => initialRouteRef.current.activeView);
   const [sharedRiceBinLookupResetKey, setSharedRiceBinLookupResetKey] = useState(0);
   const applyAppRoute = useCallback((
@@ -257,6 +296,9 @@ export function App() {
     setActiveView(route.activeView);
     setRouteShareId(route.shareId);
     setRouteSheetId(route.sheetId);
+    setRouteAdminTab(route.adminTab);
+    setRouteAdminUserId(route.adminUserId);
+    setRouteAdminSheetId(route.adminSheetId);
     if (typeof window === "undefined" || mode === "pop") return;
 
     const nextUrl = getAppRouteUrl(route, window.location.href);
@@ -267,7 +309,7 @@ export function App() {
     window.history[historyMethod](getHistoryState(window.history.state), "", nextUrl);
   }, []);
   const handleReplaceBoardSheetId = useCallback((sheetId: string | null) => {
-    applyAppRoute({ activeView: "board", shareId: null, sheetId }, "replace");
+    applyAppRoute({ activeView: "board", shareId: null, sheetId, adminTab: null, adminUserId: null, adminSheetId: null }, "replace");
   }, [applyAppRoute]);
   const isAuthenticated = session.status === "authenticated";
   const isAdmin = isAuthenticated && session.user.isAdmin === true;
@@ -281,7 +323,7 @@ export function App() {
     onReplaceSheetId: handleReplaceBoardSheetId
   });
   const handleBoardSheetSelected = useCallback((sheetId: string) => {
-    applyAppRoute({ activeView: "board", shareId: null, sheetId }, "push");
+    applyAppRoute({ activeView: "board", shareId: null, sheetId, adminTab: null, adminUserId: null, adminSheetId: null }, "push");
     void board.selectSheet(sheetId).catch(() => undefined);
   }, [applyAppRoute, board.selectSheet]);
   const boardMutationBarrierRef = useRef<BoardMutationBarrier | null>(null);
@@ -334,7 +376,7 @@ export function App() {
 
   useEffect(() => {
     if (activeView !== "admin" || session.status === "checking") return;
-    if (!isAdmin) applyAppRoute({ activeView: "board", shareId: null, sheetId: null }, "replace");
+    if (!isAdmin) applyAppRoute({ activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null }, "replace");
   }, [activeView, isAdmin, session.status]);
 
   const attemptLogout = async (mode: DurableLogoutMode) => {
@@ -379,7 +421,7 @@ export function App() {
   };
 
   const clearSharedRiceBinEntryState = () => {
-    applyAppRoute({ activeView: "shared", shareId: null, sheetId: null }, "replace");
+    applyAppRoute({ activeView: "shared", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null }, "replace");
   };
 
   const handleSharedBoardClosed = () => {
@@ -388,22 +430,66 @@ export function App() {
 
   const handleOwnBoardSelected = () => {
     setCalculatorOpen(false);
-    applyAppRoute({ activeView: "board", shareId: null, sheetId: null });
+    applyAppRoute({ activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
   };
 
   const handleSharedRiceBinSelected = () => {
     if (activeView === "shared") setSharedRiceBinLookupResetKey((key) => key + 1);
     setCalculatorOpen(false);
-    applyAppRoute({ activeView: "shared", shareId: null, sheetId: null });
+    applyAppRoute({ activeView: "shared", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
   };
 
   const handleAdminSelected = () => {
     setCalculatorOpen(false);
-    applyAppRoute({ activeView: "admin", shareId: null, sheetId: null });
+    applyAppRoute({ activeView: "admin", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
   };
 
+  const handleAdminTabSelected = useCallback((adminTab: AdminTab) => {
+    applyAppRoute({
+      activeView: "admin",
+      shareId: null,
+      sheetId: null,
+      adminTab,
+      adminUserId: routeAdminUserId,
+      adminSheetId: routeAdminSheetId
+    });
+  }, [applyAppRoute, routeAdminSheetId, routeAdminUserId]);
+
+  const handleAdminUserSelected = useCallback((adminUserId: string | null) => {
+    applyAppRoute({
+      activeView: "admin",
+      shareId: null,
+      sheetId: null,
+      adminTab: "users",
+      adminUserId,
+      adminSheetId: null
+    });
+  }, [applyAppRoute]);
+
+  const handleAdminSheetSelected = useCallback((adminSheetId: string) => {
+    applyAppRoute({
+      activeView: "admin",
+      shareId: null,
+      sheetId: null,
+      adminTab: "users",
+      adminUserId: routeAdminUserId,
+      adminSheetId
+    });
+  }, [applyAppRoute, routeAdminUserId]);
+
+  const handleReplaceAdminSheetId = useCallback((adminSheetId: string | null) => {
+    applyAppRoute({
+      activeView: "admin",
+      shareId: null,
+      sheetId: null,
+      adminTab: routeAdminTab ?? "users",
+      adminUserId: routeAdminUserId,
+      adminSheetId
+    }, "replace");
+  }, [applyAppRoute, routeAdminTab, routeAdminUserId]);
+
   const handleSharedBoardOpened = (shareId: string) => {
-    applyAppRoute({ activeView: "shared", shareId, sheetId: null });
+    applyAppRoute({ activeView: "shared", shareId, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
   };
 
   return (
@@ -469,7 +555,15 @@ export function App() {
           session.status === "checking" ? (
             <p>로그인 상태를 확인하는 중입니다.</p>
           ) : isAdmin ? (
-            <AdminDashboard />
+            <AdminDashboard
+              activeTab={routeAdminTab}
+              selectedUserId={routeAdminUserId}
+              selectedSheetId={routeAdminSheetId}
+              onTabSelected={handleAdminTabSelected}
+              onUserSelected={handleAdminUserSelected}
+              onSheetSelected={handleAdminSheetSelected}
+              onReplaceSheetId={handleReplaceAdminSheetId}
+            />
           ) : (
             <p>내 쌀통으로 이동하는 중입니다.</p>
           )

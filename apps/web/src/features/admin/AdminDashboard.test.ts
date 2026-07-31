@@ -137,7 +137,7 @@ function renderTab(tab: AdminTab, props?: { summary?: AdminSummary; health?: Adm
       summary: props?.summary ?? cloudflareSummary,
       health: props?.health === undefined ? health : props.health,
       healthError: props?.healthError ?? null,
-      initialTab: tab
+      activeTab: tab
     })
   );
 }
@@ -153,6 +153,22 @@ describe("AdminDashboardContent", () => {
     expect(html).toContain("데이터");
     expect(html).toContain('role="tablist"');
     expect(html).toContain('aria-selected="true"');
+  });
+
+  it("uses controlled administrator tab state for the user-board and audit routing seams", () => {
+    const html = renderToStaticMarkup(
+      createElement(AdminDashboardContent, {
+        summary: cloudflareSummary,
+        health,
+        activeTab: "users",
+        onTabSelected: () => undefined
+      })
+    );
+
+    expect(html).toContain("사용자 보드");
+    expect(html).toContain("관리 기록");
+    expect(html).toMatch(/사용자 보드<\/button>/);
+    expect(html).toMatch(/aria-selected="true"[^>]*>사용자 보드/);
   });
 
   it("shows the status strip, core metrics and compact usage bars on the overview tab", () => {

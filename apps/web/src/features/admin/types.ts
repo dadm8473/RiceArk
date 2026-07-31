@@ -109,4 +109,4 @@ export type AdminHealth = {
   };
 };
 
-export type AdminTab = "overview" | "usage" | "health" | "data";
+export type AdminTab = "overview" | "usage" | "health" | "data" | "users" | "audit";
