@@ -30,7 +30,7 @@ import {
   type ReactNode
 } from "react";
 import { createPortal } from "react-dom";
-import { apiDelete, apiGet, apiPatch, apiPost } from "../../api/client";
+import { defaultApiClient, type ApiClient } from "../../api/client";
 import { CharacterImport } from "../characters/CharacterImport";
 import { TaskForm } from "../tasks/TaskForm";
 import { BoardNoteMarkdown } from "./BoardNoteMarkdown";
@@ -69,6 +69,7 @@ import { indexBoardPayloadByTable } from "./boardIndexes";
 import type { BoardAxis, BoardAxisItem, BoardCellState, BoardNote, BoardOrientation, BoardPayload, BoardSheet, BoardTable } from "./types";
 
 interface Props {
+  apiClient?: ApiClient | undefined;
   board: BoardPayload;
   activeSheetId?: string | null | undefined;
   enqueueCellState?: ((patch: BoardCellStatePatch) => void) | undefined;
@@ -397,7 +398,8 @@ export function applyBoardCharacterSaveToAxisItems(
 export async function refreshBoardTableCharactersRequest(
   characterIds: string[],
   applyUpdated: (results: BoardCharacterRefreshUpdatedResult[]) => void,
-  postRequest: BoardCharacterRefreshPostRequest = (path, body) => apiPost<BoardCharacterRefreshBatchResponse>(path, body)
+  postRequest: BoardCharacterRefreshPostRequest = (path, body) =>
+    defaultApiClient.post<BoardCharacterRefreshBatchResponse>(path, body)
 ): Promise<TableCharacterRefreshSummary> {
   if (characterIds.length > CHARACTER_REFRESH_BATCH_MAX_COUNT) {
     return {
@@ -435,7 +437,7 @@ export async function saveBoardTableSettingsRequest(
   tableId: string,
   input: BoardTableSettingsSaveInput,
   applyLocal: () => void,
-  patchRequest: BoardPatchRequest = apiPatch
+  patchRequest: BoardPatchRequest = defaultApiClient.patch
 ): Promise<void> {
   await patchRequest("/api/board/tables/" + encodeURIComponent(tableId), input);
   applyLocal();
@@ -445,7 +447,7 @@ export async function saveBoardAxisItemRequest(
   axisItemId: string,
   input: BoardAxisItemSaveInput,
   applyLocal: () => void,
-  patchRequest: BoardPatchRequest = apiPatch
+  patchRequest: BoardPatchRequest = defaultApiClient.patch
 ): Promise<void> {
   const body = {
     ...(input.shouldUpdateDetails
@@ -1478,6 +1480,7 @@ function isBoardTableLocked(table: BoardTable): boolean {
 }
 
 export function BoardOverview({
+  apiClient = defaultApiClient,
   board,
   activeSheetId: controlledActiveSheetId,
   enqueueCellState,
@@ -1836,30 +1839,35 @@ export function BoardOverview({
       displaySettings,
       shouldUpdateDetails
     };
-    await saveBoardAxisItemRequest(axisItemId, input, () => {
-      setAxisItems((current) =>
-        applyBoardAxisItemSaveToAxisItems(current, {
-          axisItemId,
-          label,
-          taskColor,
-          taskResetType,
-          taskResetRuleJson,
-          separator,
-          sizePx,
-          crossSizePx,
-          displaySettings,
-          shouldUpdateDetails
-        })
-      );
-      setEditingAxisItem(null);
-    });
+    await saveBoardAxisItemRequest(
+      axisItemId,
+      input,
+      () => {
+        setAxisItems((current) =>
+          applyBoardAxisItemSaveToAxisItems(current, {
+            axisItemId,
+            label,
+            taskColor,
+            taskResetType,
+            taskResetRuleJson,
+            separator,
+            sizePx,
+            crossSizePx,
+            displaySettings,
+            shouldUpdateDetails
+          })
+        );
+        setEditingAxisItem(null);
+      },
+      apiClient.patch
+    );
   }
 
   async function handleBoardCharacterSave(
     characterId: string,
     input: BoardCharacterSaveInput
   ) {
-    const updated = await apiPatch<BoardCharacterSaveResult>(
+    const updated = await apiClient.patch<BoardCharacterSaveResult>(
       "/api/characters/" + encodeURIComponent(characterId),
       input
     );
@@ -1867,7 +1875,7 @@ export function BoardOverview({
   }
 
   async function refreshBoardCharacter(characterId: string): Promise<BoardCharacterRefreshResult> {
-    const updated = await apiPost<BoardCharacterRefreshResult>("/api/characters/" + encodeURIComponent(characterId) + "/refresh", {});
+    const updated = await apiClient.post<BoardCharacterRefreshResult>("/api/characters/" + encodeURIComponent(characterId) + "/refresh", {});
     setAxisItems((current) =>
       current.map((item) =>
         item.character_id === characterId
@@ -1915,9 +1923,13 @@ export function BoardOverview({
 
       try {
         const summary = addBoardCharacterRefreshFailureNames(
-          await refreshBoardTableCharactersRequest(characterIds, (updated) => {
-            setAxisItems((current) => applyBoardCharacterRefreshResultsToAxisItems(current, updated));
-          }),
+          await refreshBoardTableCharactersRequest(
+            characterIds,
+            (updated) => {
+              setAxisItems((current) => applyBoardCharacterRefreshResultsToAxisItems(current, updated));
+            },
+            apiClient.post
+          ),
           characterNames
         );
 
@@ -1934,7 +1946,7 @@ export function BoardOverview({
   }
 
   async function handleAxisItemDelete(axisItemId: string) {
-    await apiDelete("/api/board/axis-items/" + encodeURIComponent(axisItemId));
+    await apiClient.delete("/api/board/axis-items/" + encodeURIComponent(axisItemId));
     setAxisItems((current) => current.map((item) => (item.id === axisItemId ? { ...item, visible: 0 } : item)));
     setEditingAxisItem(null);
   }
@@ -1955,7 +1967,7 @@ export function BoardOverview({
       setPendingAction("sheet");
       setFormError(null);
       try {
-        const sheet = await apiPost<{ id: string }>("/api/board/sheets", { name });
+        const sheet = await apiClient.post<{ id: string }>("/api/board/sheets", { name });
         await refreshBoard({ refreshVersion: true });
         onSheetSelected(sheet.id);
       } catch (err) {
@@ -1976,7 +1988,7 @@ export function BoardOverview({
       setPendingAction("sheet-update");
       setFormError(null);
       try {
-        await apiPatch("/api/board/sheets/" + encodeURIComponent(sheetId), { name });
+        await apiClient.patch("/api/board/sheets/" + encodeURIComponent(sheetId), { name });
         await refreshBoard();
       } catch (err) {
         const message = err instanceof Error ? err.message : "탭을 저장하지 못했습니다.";
@@ -1993,7 +2005,7 @@ export function BoardOverview({
       setPendingAction("sheet-delete");
       setFormError(null);
       try {
-        await apiDelete("/api/board/sheets/" + encodeURIComponent(sheetId));
+        await apiClient.delete("/api/board/sheets/" + encodeURIComponent(sheetId));
         await refreshBoard();
       } catch (err) {
         const message = err instanceof Error ? err.message : "탭을 삭제하지 못했습니다.";
@@ -2007,28 +2019,28 @@ export function BoardOverview({
 
   async function createLostArkEventTableAxisItems(tableId: string, completionColumnName: string) {
     for (const row of LOST_ARK_EVENT_TABLE_ROWS) {
-      const created = await apiPost<{ id: string }>("/api/board/axis-items", {
+      const created = await apiClient.post<{ id: string }>("/api/board/axis-items", {
         tableId,
         axis: "row",
         label: row.label
       });
-      await apiPatch("/api/board/axis-items/" + encodeURIComponent(created.id), {
+      await apiClient.patch("/api/board/axis-items/" + encodeURIComponent(created.id), {
         label: row.label,
         taskColor: row.color,
         taskResetType: "daily"
       });
-      await apiPatch("/api/board/axis-items/" + encodeURIComponent(created.id) + "/size", {
+      await apiClient.patch("/api/board/axis-items/" + encodeURIComponent(created.id) + "/size", {
         sizePx: row.height,
         crossSizePx: LOST_ARK_EVENT_TABLE_ROW_HEADER_WIDTH
       });
     }
 
-    const completionColumn = await apiPost<{ id: string }>("/api/board/axis-items", {
+    const completionColumn = await apiClient.post<{ id: string }>("/api/board/axis-items", {
       tableId,
       axis: "column",
       label: completionColumnName.trim() || LOST_ARK_EVENT_TABLE_DEFAULT_COMPLETION_COLUMN
     });
-    await apiPatch("/api/board/axis-items/" + encodeURIComponent(completionColumn.id) + "/size", {
+    await apiClient.patch("/api/board/axis-items/" + encodeURIComponent(completionColumn.id) + "/size", {
       sizePx: LOST_ARK_EVENT_TABLE_COMPLETION_COLUMN_WIDTH
     });
   }
@@ -2057,7 +2069,7 @@ export function BoardOverview({
               }
             : {})
         };
-        const table = await apiPost<{ id: string }>("/api/board/tables", tablePayload);
+        const table = await apiClient.post<{ id: string }>("/api/board/tables", tablePayload);
         bringCreatedBoardItemToFront(table.id);
         if (isLostArkEventTable) {
           await createLostArkEventTableAxisItems(table.id, tableEventCompletionColumnName);
@@ -2090,7 +2102,7 @@ export function BoardOverview({
       setPendingAction("note");
       setFormError(null);
       try {
-        const note = await apiPost<{ id: string }>("/api/board/notes", {
+        const note = await apiClient.post<{ id: string }>("/api/board/notes", {
           sheetId: activeSheet.id,
           title,
           body: input.body,
@@ -2129,7 +2141,7 @@ export function BoardOverview({
         setEditingNoteBodyId((current) => (current === noteId ? null : current));
       }
       try {
-        await apiPatch("/api/board/notes/" + encodeURIComponent(noteId), buildBoardNoteSavePatch(currentNote, input));
+        await apiClient.patch("/api/board/notes/" + encodeURIComponent(noteId), buildBoardNoteSavePatch(currentNote, input));
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "메모를 저장하지 못했습니다.");
         await recoverFailedBoardNoteMutation(currentNote.sheet_id, onBoardSheetStale, onBoardChanged);
@@ -2143,7 +2155,7 @@ export function BoardOverview({
       const currentNote = notes.find((note) => note.id === noteId);
       if (!currentNote) return;
       try {
-        await apiDelete("/api/board/notes/" + encodeURIComponent(noteId));
+        await apiClient.delete("/api/board/notes/" + encodeURIComponent(noteId));
         setNotes((current) => current.filter((note) => note.id !== noteId));
         setEditingNote(null);
         setOpenNoteMenuId((current) => (current === noteId ? null : current));
@@ -2162,43 +2174,48 @@ export function BoardOverview({
     return runMutation(async () => {
       const currentTable = tables.find((table) => table.id === tableId);
       const wasLocked = currentTable ? isBoardTableLocked(currentTable) : false;
-      await saveBoardTableSettingsRequest(tableId, input, () => {
-        setTables((current) =>
-          current.map((table) =>
-            table.id === tableId
-              ? {
-                  ...table,
-                  name: input.name,
-                  default_row_height: input.defaultRowHeight,
-                  default_column_width: input.defaultColumnWidth,
-                  locked: input.locked,
-                  display_options_json: input.displaySettings ? JSON.stringify(input.displaySettings) : null,
-                  event_options_json:
-                    input.eventOptions === undefined
-                      ? table.event_options_json
-                      : input.eventOptions
-                        ? JSON.stringify(input.eventOptions)
-                        : null
-                }
-              : table
-          )
-        );
-        if (!wasLocked) {
-          setAxisItems((current) =>
-            applyBoardTableSettingsToAxisItems(current, tableId, {
-              ...input,
-              displaySettings: input.characterDisplaySettings
-            })
+      await saveBoardTableSettingsRequest(
+        tableId,
+        input,
+        () => {
+          setTables((current) =>
+            current.map((table) =>
+              table.id === tableId
+                ? {
+                    ...table,
+                    name: input.name,
+                    default_row_height: input.defaultRowHeight,
+                    default_column_width: input.defaultColumnWidth,
+                    locked: input.locked,
+                    display_options_json: input.displaySettings ? JSON.stringify(input.displaySettings) : null,
+                    event_options_json:
+                      input.eventOptions === undefined
+                        ? table.event_options_json
+                        : input.eventOptions
+                          ? JSON.stringify(input.eventOptions)
+                          : null
+                  }
+                : table
+            )
           );
-        }
-        setEditingTable(null);
-      });
+          if (!wasLocked) {
+            setAxisItems((current) =>
+              applyBoardTableSettingsToAxisItems(current, tableId, {
+                ...input,
+                displaySettings: input.characterDisplaySettings
+              })
+            );
+          }
+          setEditingTable(null);
+        },
+        apiClient.patch
+      );
     });
   }
 
   async function handleTableDelete(tableId: string) {
     return runMutation(async () => {
-      await apiDelete("/api/board/tables/" + encodeURIComponent(tableId));
+      await apiClient.delete("/api/board/tables/" + encodeURIComponent(tableId));
       setTables((current) => current.filter((table) => table.id !== tableId));
       setAxisItems((current) => current.filter((item) => item.table_id !== tableId));
       if (reorderTableId === tableId) {
@@ -2215,7 +2232,7 @@ export function BoardOverview({
 
   async function handleTableTranspose(tableId: string) {
     return runMutation(async () => {
-      await apiPost<{ ok: true }>("/api/board/tables/" + encodeURIComponent(tableId) + "/transpose", {});
+      await apiClient.post<{ ok: true }>("/api/board/tables/" + encodeURIComponent(tableId) + "/transpose", {});
       setEditingTable(null);
       await refreshBoard();
     });
@@ -2226,7 +2243,7 @@ export function BoardOverview({
       const nextLocked = isBoardTableLocked(table) ? 0 : 1;
       setFormError(null);
       try {
-        await apiPatch("/api/board/tables/" + encodeURIComponent(table.id), {
+        await apiClient.patch("/api/board/tables/" + encodeURIComponent(table.id), {
           name: table.name,
           defaultRowHeight: table.default_row_height,
           defaultColumnWidth: table.default_column_width,
@@ -2298,7 +2315,7 @@ export function BoardOverview({
     return runMutation(async () => {
       setAxisItems((current) => applyBoardAxisOrder(current, tableId, axis, axisItemIds));
       try {
-        await apiPatch("/api/board/axis-items/order", { tableId, axis, axisItemIds });
+        await apiClient.patch("/api/board/axis-items/order", { tableId, axis, axisItemIds });
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "순서를 저장하지 못했습니다.");
         await refreshBoard();
@@ -2377,7 +2394,7 @@ export function BoardOverview({
   async function persistTableLayout(tableId: string, patch: BoardTableLayoutPatch) {
     return runMutation(async () => {
       try {
-        await apiPatch("/api/board/tables/" + encodeURIComponent(tableId) + "/layout", patch);
+        await apiClient.patch("/api/board/tables/" + encodeURIComponent(tableId) + "/layout", patch);
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "표 위치를 저장하지 못했습니다.");
         await refreshBoard();
@@ -2440,7 +2457,7 @@ export function BoardOverview({
       const currentNote = notes.find((note) => note.id === noteId);
       if (!currentNote) return;
       try {
-        await apiPatch("/api/board/notes/" + encodeURIComponent(noteId) + "/layout", patch);
+        await apiClient.patch("/api/board/notes/" + encodeURIComponent(noteId) + "/layout", patch);
       } catch (err) {
         setFormError(err instanceof Error ? err.message : "메모 위치를 저장하지 못했습니다.");
         await recoverFailedBoardNoteMutation(currentNote.sheet_id, onBoardSheetStale, onBoardChanged);
@@ -3104,6 +3121,7 @@ export function BoardOverview({
       ) : null}
       {!isReadOnly && activeTableTool ? (
         <BoardTableToolModal
+          apiClient={apiClient}
           table={activeTableTool.table}
           tool={activeTableTool.tool}
           isRefreshingCharacters={refreshingCharacterTableId === activeTableTool.table.id}
@@ -3382,6 +3400,7 @@ export function BoardCharacterRefreshFailureList({
 }
 
 export function BoardTableToolModal({
+  apiClient = defaultApiClient,
   isRefreshingCharacters,
   onClose,
   onRefreshCharacters,
@@ -3391,6 +3410,7 @@ export function BoardTableToolModal({
   table,
   tool
 }: {
+  apiClient?: ApiClient | undefined;
   isRefreshingCharacters?: boolean | undefined;
   onClose: () => void;
   onRefreshCharacters?: (() => Promise<TableCharacterRefreshSummary>) | undefined;
@@ -3476,12 +3496,12 @@ export function BoardTableToolModal({
                 ) : null}
                 <BoardCharacterRefreshFailureList failures={refreshFailures} />
               </section>
-              <CharacterImport tableId={table.id} onSaved={onSaved} runMutation={runMutation} />
+              <CharacterImport apiClient={apiClient} tableId={table.id} onSaved={onSaved} runMutation={runMutation} />
             </div>
           ) : tool === "tasks" ? (
-            <TaskForm tableId={table.id} onSaved={onSaved} runMutation={runMutation} />
+            <TaskForm apiClient={apiClient} tableId={table.id} onSaved={onSaved} runMutation={runMutation} />
           ) : (
-            <BoardEventCompletionColumnForm tableId={table.id} onClose={onClose} onSaved={onSaved} runMutation={runMutation} />
+            <BoardEventCompletionColumnForm apiClient={apiClient} tableId={table.id} onClose={onClose} onSaved={onSaved} runMutation={runMutation} />
           )}
         </div>
       </section>
@@ -3490,11 +3510,13 @@ export function BoardTableToolModal({
 }
 
 function BoardEventCompletionColumnForm({
+  apiClient,
   onClose,
   onSaved,
   runMutation,
   tableId
 }: {
+  apiClient: ApiClient;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
   runMutation: BoardMutationRunner;
@@ -3513,7 +3535,7 @@ function BoardEventCompletionColumnForm({
     setError(null);
     try {
       await runMutation(async () => {
-        await apiPost("/api/board/axis-items", {
+        await apiClient.post("/api/board/axis-items", {
           tableId,
           axis: "column",
           label
@@ -4205,7 +4227,7 @@ export function BoardTableGrid({
     if (!isLostArkEventTable) return;
     let cancelled = false;
     setEventError(null);
-    void apiGet<LostArkEventTodaySummary>(`/api/lostark/events/today?rewards=${encodeURIComponent(rewardQuery)}`)
+    void defaultApiClient.get<LostArkEventTodaySummary>(`/api/lostark/events/today?rewards=${encodeURIComponent(rewardQuery)}`)
       .then((nextSummary) => {
         if (!cancelled) setEventSummary(nextSummary);
       })

@@ -294,6 +294,17 @@ describe("getCharacterSearchNameError", () => {
 });
 
 describe("CharacterImport search integration", () => {
+  it("uses the injected client for search, roster import, and manual creation", () => {
+    const source = readFileSync(new URL("./CharacterImport.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("apiClient?: ApiClient");
+    expect(source).toContain("apiClient = defaultApiClient");
+    expect(source).toMatch(/apiClient\.get<\{ characters: CharacterCandidate\[\] \}>/);
+    expect(source).toMatch(/await apiClient\.post\(tableId \? `\/api\/board\/tables\/\$\{encodeURIComponent\(tableId\)\}\/characters\/import`/);
+    expect(source).toMatch(/await apiClient\.post\(tableId \? `\/api\/board\/tables\/\$\{encodeURIComponent\(tableId\)\}\/characters\/manual`/);
+    expect(source).not.toMatch(/\bapi(?:Get|Post)\(/);
+  });
+
   it("uses the bounded browser cache while keeping successful results fully selected", () => {
     const source = readFileSync(new URL("./CharacterImport.tsx", import.meta.url), "utf8");
 

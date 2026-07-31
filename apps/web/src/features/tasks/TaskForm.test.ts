@@ -1,9 +1,19 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { LOST_ARK_TASK_PRESETS, TaskForm } from "./TaskForm";
 
 describe("TaskForm", () => {
+  it("uses the injected client for task creation", () => {
+    const source = readFileSync(new URL("./TaskForm.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("apiClient?: ApiClient");
+    expect(source).toContain("apiClient = defaultApiClient");
+    expect(source).toMatch(/await apiClient\.post\(tableId \? `\/api\/board\/tables\/\$\{encodeURIComponent\(tableId\)\}\/tasks`/);
+    expect(source).not.toMatch(/\bapiPost\(/);
+  });
+
   it("does not repeat the modal title inside the form", () => {
     const html = renderToStaticMarkup(createElement(TaskForm));
 
