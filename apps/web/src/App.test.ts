@@ -19,7 +19,10 @@ import {
   runDurableLogout,
   storeAppTheme
 } from "./App";
-import type { AdminTab } from "./features/admin/types";
+import type {
+  AdminBoardNavigationGuard,
+  AdminTab
+} from "./features/admin/types";
 import { createBoardMutationBarrier } from "./features/board/mutationBarrier";
 import { ReliablePatchQueueFlushError } from "./features/board/reliablePatchQueue";
 
@@ -150,10 +153,18 @@ function deferred<T>() {
 }
 
 type GuardedAdminDashboardProps = {
-  onNavigationGuardChange?: (guard: (() => Promise<boolean>) | null) => void;
+  onNavigationGuardChange?: (guard: AdminBoardNavigationGuard | null) => void;
   onTabSelected?: (tab: AdminTab) => void;
   onUserSelected?: (userId: string | null) => void;
 };
+
+function createTestAdminBoardNavigationGuard(
+  request: () => Promise<boolean>
+): AdminBoardNavigationGuard {
+  return Object.assign(vi.fn(request), {
+    supersede: vi.fn()
+  });
+}
 
 const guardedAdminTransitions: Array<{
   name: string;
@@ -975,7 +986,9 @@ describe("App", () => {
         error: null
       });
       const pendingWrites = deferred<boolean>();
-      const guard = vi.fn(() => pendingWrites.promise);
+      const guard = createTestAdminBoardNavigationGuard(
+        () => pendingWrites.promise
+      );
 
       renderToStaticMarkup(createElement(App));
       const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
@@ -1007,7 +1020,9 @@ describe("App", () => {
       querySelector: vi.fn(() => null)
     });
     const pendingWrites = deferred<boolean>();
-    const guard = vi.fn(() => pendingWrites.promise);
+    const guard = createTestAdminBoardNavigationGuard(
+      () => pendingWrites.promise
+    );
 
     renderToStaticMarkup(createElement(App));
     const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
@@ -1051,7 +1066,9 @@ describe("App", () => {
 
     renderToStaticMarkup(createElement(App));
     const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
-    dashboardProps.onNavigationGuardChange?.(async () => false);
+    dashboardProps.onNavigationGuardChange?.(
+      createTestAdminBoardNavigationGuard(async () => false)
+    );
     for (const effect of hooks.effects) effect.callback();
     const popstate = browser.addEventListener.mock.calls.find(([event]) => event === "popstate")?.[1];
     const next = new URL(
@@ -1074,6 +1091,66 @@ describe("App", () => {
       );
     });
     expect(hooks.stateUpdates).not.toContain("user-b");
+  });
+
+  it("keeps user A mounted when Forward supersedes a delayed guarded Back to user B", async () => {
+    const browser = installBrowserWindow(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a"
+    );
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+      error: null
+    });
+    vi.stubGlobal("document", {
+      documentElement: { dataset: {} },
+      querySelector: vi.fn(() => null)
+    });
+    const pendingWrites = deferred<boolean>();
+    const guard = createTestAdminBoardNavigationGuard(
+      () => pendingWrites.promise
+    );
+
+    renderToStaticMarkup(createElement(App));
+    const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
+    dashboardProps.onNavigationGuardChange?.(guard);
+    for (const effect of hooks.effects) effect.callback();
+    const popstate = browser.addEventListener.mock.calls.find(([event]) => event === "popstate")?.[1];
+
+    const backRoute = new URL(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-b"
+    );
+    Object.assign(window.location, {
+      hash: backRoute.hash,
+      href: backRoute.href,
+      pathname: backRoute.pathname,
+      search: backRoute.search
+    });
+    popstate?.();
+
+    expect(guard).toHaveBeenCalledOnce();
+    expect(hooks.stateUpdates).not.toContain("user-b");
+
+    const forwardRoute = new URL(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a"
+    );
+    Object.assign(window.location, {
+      hash: forwardRoute.hash,
+      href: forwardRoute.href,
+      pathname: forwardRoute.pathname,
+      search: forwardRoute.search
+    });
+    popstate?.();
+    hooks.stateUpdates.length = 0;
+
+    expect(guard.supersede).toHaveBeenCalledOnce();
+
+    pendingWrites.resolve(true);
+    await pendingWrites.promise;
+    await Promise.resolve();
+
+    expect(hooks.stateUpdates).not.toContain("user-b");
+    expect(window.location.search).toBe("?view=admin&adminTab=users&adminUser=user-a");
   });
 
   it("restores administrator tab, user, and sheet state from browser history", () => {

@@ -303,6 +303,7 @@ export function App() {
   const initialRouteRef = useRef<AppRouteState>(typeof window === "undefined" ? { activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null } : getAppRouteState(window.location.href));
   const currentRouteRef = useRef<AppRouteState>(initialRouteRef.current);
   const adminBoardNavigationGuardRef = useRef<AdminBoardNavigationGuard | null>(null);
+  const pendingAdminBoardNavigationGuardRef = useRef<AdminBoardNavigationGuard | null>(null);
   const pendingGuardedPopstateRouteRef = useRef<AppRouteState | null>(null);
   const routeRequestIdRef = useRef(0);
   const seededSharedHistoryRef = useRef(false);
@@ -340,17 +341,23 @@ export function App() {
     route: AppRouteState,
     mode: "push" | "replace" | "pop" = "push"
   ): Promise<boolean> => {
+    const requestId = ++routeRequestIdRef.current;
     const currentRoute = currentRouteRef.current;
     const guard = shouldGuardAdminBoardNavigation(currentRoute, route)
       ? adminBoardNavigationGuardRef.current
       : null;
 
     if (!guard) {
+      pendingAdminBoardNavigationGuardRef.current?.supersede();
+      pendingAdminBoardNavigationGuardRef.current = null;
+      pendingGuardedPopstateRouteRef.current = null;
       applyAppRoute(route, mode);
       return Promise.resolve(true);
     }
 
-    const requestId = ++routeRequestIdRef.current;
+    const pendingGuard = pendingAdminBoardNavigationGuardRef.current;
+    if (pendingGuard && pendingGuard !== guard) pendingGuard.supersede();
+    pendingAdminBoardNavigationGuardRef.current = guard;
     if (mode === "pop") {
       pendingGuardedPopstateRouteRef.current = currentRoute;
     }
@@ -378,15 +385,18 @@ export function App() {
       (proceed) => {
         if (requestId !== routeRequestIdRef.current) return false;
         if (!proceed) {
+          pendingAdminBoardNavigationGuardRef.current = null;
           restorePendingPopstateRoute();
           return false;
         }
+        pendingAdminBoardNavigationGuardRef.current = null;
         pendingGuardedPopstateRouteRef.current = null;
         applyAppRoute(route, mode);
         return true;
       },
       () => {
         if (requestId === routeRequestIdRef.current) {
+          pendingAdminBoardNavigationGuardRef.current = null;
           restorePendingPopstateRoute();
         }
         return false;

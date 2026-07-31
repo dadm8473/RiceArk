@@ -18,6 +18,7 @@ import {
 } from "../board/mutationBarrier";
 import { useBoard } from "../board/useBoard";
 import type {
+  AdminBoardNavigationGuard,
   AdminBoardNavigationGuardChange,
   AdminUserPage,
   AdminUserSummary
@@ -142,6 +143,26 @@ export async function runAdminSubjectTransition({
     await flushPendingWrites();
   }
   await changeSubject();
+}
+
+export async function runAdminSubjectNavigationAttempt({
+  runTransition,
+  isSuperseded,
+  unlock
+}: {
+  runTransition: () => Promise<void>;
+  isSuperseded: () => boolean;
+  unlock: () => void;
+}): Promise<boolean> {
+  try {
+    await runTransition();
+  } catch (error) {
+    if (!isSuperseded()) throw error;
+  }
+
+  if (!isSuperseded()) return true;
+  unlock();
+  return false;
 }
 
 export function AdminUserResultCard({
@@ -337,6 +358,8 @@ function SelectedUserBoard({
     promise: Promise<boolean>;
     resolve: (proceed: boolean) => void;
   } | null>(null);
+  const navigationSupersededRef = useRef(false);
+  const transitionInFlightRef = useRef(false);
   const transitionActionsRef = useRef({
     discardPendingWrites: board.discardPendingWrites,
     flushPendingWrites: board.flushPendingWrites,
@@ -357,22 +380,28 @@ function SelectedUserBoard({
 
   const attemptNavigation = useCallback(
     async (mode: SubjectTransitionMode) => {
+      transitionInFlightRef.current = true;
       setTransitionPending(true);
       setTransitionBlocked(false);
       const actions = transitionActionsRef.current;
       try {
-        await runAdminSubjectTransition({
-          mode,
-          waitForMutations: mutationBarrier.lockAndDrain,
-          flushPendingWrites: actions.flushPendingWrites,
-          retryPendingWrites: actions.retryPendingWrites,
-          discardPendingWrites: actions.discardPendingWrites,
-          changeSubject: () => undefined
+        const proceed = await runAdminSubjectNavigationAttempt({
+          runTransition: () => runAdminSubjectTransition({
+            mode,
+            waitForMutations: mutationBarrier.lockAndDrain,
+            flushPendingWrites: actions.flushPendingWrites,
+            retryPendingWrites: actions.retryPendingWrites,
+            discardPendingWrites: actions.discardPendingWrites,
+            changeSubject: () => undefined
+          }),
+          isSuperseded: () => navigationSupersededRef.current,
+          unlock: mutationBarrier.unlock
         });
-        resolveNavigation(true);
+        resolveNavigation(proceed);
       } catch {
         setTransitionBlocked(true);
       } finally {
+        transitionInFlightRef.current = false;
         setTransitionPending(false);
       }
     },
@@ -388,13 +417,32 @@ function SelectedUserBoard({
     const promise = new Promise<boolean>((resolvePromise) => {
       resolve = resolvePromise;
     });
+    navigationSupersededRef.current = false;
     navigationRequestRef.current = { promise, resolve };
     void attemptNavigation("flush");
     return promise;
   }, [attemptNavigation]);
 
+  const supersedeNavigation = useCallback(() => {
+    if (!navigationRequestRef.current) return;
+    navigationSupersededRef.current = true;
+    if (transitionInFlightRef.current) return;
+
+    mutationBarrier.unlock();
+    setTransitionBlocked(false);
+    setTransitionPending(false);
+    resolveNavigation(false);
+  }, [mutationBarrier, resolveNavigation]);
+
+  const navigationGuard = useMemo<AdminBoardNavigationGuard>(
+    () => Object.assign(requestNavigation, {
+      supersede: supersedeNavigation
+    }),
+    [requestNavigation, supersedeNavigation]
+  );
+
   useEffect(() => {
-    onNavigationGuardChange(requestNavigation);
+    onNavigationGuardChange(navigationGuard);
     return () => {
       onNavigationGuardChange(null);
       resolveNavigation(false);
@@ -402,8 +450,8 @@ function SelectedUserBoard({
     };
   }, [
     mutationBarrier,
+    navigationGuard,
     onNavigationGuardChange,
-    requestNavigation,
     resolveNavigation
   ]);
 

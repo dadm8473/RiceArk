@@ -10,6 +10,7 @@ import {
   SelectedUserContext,
   buildAdminUsersPath,
   retryAdminUsersPage,
+  runAdminSubjectNavigationAttempt,
   runAdminSubjectTransition
 } from "./AdminUserBoardsTab";
 import type { AdminUserSummary } from "./types";
@@ -24,6 +25,14 @@ const user: AdminUserSummary = {
 
 function render(element: ReturnType<typeof createElement>) {
   return renderToStaticMarkup(element);
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 describe("AdminUserBoardsTab", () => {
@@ -205,6 +214,26 @@ describe("AdminUserBoardsTab", () => {
     expect(changeSubject).toHaveBeenCalledOnce();
   });
 
+  it("unlocks user A only after a superseded in-flight transition settles", async () => {
+    const transition = deferred<void>();
+    const unlock = vi.fn();
+    let superseded = false;
+
+    const result = runAdminSubjectNavigationAttempt({
+      runTransition: () => transition.promise,
+      isSuperseded: () => superseded,
+      unlock
+    });
+
+    superseded = true;
+    expect(unlock).not.toHaveBeenCalled();
+
+    transition.resolve();
+
+    await expect(result).resolves.toBe(false);
+    expect(unlock).toHaveBeenCalledOnce();
+  });
+
   it("mounts useBoard only inside the selected-user child and scopes BoardOverview to the same client", () => {
     const source = readFileSync(new URL("./AdminUserBoardsTab.tsx", import.meta.url), "utf8");
     const childStart = source.indexOf("function SelectedUserBoard");
@@ -216,6 +245,6 @@ describe("AdminUserBoardsTab", () => {
     expect(source.slice(childStart, tabStart)).toContain("useBoard({");
     expect(source).toContain("createApiClient({ adminTargetUserId: selectedUser.id })");
     expect(source).toMatch(/<BoardOverview[\s\S]*apiClient=\{apiClient\}/);
-    expect(source.slice(childStart, tabStart)).toContain("onNavigationGuardChange(requestNavigation)");
+    expect(source.slice(childStart, tabStart)).toContain("onNavigationGuardChange(navigationGuard)");
   });
 });

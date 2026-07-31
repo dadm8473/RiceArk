@@ -218,3 +218,106 @@ No layout or styling was changed in this round. Authenticated visual QA was not 
 - A canceled `popstate` restores the current administrator route URL.
 - Exact-page retries preserve `append: true`, so existing user cards and audit rows are merged rather than replaced.
 - The deferred ARIA tab-semantics minor remains open for final review by instruction.
+
+## Fix Round 2/5
+
+### Resolved Regression
+
+- Every `requestAppRoute` call now advances the route request sequence, including an unguarded request that keeps the current selected subject.
+- This corrects the round 1 self-review claim that a same-subject route should not supersede an in-flight exit; browser Forward must supersede it.
+- `App` tracks the guard serving the active route request. A newer unguarded route explicitly supersedes that guard before applying its route.
+- A delayed stale route callback checks its request sequence and cannot mutate route state after a newer Back/Forward request.
+- The selected-user guard now exposes `supersede()`. If its drain/flush is still running, user A stays write-locked until that work settles and then unlocks without navigating. If the transition is already blocked, supersession unlocks and resolves it immediately.
+- A superseded transition failure is treated as an abandoned navigation rather than reopening the route-change recovery prompt.
+- The pending `popstate` restoration marker is cleared when the newer unguarded Forward route takes ownership of the URL.
+
+### RED
+
+Exact delayed Back-to-Forward reproduction:
+
+```text
+pnpm vitest run apps/web/src/App.test.ts
+
+Test Files  1 failed (1)
+Tests       1 failed | 60 passed (61)
+Exit code   1
+```
+
+Failure:
+
+```text
+App > keeps user A mounted when Forward supersedes a delayed guarded Back to user B
+expected "spy" to be called once, but got 0 times
+```
+
+Combined route and selected-user unlock RED:
+
+```text
+pnpm vitest run apps/web/src/App.test.ts apps/web/src/features/admin/AdminUserBoardsTab.test.ts
+
+Test Files  2 failed (2)
+Tests       2 failed | 69 passed (71)
+Exit code   1
+```
+
+Failures:
+
+```text
+App > keeps user A mounted when Forward supersedes a delayed guarded Back to user B
+AdminUserBoardsTab > unlocks user A only after a superseded in-flight transition settles
+```
+
+### GREEN
+
+Focused App/admin command:
+
+```text
+pnpm vitest run apps/web/src/App.test.ts apps/web/src/features/admin/AdminUserBoardsTab.test.ts apps/web/src/features/admin/AdminAuditTab.test.ts apps/web/src/features/admin/AdminDashboard.test.ts
+```
+
+Output:
+
+```text
+✓ apps/web/src/features/admin/AdminAuditTab.test.ts (6 tests)
+✓ apps/web/src/features/admin/AdminUserBoardsTab.test.ts (10 tests)
+✓ apps/web/src/features/admin/AdminDashboard.test.ts (12 tests)
+✓ apps/web/src/App.test.ts (61 tests)
+
+Test Files  4 passed (4)
+Tests       89 passed (89)
+Exit code   0
+```
+
+Workspace check command:
+
+```text
+pnpm check
+```
+
+Output:
+
+```text
+Scope: 3 of 4 workspace projects
+packages/core check$ tsc -p tsconfig.json --noEmit
+packages/core check: Done
+apps/api check$ tsc -p tsconfig.json --noEmit
+apps/api check: Done
+apps/web check$ tsc -p tsconfig.json --noEmit
+apps/web check: Done
+Exit code 0
+```
+
+### Files
+
+- `apps/web/src/App.tsx`
+- `apps/web/src/App.test.ts`
+- `apps/web/src/features/admin/AdminUserBoardsTab.tsx`
+- `apps/web/src/features/admin/AdminUserBoardsTab.test.ts`
+- `apps/web/src/features/admin/types.ts`
+- `.superpowers/sdd/2026-07-31-admin-user-board-management/task-7-report.md`
+
+### Visual QA And Concerns
+
+- This round changes route arbitration and pending-write lifecycle only; no layout or style code changed.
+- Authenticated visual QA was not repeated. Controller follow-up should exercise rapid Back-to-Forward navigation with a real delayed board write.
+- The deferred ARIA tab-semantics minor remains untouched.
