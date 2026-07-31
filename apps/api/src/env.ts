@@ -1,3 +1,5 @@
+import type { UserAccess } from "./auth/userAccess";
+
 export interface Env {
   DB: D1Database;
   CACHE: KVNamespace;
@@ -16,4 +18,11 @@ export interface Env {
   DISCORD_CLIENT_ID?: string;
   DISCORD_CLIENT_SECRET?: string;
   SESSION_SECRET?: string;
+}
+
+export interface AppEnv {
+  Bindings: Env;
+  Variables: {
+    adminTargetAccess: UserAccess;
+  };
 }
