@@ -169,7 +169,10 @@ function envWithAdminDb(providerUserId: string, statements?: string[]): Env {
   return {
     ...envBase,
     ADMIN_OAUTH_ALLOWLIST: "discord:326685778656755713",
-    DB: createAdminDb({ providerUserId, statements })
+    DB: createAdminDb({
+      providerUserId,
+      ...(statements === undefined ? {} : { statements })
+    })
   } as unknown as Env;
 }
 
