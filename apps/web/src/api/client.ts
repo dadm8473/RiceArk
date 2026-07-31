@@ -3,6 +3,14 @@ export interface ApiRequestOptions {
   signal?: AbortSignal;
 }
 
+export interface ApiClient {
+  get<T>(path: string): Promise<T>;
+  post<T>(path: string, body: unknown): Promise<T>;
+  postNoContent(path: string): Promise<void>;
+  patch<T>(path: string, body: unknown, options?: ApiRequestOptions): Promise<T>;
+  delete(path: string): Promise<void>;
+}
+
 export class ApiClientError extends Error {
   constructor(
     public readonly status: number,
@@ -192,48 +200,99 @@ async function buildApiError(response: Response, fallbackMessage: string): Promi
   }
 }
 
-export async function apiGet<T>(path: string): Promise<T> {
-  const response = await fetch(path, { credentials: "include" });
-  if (!response.ok) throw await buildApiError(response, `GET ${path} failed`);
-  return response.json() as Promise<T>;
+const ADMIN_TARGET_USER_HEADER = "X-RiceArk-Admin-Target-User";
+
+function requestHeaders(
+  targetUserId: string | undefined,
+  contentType: boolean
+): Headers {
+  const headers = new Headers();
+  if (contentType) headers.set("Content-Type", "application/json");
+  if (targetUserId) headers.set(ADMIN_TARGET_USER_HEADER, targetUserId);
+  return headers;
 }
 
-export async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(body)
+export function createApiClient(options: {
+  adminTargetUserId?: string;
+} = {}): ApiClient {
+  const targetUserId = options.adminTargetUserId;
+
+  return Object.freeze({
+    get: async <T>(path: string): Promise<T> => {
+      const response = await fetch(path, {
+        headers: requestHeaders(targetUserId, false),
+        credentials: "include"
+      });
+      if (!response.ok) throw await buildApiError(response, `GET ${path} failed`);
+      return response.json() as Promise<T>;
+    },
+    post: async <T>(path: string, body: unknown): Promise<T> => {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: requestHeaders(targetUserId, true),
+        credentials: "include",
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) throw await buildApiError(response, `POST ${path} failed`);
+      return response.json() as Promise<T>;
+    },
+    postNoContent: async (path: string): Promise<void> => {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: requestHeaders(targetUserId, false),
+        credentials: "include"
+      });
+      if (!response.ok) throw await buildApiError(response, `POST ${path} failed`);
+    },
+    patch: async <T>(
+      path: string,
+      body: unknown,
+      requestOptions: ApiRequestOptions = {}
+    ): Promise<T> => {
+      const response = await fetch(path, {
+        method: "PATCH",
+        headers: requestHeaders(targetUserId, true),
+        credentials: "include",
+        body: JSON.stringify(body),
+        ...(requestOptions.keepalive === undefined ? {} : { keepalive: requestOptions.keepalive }),
+        ...(requestOptions.signal === undefined ? {} : { signal: requestOptions.signal })
+      });
+      if (!response.ok) throw await buildApiError(response, `PATCH ${path} failed`);
+      return response.json() as Promise<T>;
+    },
+    delete: async (path: string): Promise<void> => {
+      const response = await fetch(path, {
+        method: "DELETE",
+        headers: requestHeaders(targetUserId, false),
+        credentials: "include"
+      });
+      if (!response.ok) throw await buildApiError(response, `DELETE ${path} failed`);
+    }
   });
-  if (!response.ok) throw await buildApiError(response, `POST ${path} failed`);
-  return response.json() as Promise<T>;
 }
 
-export async function apiPostNoContent(path: string): Promise<void> {
-  const response = await fetch(path, {
-    method: "POST",
-    credentials: "include"
-  });
-  if (!response.ok) throw await buildApiError(response, `POST ${path} failed`);
+export const defaultApiClient: ApiClient = createApiClient();
+
+export function apiGet<T>(path: string): Promise<T> {
+  return defaultApiClient.get<T>(path);
 }
 
-export async function apiPatch<T>(path: string, body: unknown, options: ApiRequestOptions = {}): Promise<T> {
-  const response = await fetch(path, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(body),
-    ...(options.keepalive === undefined ? {} : { keepalive: options.keepalive }),
-    ...(options.signal === undefined ? {} : { signal: options.signal })
-  });
-  if (!response.ok) throw await buildApiError(response, `PATCH ${path} failed`);
-  return response.json() as Promise<T>;
+export function apiPost<T>(path: string, body: unknown): Promise<T> {
+  return defaultApiClient.post<T>(path, body);
 }
 
-export async function apiDelete(path: string): Promise<void> {
-  const response = await fetch(path, {
-    method: "DELETE",
-    credentials: "include"
-  });
-  if (!response.ok) throw await buildApiError(response, `DELETE ${path} failed`);
+export function apiPostNoContent(path: string): Promise<void> {
+  return defaultApiClient.postNoContent(path);
+}
+
+export function apiPatch<T>(
+  path: string,
+  body: unknown,
+  options: ApiRequestOptions = {}
+): Promise<T> {
+  return defaultApiClient.patch<T>(path, body, options);
+}
+
+export function apiDelete(path: string): Promise<void> {
+  return defaultApiClient.delete(path);
 }

@@ -109,4 +109,58 @@ export type AdminHealth = {
   };
 };
 
-export type AdminTab = "overview" | "usage" | "health" | "data";
+export type AdminTab = "overview" | "usage" | "health" | "data" | "users" | "audit";
+
+export type AdminBoardNavigationGuard = {
+  (): Promise<boolean>;
+  supersede: () => void;
+};
+
+export type AdminBoardNavigationGuardChange = (
+  guard: AdminBoardNavigationGuard | null
+) => void;
+
+export type AdminBoardDurableControls = {
+  waitForMutations: () => Promise<void>;
+  flushPendingWrites: () => Promise<void>;
+  retryPendingWrites: () => void;
+  discardPendingWrites: () => void;
+  reconcileAfterLogoutFailure: () => Promise<unknown>;
+  unlockMutations: () => void;
+  hasPendingWrites: boolean;
+  pendingWriteError: string | null;
+};
+
+export type AdminBoardDurableControlsChange = (
+  controls: AdminBoardDurableControls | null
+) => void;
+
+export type AdminUserSummary = {
+  id: string;
+  displayName: string;
+  provider: "discord" | "google" | string;
+  createdAt: string;
+  recentActivityAt: string | null;
+};
+
+export type AdminUserPage = {
+  users: AdminUserSummary[];
+  nextCursor: string | null;
+  selectedUser: AdminUserSummary | null;
+};
+
+export type AdminAuditLog = {
+  id: string;
+  adminUserId: string;
+  adminDisplayName: string;
+  targetUserId: string;
+  targetDisplayName: string;
+  method: string;
+  action: string;
+  createdAt: string;
+};
+
+export type AdminAuditLogPage = {
+  logs: AdminAuditLog[];
+  nextCursor: string | null;
+};

@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiDelete, apiGet, apiPatch, apiPostNoContent } from "./client";
+import {
+  apiDelete,
+  apiGet,
+  apiPatch,
+  apiPostNoContent,
+  createApiClient,
+  defaultApiClient
+} from "./client";
 
 describe("api client", () => {
   afterEach(() => {
@@ -26,15 +33,41 @@ describe("api client", () => {
     await expect(apiGet("/api/dashboard")).rejects.toThrow("Login required");
   });
 
+  it("adds the admin target only to every request made by the scoped client", async () => {
+    const fetchMock = vi.fn(async (_path: string, _request: RequestInit) =>
+      new Response(JSON.stringify({ ok: true }))
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const scoped = createApiClient({ adminTargetUserId: "user-2" });
+
+    await scoped.get("/api/board/bootstrap");
+    await scoped.post("/api/board/tables", {});
+    await scoped.postNoContent("/api/auth/logout");
+    await scoped.patch("/api/board/completions", { patches: [] });
+    await scoped.delete("/api/board/tables/table-1");
+
+    for (const [, request] of fetchMock.mock.calls) {
+      expect((request.headers as Headers).get("X-RiceArk-Admin-Target-User")).toBe("user-2");
+    }
+
+    await defaultApiClient.get("/api/board/bootstrap");
+    const defaultRequest = fetchMock.mock.calls.at(-1)?.[1];
+    expect((defaultRequest?.headers as Headers).get("X-RiceArk-Admin-Target-User")).toBeNull();
+  });
+
   it("allows successful no-content POST responses", async () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(apiPostNoContent("/api/auth/logout")).resolves.toBeUndefined();
-    expect(fetchMock).toHaveBeenCalledWith("/api/auth/logout", {
-      method: "POST",
-      credentials: "include"
-    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/logout",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: expect.any(Headers)
+      })
+    );
   });
 
   it("sends DELETE requests with credentials", async () => {
@@ -42,10 +75,14 @@ describe("api client", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(apiDelete("/api/characters/character-1")).resolves.toBeUndefined();
-    expect(fetchMock).toHaveBeenCalledWith("/api/characters/character-1", {
-      method: "DELETE",
-      credentials: "include"
-    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/characters/character-1",
+      expect.objectContaining({
+        method: "DELETE",
+        credentials: "include",
+        headers: expect.any(Headers)
+      })
+    );
   });
 
   it("passes keepalive and an abort signal to PATCH requests", async () => {
@@ -64,16 +101,23 @@ describe("api client", () => {
   });
 
   it("keeps the two-argument PATCH call compatible", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    const fetchMock = vi.fn(async (_path: string, _request: RequestInit) =>
+      new Response(JSON.stringify({ ok: true }))
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(apiPatch("/api/board/completions", { patches: [] })).resolves.toEqual({ ok: true });
-    expect(fetchMock).toHaveBeenCalledWith("/api/board/completions", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ patches: [] })
-    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/board/completions",
+      expect.objectContaining({
+        method: "PATCH",
+        headers: expect.any(Headers),
+        credentials: "include",
+        body: JSON.stringify({ patches: [] })
+      })
+    );
+    const request = fetchMock.mock.calls[0]?.[1];
+    expect((request?.headers as Headers).get("Content-Type")).toBe("application/json");
   });
 
   it("parses Retry-After seconds from API errors", async () => {

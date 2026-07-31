@@ -2,6 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, Calculator, FileText } from "lucide-react";
 import { apiPatch, apiPostNoContent } from "./api/client";
 import { AdminDashboard } from "./features/admin/AdminDashboard";
+import type {
+  AdminBoardDurableControls,
+  AdminBoardNavigationGuard,
+  AdminBoardNavigationGuardChange,
+  AdminTab
+} from "./features/admin/types";
 import { AuctionCalculatorModal } from "./features/auction-calculator/AuctionCalculatorModal";
 import { AuthMenu, type AppTheme } from "./features/auth/AuthMenu";
 import { useSession, type AuthUser } from "./features/auth/useSession";
@@ -17,8 +23,19 @@ import { SharedRiceBinPanel } from "./features/shared-rice-bin/SharedRiceBinPane
 
 const SHARE_ID_PATH_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const SHARE_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+const ADMIN_TABS: readonly AdminTab[] = ["overview", "usage", "health", "data", "users", "audit"];
 
 export type DurableLogoutMode = "normal" | "retry" | "discard";
+
+type DurableBoardLogoutControls = Pick<
+  AdminBoardDurableControls,
+  | "waitForMutations"
+  | "flushPendingWrites"
+  | "retryPendingWrites"
+  | "discardPendingWrites"
+  | "reconcileAfterLogoutFailure"
+  | "unlockMutations"
+>;
 
 export class DurableLogoutError extends Error {
   constructor(
@@ -83,7 +100,7 @@ export async function runDurableLogout({
 
 export async function recoverBoardAfterLogoutFailure(
   barrier: Pick<BoardMutationBarrier, "unlock">,
-  board: Pick<ReturnType<typeof useBoard>, "reconcileAfterLogoutFailure">,
+  board: { reconcileAfterLogoutFailure: () => Promise<unknown> },
   onRecovered?: (() => void) | undefined
 ): Promise<void> {
   try {
@@ -94,6 +111,57 @@ export async function recoverBoardAfterLogoutFailure(
     barrier.unlock();
   }
   onRecovered?.();
+}
+
+async function settleBoardDurabilityOperations(
+  operations: ReadonlyArray<() => Promise<unknown>>
+): Promise<void> {
+  const results = await Promise.allSettled(
+    operations.map(async (operation) => operation())
+  );
+  const errors = results
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason);
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "One or more board durability operations failed");
+  }
+}
+
+export async function runCrossBoardDurableLogoutAttempt({
+  mode,
+  boards,
+  logout
+}: {
+  mode: DurableLogoutMode;
+  boards: readonly DurableBoardLogoutControls[];
+  logout: () => Promise<void>;
+}): Promise<void> {
+  try {
+    await runDurableLogout({
+      mode,
+      waitForMutations: () => settleBoardDurabilityOperations(
+        boards.map((board) => () => board.waitForMutations())
+      ),
+      flushPendingWrites: () => settleBoardDurabilityOperations(
+        boards.map((board) => () => board.flushPendingWrites())
+      ),
+      retryPendingWrites: () => {
+        boards.forEach((board) => board.retryPendingWrites());
+      },
+      discardPendingWrites: () => {
+        boards.forEach((board) => board.discardPendingWrites());
+      },
+      logout
+    });
+  } catch (error) {
+    await Promise.all(
+      boards.map((board) => recoverBoardAfterLogoutFailure(
+        { unlock: () => board.unlockMutations() },
+        { reconcileAfterLogoutFailure: () => board.reconcileAfterLogoutFailure() }
+      ))
+    );
+    throw error;
+  }
 }
 
 export function getOwnerBoardInteractionProps(
@@ -121,6 +189,22 @@ export function getSharedRiceBinInteractionProps(
   return {
     runMutation,
     writeLocked: logoutPending
+  };
+}
+
+export function getProfileBoardWriteState(
+  ownerBoard: { hasPendingWrites: boolean; pendingWriteError: string | null },
+  selectedAdminBoard: { hasPendingWrites: boolean; pendingWriteError: string | null } | null
+): { hasPendingWrites: boolean; pendingWriteError: string | null } {
+  const errors = [
+    ownerBoard.pendingWriteError,
+    selectedAdminBoard?.pendingWriteError ?? null
+  ].filter((error): error is string => error !== null);
+  return {
+    hasPendingWrites:
+      ownerBoard.hasPendingWrites ||
+      (selectedAdminBoard?.hasPendingWrites ?? false),
+    pendingWriteError: [...new Set(errors)].join(" ") || null
   };
 }
 
@@ -175,6 +259,9 @@ export interface AppRouteState {
   activeView: AppView;
   shareId: string | null;
   sheetId: string | null;
+  adminTab: AdminTab | null;
+  adminUserId: string | null;
+  adminSheetId: string | null;
 }
 
 function getSharedRiceBinIdFromUrl(href: string): string | null {
@@ -191,17 +278,42 @@ function getRelativeUrl(url: URL): string {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
+function getNonEmptyRouteId(value: string | null): string | null {
+  const id = value?.trim();
+  return id || null;
+}
+
+function getAdminTab(value: string | null): AdminTab | null {
+  return ADMIN_TABS.includes(value as AdminTab) ? (value as AdminTab) : null;
+}
+
 export function getAppRouteState(href: string): AppRouteState {
   const url = new URL(href, "https://riceark.pages.dev");
   const shareId = getSharedRiceBinIdFromUrl(href);
-  if (shareId) return { activeView: "shared", shareId, sheetId: null };
+  if (shareId) return { activeView: "shared", shareId, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null };
 
   const view = url.searchParams.get("view");
-  if (view === "shared") return { activeView: "shared", shareId: null, sheetId: null };
-  if (view === "admin") return { activeView: "admin", shareId: null, sheetId: null };
+  if (view === "shared") return { activeView: "shared", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null };
+  if (view === "admin") {
+    return {
+      activeView: "admin",
+      shareId: null,
+      sheetId: null,
+      adminTab: getAdminTab(url.searchParams.get("adminTab")),
+      adminUserId: getNonEmptyRouteId(url.searchParams.get("adminUser")),
+      adminSheetId: getNonEmptyRouteId(url.searchParams.get("adminSheet"))
+    };
+  }
 
   const sheetId = url.searchParams.get("sheet");
-  return { activeView: "board", shareId: null, sheetId: sheetId?.trim() ? sheetId : null };
+  return {
+    activeView: "board",
+    shareId: null,
+    sheetId: sheetId?.trim() ? sheetId : null,
+    adminTab: null,
+    adminUserId: null,
+    adminSheetId: null
+  };
 }
 
 export function getAppRouteUrl(route: AppRouteState, href: string): string {
@@ -210,6 +322,9 @@ export function getAppRouteUrl(route: AppRouteState, href: string): string {
   url.searchParams.delete("view");
   url.searchParams.delete("share");
   url.searchParams.delete("sheet");
+  url.searchParams.delete("adminTab");
+  url.searchParams.delete("adminUser");
+  url.searchParams.delete("adminSheet");
 
   if (route.activeView === "shared") {
     if (route.shareId) {
@@ -219,6 +334,9 @@ export function getAppRouteUrl(route: AppRouteState, href: string): string {
     }
   } else if (route.activeView === "admin") {
     url.searchParams.set("view", "admin");
+    if (route.adminTab) url.searchParams.set("adminTab", route.adminTab);
+    if (route.adminUserId?.trim()) url.searchParams.set("adminUser", route.adminUserId);
+    if (route.adminSheetId?.trim()) url.searchParams.set("adminSheet", route.adminSheetId);
   } else if (route.sheetId?.trim()) {
     url.searchParams.set("sheet", route.sheetId);
   }
@@ -231,7 +349,7 @@ export function getDirectSharedRiceBinHistoryUrls(href: string): [string, string
   if (route.activeView !== "shared" || !route.shareId) return null;
 
   return [
-    getAppRouteUrl({ activeView: "shared", shareId: null, sheetId: null }, href),
+    getAppRouteUrl({ activeView: "shared", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null }, href),
     getAppRouteUrl(route, href)
   ];
 }
@@ -242,21 +360,49 @@ function getHistoryState(currentState: unknown): Record<string, unknown> {
     : { ricearkRoute: true };
 }
 
+export function shouldGuardAdminBoardNavigation(
+  currentRoute: AppRouteState,
+  nextRoute: AppRouteState
+): boolean {
+  return (
+    currentRoute.activeView === "admin" &&
+    currentRoute.adminTab === "users" &&
+    currentRoute.adminUserId !== null &&
+    (
+      nextRoute.activeView !== "admin" ||
+      nextRoute.adminTab !== "users" ||
+      nextRoute.adminUserId !== currentRoute.adminUserId
+    )
+  );
+}
+
 export function App() {
   const session = useSession();
-  const initialRouteRef = useRef<AppRouteState>(typeof window === "undefined" ? { activeView: "board", shareId: null, sheetId: null } : getAppRouteState(window.location.href));
+  const initialRouteRef = useRef<AppRouteState>(typeof window === "undefined" ? { activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null } : getAppRouteState(window.location.href));
+  const currentRouteRef = useRef<AppRouteState>(initialRouteRef.current);
+  const adminBoardNavigationGuardRef = useRef<AdminBoardNavigationGuard | null>(null);
+  const pendingAdminBoardNavigationGuardRef = useRef<AdminBoardNavigationGuard | null>(null);
+  const pendingGuardedPopstateRouteRef = useRef<AppRouteState | null>(null);
+  const routeRequestIdRef = useRef(0);
   const seededSharedHistoryRef = useRef(false);
   const [routeShareId, setRouteShareId] = useState<string | null>(() => initialRouteRef.current.shareId);
   const [routeSheetId, setRouteSheetId] = useState<string | null>(() => initialRouteRef.current.sheetId);
+  const [routeAdminTab, setRouteAdminTab] = useState<AdminTab | null>(() => initialRouteRef.current.adminTab);
+  const [routeAdminUserId, setRouteAdminUserId] = useState<string | null>(() => initialRouteRef.current.adminUserId);
+  const [routeAdminSheetId, setRouteAdminSheetId] = useState<string | null>(() => initialRouteRef.current.adminSheetId);
   const [activeView, setActiveView] = useState<AppView>(() => initialRouteRef.current.activeView);
   const [sharedRiceBinLookupResetKey, setSharedRiceBinLookupResetKey] = useState(0);
   const applyAppRoute = useCallback((
     route: AppRouteState,
     mode: "push" | "replace" | "pop" = "push"
   ) => {
+    currentRouteRef.current = route;
     setActiveView(route.activeView);
     setRouteShareId(route.shareId);
     setRouteSheetId(route.sheetId);
+    setRouteAdminTab(route.adminTab);
+    setRouteAdminUserId(route.adminUserId);
+    setRouteAdminSheetId(route.adminSheetId);
     if (typeof window === "undefined" || mode === "pop") return;
 
     const nextUrl = getAppRouteUrl(route, window.location.href);
@@ -266,8 +412,77 @@ export function App() {
     const historyMethod = mode === "replace" ? "replaceState" : "pushState";
     window.history[historyMethod](getHistoryState(window.history.state), "", nextUrl);
   }, []);
+  const handleAdminBoardNavigationGuardChange = useCallback<AdminBoardNavigationGuardChange>((guard) => {
+    adminBoardNavigationGuardRef.current = guard;
+  }, []);
+  const requestAppRoute = useCallback((
+    route: AppRouteState,
+    mode: "push" | "replace" | "pop" = "push"
+  ): Promise<boolean> => {
+    const requestId = ++routeRequestIdRef.current;
+    const currentRoute = currentRouteRef.current;
+    const guard = shouldGuardAdminBoardNavigation(currentRoute, route)
+      ? adminBoardNavigationGuardRef.current
+      : null;
+
+    if (!guard) {
+      pendingAdminBoardNavigationGuardRef.current?.supersede();
+      pendingAdminBoardNavigationGuardRef.current = null;
+      pendingGuardedPopstateRouteRef.current = null;
+      applyAppRoute(route, mode);
+      return Promise.resolve(true);
+    }
+
+    const pendingGuard = pendingAdminBoardNavigationGuardRef.current;
+    if (pendingGuard && pendingGuard !== guard) pendingGuard.supersede();
+    pendingAdminBoardNavigationGuardRef.current = guard;
+    if (mode === "pop") {
+      pendingGuardedPopstateRouteRef.current = currentRoute;
+    }
+    const restorePendingPopstateRoute = () => {
+      const restoreRoute = pendingGuardedPopstateRouteRef.current;
+      if (!restoreRoute || typeof window === "undefined") return;
+      pendingGuardedPopstateRouteRef.current = null;
+      const currentUrl = getAppRouteUrl(restoreRoute, window.location.href);
+      window.history.pushState(
+        getHistoryState(window.history.state),
+        "",
+        currentUrl
+      );
+    };
+
+    let navigationDecision: Promise<boolean>;
+    try {
+      navigationDecision = guard();
+    } catch {
+      restorePendingPopstateRoute();
+      return Promise.resolve(false);
+    }
+
+    return navigationDecision.then(
+      (proceed) => {
+        if (requestId !== routeRequestIdRef.current) return false;
+        if (!proceed) {
+          pendingAdminBoardNavigationGuardRef.current = null;
+          restorePendingPopstateRoute();
+          return false;
+        }
+        pendingAdminBoardNavigationGuardRef.current = null;
+        pendingGuardedPopstateRouteRef.current = null;
+        applyAppRoute(route, mode);
+        return true;
+      },
+      () => {
+        if (requestId === routeRequestIdRef.current) {
+          pendingAdminBoardNavigationGuardRef.current = null;
+          restorePendingPopstateRoute();
+        }
+        return false;
+      }
+    );
+  }, [applyAppRoute]);
   const handleReplaceBoardSheetId = useCallback((sheetId: string | null) => {
-    applyAppRoute({ activeView: "board", shareId: null, sheetId }, "replace");
+    applyAppRoute({ activeView: "board", shareId: null, sheetId, adminTab: null, adminUserId: null, adminSheetId: null }, "replace");
   }, [applyAppRoute]);
   const isAuthenticated = session.status === "authenticated";
   const isAdmin = isAuthenticated && session.user.isAdmin === true;
@@ -281,7 +496,7 @@ export function App() {
     onReplaceSheetId: handleReplaceBoardSheetId
   });
   const handleBoardSheetSelected = useCallback((sheetId: string) => {
-    applyAppRoute({ activeView: "board", shareId: null, sheetId }, "push");
+    applyAppRoute({ activeView: "board", shareId: null, sheetId, adminTab: null, adminUserId: null, adminSheetId: null }, "push");
     void board.selectSheet(sheetId).catch(() => undefined);
   }, [applyAppRoute, board.selectSheet]);
   const boardMutationBarrierRef = useRef<BoardMutationBarrier | null>(null);
@@ -289,6 +504,20 @@ export function App() {
     boardMutationBarrierRef.current = createBoardMutationBarrier();
   }
   const boardMutationBarrier = boardMutationBarrierRef.current;
+  const selectedAdminBoardControlsRef = useRef<AdminBoardDurableControls | null>(null);
+  const [selectedAdminBoardWriteState, setSelectedAdminBoardWriteState] = useState<{
+    hasPendingWrites: boolean;
+    pendingWriteError: string | null;
+  } | null>(null);
+  const handleAdminBoardDurableControlsChange = useCallback((controls: AdminBoardDurableControls | null) => {
+    selectedAdminBoardControlsRef.current = controls;
+    setSelectedAdminBoardWriteState(controls
+      ? {
+          hasPendingWrites: controls.hasPendingWrites,
+          pendingWriteError: controls.pendingWriteError
+        }
+      : null);
+  }, []);
   const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [patchNotesOpen, setPatchNotesOpen] = useState(false);
@@ -322,7 +551,7 @@ export function App() {
 
     function handlePopState() {
       const route = getAppRouteState(window.location.href);
-      applyAppRoute(route, "pop");
+      void requestAppRoute(route, "pop");
       setCalculatorOpen(false);
     }
 
@@ -330,37 +559,43 @@ export function App() {
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [applyAppRoute]);
+  }, [requestAppRoute]);
 
   useEffect(() => {
     if (activeView !== "admin" || session.status === "checking") return;
-    if (!isAdmin) applyAppRoute({ activeView: "board", shareId: null, sheetId: null }, "replace");
+    if (!isAdmin) applyAppRoute({ activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null }, "replace");
   }, [activeView, isAdmin, session.status]);
 
   const attemptLogout = async (mode: DurableLogoutMode) => {
-    const mutationDrain = boardMutationBarrier.lockAndDrain();
+    const selectedAdminBoardControls = selectedAdminBoardControlsRef.current;
+    const durableBoards: DurableBoardLogoutControls[] = [
+      {
+        waitForMutations: () => boardMutationBarrier.lockAndDrain(),
+        flushPendingWrites: () => board.flushPendingWrites(),
+        retryPendingWrites: () => board.retryPendingWrites(),
+        discardPendingWrites: () => board.discardPendingWrites(),
+        reconcileAfterLogoutFailure: () => board.reconcileAfterLogoutFailure(),
+        unlockMutations: () => boardMutationBarrier.unlock()
+      }
+    ];
+    if (selectedAdminBoardControls) durableBoards.push(selectedAdminBoardControls);
     setLogoutPending(true);
     setAuthMenuOpen(false);
     setLogoutBlocked(false);
     setLogoutError(null);
     try {
-      await runDurableLogout({
+      await runCrossBoardDurableLogoutAttempt({
         mode,
-        waitForMutations: () => mutationDrain,
-        flushPendingWrites: board.flushPendingWrites,
-        retryPendingWrites: board.retryPendingWrites,
-        discardPendingWrites: board.discardPendingWrites,
+        boards: durableBoards,
         logout: () => apiPostNoContent("/api/auth/logout")
       });
       window.location.assign("/");
     } catch (err) {
       const failure = getDurableLogoutFailureState(err);
-      await recoverBoardAfterLogoutFailure(boardMutationBarrier, board, () => {
-        setLogoutPending(false);
-        setAuthMenuOpen(true);
-        setLogoutBlocked(failure.logoutBlocked);
-        setLogoutError(failure.logoutError);
-      });
+      setLogoutPending(false);
+      setAuthMenuOpen(true);
+      setLogoutBlocked(failure.logoutBlocked);
+      setLogoutError(failure.logoutError);
       console.error(err);
     }
   };
@@ -379,7 +614,7 @@ export function App() {
   };
 
   const clearSharedRiceBinEntryState = () => {
-    applyAppRoute({ activeView: "shared", shareId: null, sheetId: null }, "replace");
+    applyAppRoute({ activeView: "shared", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null }, "replace");
   };
 
   const handleSharedBoardClosed = () => {
@@ -388,23 +623,68 @@ export function App() {
 
   const handleOwnBoardSelected = () => {
     setCalculatorOpen(false);
-    applyAppRoute({ activeView: "board", shareId: null, sheetId: null });
+    void requestAppRoute({ activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
   };
 
   const handleSharedRiceBinSelected = () => {
     if (activeView === "shared") setSharedRiceBinLookupResetKey((key) => key + 1);
     setCalculatorOpen(false);
-    applyAppRoute({ activeView: "shared", shareId: null, sheetId: null });
+    void requestAppRoute({ activeView: "shared", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
   };
 
   const handleAdminSelected = () => {
     setCalculatorOpen(false);
-    applyAppRoute({ activeView: "admin", shareId: null, sheetId: null });
+    void requestAppRoute({ activeView: "admin", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
   };
 
+  const handleAdminTabSelected = useCallback((adminTab: AdminTab) => {
+    void requestAppRoute({
+      activeView: "admin",
+      shareId: null,
+      sheetId: null,
+      adminTab,
+      adminUserId: routeAdminUserId,
+      adminSheetId: routeAdminSheetId
+    });
+  }, [requestAppRoute, routeAdminSheetId, routeAdminUserId]);
+
+  const handleAdminUserSelected = useCallback((adminUserId: string | null) => {
+    void requestAppRoute({
+      activeView: "admin",
+      shareId: null,
+      sheetId: null,
+      adminTab: "users",
+      adminUserId,
+      adminSheetId: null
+    });
+  }, [requestAppRoute]);
+
+  const handleAdminSheetSelected = useCallback((adminSheetId: string) => {
+    applyAppRoute({
+      activeView: "admin",
+      shareId: null,
+      sheetId: null,
+      adminTab: "users",
+      adminUserId: routeAdminUserId,
+      adminSheetId
+    });
+  }, [applyAppRoute, routeAdminUserId]);
+
+  const handleReplaceAdminSheetId = useCallback((adminSheetId: string | null) => {
+    applyAppRoute({
+      activeView: "admin",
+      shareId: null,
+      sheetId: null,
+      adminTab: routeAdminTab ?? "users",
+      adminUserId: routeAdminUserId,
+      adminSheetId
+    }, "replace");
+  }, [applyAppRoute, routeAdminTab, routeAdminUserId]);
+
   const handleSharedBoardOpened = (shareId: string) => {
-    applyAppRoute({ activeView: "shared", shareId, sheetId: null });
+    applyAppRoute({ activeView: "shared", shareId, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
   };
+  const profileBoardWriteState = getProfileBoardWriteState(board, selectedAdminBoardWriteState);
 
   return (
     <main className="app-shell" data-theme={theme}>
@@ -442,7 +722,7 @@ export function App() {
             문의하기
           </a>
           <AuthMenu
-            hasPendingWrites={board.hasPendingWrites}
+            hasPendingWrites={profileBoardWriteState.hasPendingWrites}
             logoutBlocked={logoutBlocked}
             logoutError={logoutError}
             logoutPending={logoutPending}
@@ -450,7 +730,7 @@ export function App() {
             status={session.status}
             theme={theme}
             user={session.user}
-            pendingWriteError={board.pendingWriteError}
+            pendingWriteError={profileBoardWriteState.pendingWriteError}
             onDisplayNameSave={handleDisplayNameSave}
             onDiscardLogout={handleDiscardLogout}
             onLogout={handleLogout}
@@ -469,7 +749,18 @@ export function App() {
           session.status === "checking" ? (
             <p>로그인 상태를 확인하는 중입니다.</p>
           ) : isAdmin ? (
-            <AdminDashboard />
+            <AdminDashboard
+              activeTab={routeAdminTab}
+              selectedUserId={routeAdminUserId}
+              selectedSheetId={routeAdminSheetId}
+              writeLocked={logoutPending}
+              onDurableControlsChange={handleAdminBoardDurableControlsChange}
+              onNavigationGuardChange={handleAdminBoardNavigationGuardChange}
+              onTabSelected={handleAdminTabSelected}
+              onUserSelected={handleAdminUserSelected}
+              onSheetSelected={handleAdminSheetSelected}
+              onReplaceSheetId={handleReplaceAdminSheetId}
+            />
           ) : (
             <p>내 쌀통으로 이동하는 중입니다.</p>
           )

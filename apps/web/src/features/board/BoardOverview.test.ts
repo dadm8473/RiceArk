@@ -607,6 +607,36 @@ describe("BoardOverview", () => {
     expect(source).not.toMatch(/handleCellMarkPaint[\s\S]{0,2200}refreshBoard\(\)/);
   });
 
+  it("uses one injected client for editor mutations and reusable board tools", () => {
+    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+    const overview = source.slice(
+      source.indexOf("export function BoardOverview"),
+      source.indexOf("export function BoardDisplayOptions")
+    );
+
+    expect(source).toContain("apiClient?: ApiClient");
+    expect(overview).toContain("apiClient = defaultApiClient");
+    expect(overview).toContain("apiClient.post");
+    expect(overview).toContain("apiClient.patch");
+    expect(overview).toContain("apiClient.delete");
+    expect(overview).toMatch(/saveBoardAxisItemRequest\([\s\S]{0,1200}apiClient\.patch/);
+    expect(overview).toMatch(/refreshBoardTableCharactersRequest\([\s\S]{0,800}apiClient\.post/);
+    expect(overview).toMatch(/saveBoardTableSettingsRequest\([\s\S]{0,1800}apiClient\.patch/);
+    expect(overview).toMatch(/<BoardTableToolModal[\s\S]*apiClient=\{apiClient\}/);
+    expect(source).toMatch(/<CharacterImport[^>]*apiClient=\{apiClient\}/);
+    expect(source).toMatch(/<TaskForm[^>]*apiClient=\{apiClient\}/);
+    expect(source).toMatch(/<BoardEventCompletionColumnForm[^>]*apiClient=\{apiClient\}/);
+    expect(source).not.toMatch(/\bapi(?:Post|Patch|Delete)\(/);
+  });
+
+  it("keeps public Lost Ark event reads on the untargeted default client", () => {
+    const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
+
+    expect(source).toMatch(
+      /defaultApiClient\.get<LostArkEventTodaySummary>\(`\/api\/lostark\/events\/today\?rewards=/
+    );
+  });
+
   it("builds note save requests from only the fields the user changed", () => {
     const note = {
       id: "note-1",
@@ -855,8 +885,8 @@ describe("BoardOverview", () => {
   it("brings newly created tables and notes to the front as soon as they are created", () => {
     const source = readFileSync(new URL("./BoardOverview.tsx", import.meta.url), "utf8");
 
-    expect(source).toMatch(/const table = await apiPost<\{ id: string \}>\("\/api\/board\/tables"[\s\S]{0,500}bringCreatedBoardItemToFront\(table\.id\)/);
-    expect(source).toMatch(/const note = await apiPost<\{ id: string \}>\("\/api\/board\/notes"[\s\S]{0,500}bringCreatedBoardItemToFront\(note\.id\)/);
+    expect(source).toMatch(/const table = await apiClient\.post<\{ id: string \}>\("\/api\/board\/tables"[\s\S]{0,500}bringCreatedBoardItemToFront\(table\.id\)/);
+    expect(source).toMatch(/const note = await apiClient\.post<\{ id: string \}>\("\/api\/board\/notes"[\s\S]{0,500}bringCreatedBoardItemToFront\(note\.id\)/);
   });
 
   it("renders shared boards as read-only without editing controls", () => {
@@ -1455,7 +1485,7 @@ describe("BoardOverview", () => {
     expect(source).not.toContain('addEventListener("popstate"');
     expect(source).not.toContain("window.history.pushState");
     expect(createSheetBlock).not.toContain("setActiveSheetId");
-    expect(createSheetBlock).toMatch(/const sheet = await apiPost[\s\S]*await refreshBoard\(\{ refreshVersion: true \}\);[\s\S]*onSheetSelected\(sheet\.id\)/);
+    expect(createSheetBlock).toMatch(/const sheet = await apiClient\.post[\s\S]*await refreshBoard\(\{ refreshVersion: true \}\);[\s\S]*onSheetSelected\(sheet\.id\)/);
   });
 
   it("uses table-local axis buckets for canvas sizing", () => {

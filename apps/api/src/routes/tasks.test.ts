@@ -11,6 +11,7 @@ const taskRouteEnv = {
   ENVIRONMENT: "test",
   SESSION_SECRET: "test-secret"
 };
+const TARGET_USER_ID = "12345678-1234-4abc-8def-123456789012";
 
 interface CapturedTaskStatement {
   sql: string;
@@ -85,6 +86,50 @@ function createTaskOrderDatabase(): DatabaseSync {
     );
   `);
   return database;
+}
+
+function createTargetedTaskRouteEnv() {
+  const statements: Array<{ sql: string; values: unknown[] }> = [];
+  const runs: Array<{ sql: string; values: unknown[] }> = [];
+  const env = {
+    ...taskRouteEnv,
+    ADMIN_OAUTH_ALLOWLIST: "discord:admin-provider",
+    DB: {
+      prepare(sql: string) {
+        const statement = {
+          sql,
+          values: [] as unknown[],
+          bind(...values: unknown[]) {
+            this.values = values;
+            return this;
+          },
+          async first() {
+            if (sql.includes("FROM sessions")) {
+              return { id: "admin-1", display_name: "Admin", avatar_url: null };
+            }
+            if (sql.includes("SELECT id, display_name, avatar_url FROM users WHERE id = ?")) {
+              return { id: TARGET_USER_ID, display_name: "Target", avatar_url: null };
+            }
+            if (sql.includes("MAX(sort_order)")) return { max_sort: 0 };
+            return null;
+          },
+          async all() {
+            if (sql.includes("FROM oauth_accounts")) {
+              return { results: [{ provider: "discord", provider_user_id: "admin-provider" }] };
+            }
+            return { results: [] };
+          },
+          async run() {
+            runs.push({ sql, values: this.values });
+            return { success: true, meta: { changes: 1 } };
+          }
+        };
+        statements.push(statement);
+        return statement;
+      }
+    }
+  };
+  return { env, statements, runs };
 }
 
 describe("taskOrderSchema", () => {
@@ -208,6 +253,32 @@ describe("set-based task ordering", () => {
 
     await expect(reorderTasks(env, "user-1", ["task-1", "task-2"]))
       .rejects.toThrow("Task order did not return every task");
+  });
+});
+
+describe("task route targeting", () => {
+  it("creates tasks for the targeted user", async () => {
+    const { env, runs } = createTargetedTaskRouteEnv();
+    const response = await app.request(
+      "/api/tasks",
+      {
+        method: "POST",
+        headers: {
+          Cookie: "riceark_session=admin-session",
+          "Content-Type": "application/json",
+          "X-RiceArk-Admin-Target-User": TARGET_USER_ID
+        },
+        body: JSON.stringify({ name: "Target task", resetType: "daily" })
+      },
+      env
+    );
+
+    expect(response.status).toBe(201);
+    const taskUserBindings = runs
+      .filter((statement) => statement.sql.includes("INSERT INTO tasks"))
+      .flatMap((statement) => statement.values);
+    expect(taskUserBindings).toContain(TARGET_USER_ID);
+    expect(taskUserBindings).not.toContain("admin-1");
   });
 });
 

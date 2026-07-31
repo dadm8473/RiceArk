@@ -1,6 +1,6 @@
 import { Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { apiPost } from "../../api/client";
+import { defaultApiClient, type ApiClient } from "../../api/client";
 import {
   type BoardMutationRunner,
   runBoardMutationDirect
@@ -9,6 +9,7 @@ import {
 type TaskResetType = "daily" | "weekly" | "biweekly" | "none";
 
 interface TaskFormProps {
+  apiClient?: ApiClient | undefined;
   tableId?: string | undefined;
   onSaved?: () => void | Promise<void>;
   runMutation?: BoardMutationRunner | undefined;
@@ -42,7 +43,12 @@ function getTaskResetTypeLabel(resetType: TaskResetType): string {
   return "초기화 안함";
 }
 
-export function TaskForm({ tableId, onSaved, runMutation = runBoardMutationDirect }: TaskFormProps = {}) {
+export function TaskForm({
+  apiClient = defaultApiClient,
+  tableId,
+  onSaved,
+  runMutation = runBoardMutationDirect
+}: TaskFormProps = {}) {
   const [name, setName] = useState("");
   const [resetType, setResetType] = useState<TaskResetType>("daily");
   const [color, setColor] = useState(DEFAULT_TASK_COLOR);
@@ -66,7 +72,7 @@ export function TaskForm({ tableId, onSaved, runMutation = runBoardMutationDirec
 
     try {
       await runMutation(async () => {
-        await apiPost(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/tasks` : "/api/tasks", {
+        await apiClient.post(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/tasks` : "/api/tasks", {
           name: trimmedName,
           resetType,
           color,

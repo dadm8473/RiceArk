@@ -2,6 +2,7 @@ import { zValidator } from "@hono/zod-validator";
 import { isValidLostArkCharacterName, LOSTARK_CHARACTER_NAME_MAX_LENGTH } from "@riceark/core";
 import { Hono } from "hono";
 import { z } from "zod";
+import { requireSubjectUser } from "../auth/userAccess";
 import { requireUser } from "../auth/requireUser";
 import {
   CHARACTER_REFRESH_BATCH_MAX_COUNT,
@@ -13,12 +14,12 @@ import {
   updateCharacterDetails,
   updateCharacterDisplayName
 } from "../db/characters";
-import type { Env } from "../env";
+import type { AppEnv } from "../env";
 import { ApiError } from "../http/errors";
 import { resourceIdSchema, safeText } from "../http/input";
 import { searchRosterCharacters } from "../lostark/client";
 
-export const characterRoutes = new Hono<{ Bindings: Env }>();
+export const characterRoutes = new Hono<AppEnv>();
 
 export const characterDisplayNameSchema = z.object({
   displayName: safeText({ allowEmpty: true, allowEmoji: true, maxChars: 20 }).nullable()
@@ -135,7 +136,7 @@ characterRoutes.patch(
   "/characters/order",
   zValidator("json", characterOrderSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { characterIds } = c.req.valid("json");
     const updated = await reorderCharacters(c.env, user.id, characterIds);
     if (!updated) throw new ApiError(400, "invalid_character_order", "Character order contains unavailable characters");
@@ -148,7 +149,7 @@ characterRoutes.patch(
   zValidator("param", characterIdParamSchema),
   zValidator("json", characterDetailsSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
     const normalized = {
@@ -171,7 +172,7 @@ characterRoutes.post(
   "/characters/refresh-batch",
   zValidator("json", characterRefreshBatchSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { characterIds } = c.req.valid("json");
     return c.json(await refreshCharactersFromLostArk(c.env, user.id, characterIds));
   }
@@ -181,7 +182,7 @@ characterRoutes.post(
   "/characters/:id/refresh",
   zValidator("param", characterIdParamSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const refreshed = await refreshCharactersFromLostArk(c.env, user.id, [id]);
     const result = refreshed.results[0];
@@ -219,7 +220,7 @@ characterRoutes.post(
   "/characters/manual",
   zValidator("json", manualCharacterSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const input = c.req.valid("json");
     const character = await createManualCharacter(c.env, user.id, {
       name: input.name,
@@ -237,7 +238,7 @@ characterRoutes.patch(
   zValidator("param", characterIdParamSchema),
   zValidator("json", characterDisplayNameSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { displayName } = c.req.valid("json");
     const normalized = displayName?.trim() ? displayName.trim() : null;
     const { id } = c.req.valid("param");
@@ -251,7 +252,7 @@ characterRoutes.delete(
   "/characters/:id",
   zValidator("param", characterIdParamSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const deleted = await deleteCharacter(c.env, user.id, id);
     if (!deleted) throw new ApiError(404, "character_not_found", "Character not found");
@@ -263,7 +264,7 @@ characterRoutes.post(
   "/characters/import",
   zValidator("json", importCharactersSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { characters } = c.req.valid("json");
     await saveSelectedCharacters(
       c.env,

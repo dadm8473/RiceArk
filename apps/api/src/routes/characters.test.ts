@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import app from "../index";
 import {
   characterDetailsSchema,
   characterDisplayNameSchema,
@@ -8,6 +9,8 @@ import {
   characterOrderSchema,
   characterSearchSchema
 } from "./characters";
+
+const TARGET_USER_ID = "12345678-1234-4abc-8def-123456789012";
 
 describe("characterDisplayNameSchema", () => {
   it("accepts optional compact display names", () => {
@@ -266,5 +269,172 @@ describe("manualCharacterSchema", () => {
   it("rejects unsafe or empty manual character names", () => {
     expect(manualCharacterSchema.safeParse({ name: "", serverName: "" }).success).toBe(false);
     expect(manualCharacterSchema.safeParse({ name: "임의\u200B", serverName: "" }).success).toBe(false);
+  });
+});
+
+describe("character route targeting", () => {
+  function createTargetedCharacterRouteEnv() {
+    const statements: Array<{ sql: string; values: unknown[] }> = [];
+    const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
+    const runs: Array<{ sql: string; values: unknown[] }> = [];
+    const env = {
+      APP_ORIGIN: "http://127.0.0.1:5173",
+      COOKIE_DOMAIN: "127.0.0.1",
+      ENVIRONMENT: "test",
+      SESSION_SECRET: "test-secret",
+      LOSTARK_API_KEY: "test-key",
+      ADMIN_OAUTH_ALLOWLIST: "discord:admin-provider",
+      CACHE: {
+        async get() {
+          return { characters: [] };
+        },
+        async put() {}
+      },
+      DB: {
+        prepare(sql: string) {
+          const statement = {
+            sql,
+            values: [] as unknown[],
+            bind(...values: unknown[]) {
+              this.values = values;
+              return this;
+            },
+            async first() {
+              if (sql.includes("FROM sessions")) {
+                return { id: "admin-1", display_name: "Admin", avatar_url: null };
+            }
+            if (sql.includes("SELECT id, display_name, avatar_url FROM users WHERE id = ?")) {
+              return { id: TARGET_USER_ID, display_name: "Target", avatar_url: null };
+              }
+              if (sql.includes("MAX(sort_order)")) return { max_sort: 0 };
+              return null;
+            },
+            async all() {
+              if (sql.includes("FROM oauth_accounts")) {
+                return { results: [{ provider: "discord", provider_user_id: "admin-provider" }] };
+              }
+              if (sql.includes("characters.last_refresh_attempt_at")) {
+                return {
+                  results: [{
+                    position: 0,
+                    requested_id: "character-1",
+                    id: "character-1",
+                    name: "RiceArk1",
+                    server_name: "Aman",
+                    class_name: "Class",
+                    item_level: "1,640.00",
+                    combat_power: null,
+                    source: "manual",
+                    last_refresh_attempt_at: null
+                  }]
+                };
+              }
+              return { results: [] };
+            },
+            async run() {
+              runs.push({ sql, values: this.values });
+              return { success: true, meta: { changes: 1 } };
+            }
+          };
+          statements.push(statement);
+          return statement;
+        },
+        async batch(batch: Array<{ sql: string; values: unknown[] }>) {
+          batches.push(batch);
+          return batch.map((statement) => {
+            if (statement.sql.includes("RETURNING id, name, server_name")) {
+              const characters = JSON.parse(String(statement.values[1])) as Array<{ name: string; serverName: string }>;
+              return {
+                success: true,
+                meta: { changes: characters.length },
+                results: characters.map((character) => ({
+                  id: "character-1",
+                  name: character.name,
+                  server_name: character.serverName
+                }))
+              };
+            }
+            return { success: true, meta: { changes: 1 }, results: [] };
+          });
+        }
+      }
+    };
+    return { env, statements, batches, runs };
+  }
+
+  const targetHeaders = {
+    Cookie: "riceark_session=admin-session",
+    "X-RiceArk-Admin-Target-User": TARGET_USER_ID
+  };
+
+  it("writes manual character CRUD data for the targeted user", async () => {
+    const { env, runs } = createTargetedCharacterRouteEnv();
+    const response = await app.request(
+      "/api/characters/manual",
+      {
+        method: "POST",
+        headers: { ...targetHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "RiceArk1" })
+      },
+      env
+    );
+
+    expect(response.status).toBe(201);
+    const characterBindings = runs
+      .filter((statement) => statement.sql.includes("INSERT INTO characters"))
+      .flatMap((statement) => statement.values);
+    expect(characterBindings).toContain(TARGET_USER_ID);
+    expect(characterBindings).not.toContain("admin-1");
+  });
+
+  it("imports characters for the targeted user", async () => {
+    const { env, batches } = createTargetedCharacterRouteEnv();
+    const response = await app.request(
+      "/api/characters/import",
+      {
+        method: "POST",
+        headers: { ...targetHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          characters: [{ name: "RiceArk1", serverName: "Aman", className: "Class", itemLevel: "1,640.00" }]
+        })
+      },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const characterBindings = batches.flat().flatMap((statement) => statement.values);
+    expect(characterBindings).toContain(TARGET_USER_ID);
+    expect(characterBindings).not.toContain("admin-1");
+  });
+
+  it("refreshes a targeted character rather than the session actor", async () => {
+    const { env, statements } = createTargetedCharacterRouteEnv();
+    const response = await app.request(
+      "/api/characters/character-1/refresh",
+      { method: "POST", headers: targetHeaders },
+      env
+    );
+
+    expect(response.status).toBe(400);
+    const refreshBindings = statements
+      .filter((statement) => statement.sql.includes("characters.last_refresh_attempt_at"))
+      .flatMap((statement) => statement.values);
+    expect(refreshBindings).toContain(TARGET_USER_ID);
+    expect(refreshBindings).not.toContain("admin-1");
+  });
+
+  it("keeps character search actor-owned when a target header is present", async () => {
+    const { env, statements } = createTargetedCharacterRouteEnv();
+    const response = await app.request(
+      "/api/characters/search?name=RiceArk1",
+      { headers: targetHeaders },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ characters: [] });
+    expect(statements.filter((statement) => statement.sql.includes("FROM sessions"))).toHaveLength(1);
+    expect(statements.some((statement) => statement.sql.includes("FROM oauth_accounts"))).toBe(false);
+    expect(statements.some((statement) => statement.sql.includes("FROM users WHERE id = ?"))).toBe(false);
   });
 });

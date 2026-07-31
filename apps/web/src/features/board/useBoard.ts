@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getPeriodKey, type ResetRule } from "@riceark/core";
-import { ApiClientError, apiGet } from "../../api/client";
+import {
+  ApiClientError,
+  defaultApiClient,
+  type ApiClient
+} from "../../api/client";
 import { applyBoardCompletionPatch, type BoardCompletionPatch } from "./completions";
 import { applyBoardCellStatePatch, type BoardCellStatePatch } from "./cellStates";
 import {
@@ -31,7 +35,7 @@ export type { BoardVersionSummary } from "./types";
 
 type BoardApiGet = (path: string) => Promise<unknown>;
 
-export function createBoardDataApi(get: BoardApiGet = apiGet): BoardDataApi {
+export function createBoardDataApi(get: BoardApiGet = defaultApiClient.get): BoardDataApi {
   return {
     getBootstrap: (sheetId) =>
       get(
@@ -1624,6 +1628,7 @@ function emptyBoardSessionSnapshot(): BoardSessionSnapshot {
 }
 
 export interface UseBoardOptions {
+  apiClient?: ApiClient | undefined;
   enabled?: boolean | undefined;
   pollingEnabled?: boolean | undefined;
   userId?: string | null | undefined;
@@ -1632,6 +1637,7 @@ export interface UseBoardOptions {
 }
 
 export function useBoard({
+  apiClient = defaultApiClient,
   enabled = true,
   pollingEnabled = enabled,
   userId = null,
@@ -1654,6 +1660,8 @@ export function useBoard({
 
     const session = createBoardSession({
       userId,
+      api: createBoardDataApi(apiClient.get),
+      writeCoordinatorOptions: { patch: apiClient.patch },
       runtime: createBrowserBoardPollingRuntime()
     });
     sessionRef.current = { userId, session };
@@ -1667,7 +1675,7 @@ export function useBoard({
       if (sessionRef.current?.session === session) sessionRef.current = null;
       session.dispose();
     };
-  }, [userId]);
+  }, [apiClient, userId]);
 
   useEffect(() => {
     const current = sessionRef.current;

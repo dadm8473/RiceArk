@@ -11,14 +11,21 @@ import {
   getDurableLogoutFailureState,
   getDirectSharedRiceBinHistoryUrls,
   getOwnerBoardInteractionProps,
+  getProfileBoardWriteState,
   getSharedRiceBinInteractionProps,
   getStoredAppTheme,
   getAppThemeColor,
   getUrlWithoutSharedRiceBinId,
   recoverBoardAfterLogoutFailure,
+  runCrossBoardDurableLogoutAttempt,
   runDurableLogout,
   storeAppTheme
 } from "./App";
+import type {
+  AdminBoardNavigationGuard,
+  AdminTab
+} from "./features/admin/types";
+import { createAdminSubjectNavigationController } from "./features/admin/AdminUserBoardsTab";
 import { createBoardMutationBarrier } from "./features/board/mutationBarrier";
 import { ReliablePatchQueueFlushError } from "./features/board/reliablePatchQueue";
 
@@ -31,6 +38,7 @@ const hooks = vi.hoisted(() => ({
   useBoard: vi.fn(),
   BoardOverview: vi.fn(),
   SharedRiceBinPanel: vi.fn(),
+  AdminDashboard: vi.fn(),
   useSession: vi.fn()
 }));
 
@@ -67,7 +75,10 @@ vi.mock("./features/shared-rice-bin/SharedRiceBinPanel", () => ({
 }));
 
 vi.mock("./features/admin/AdminDashboard", () => ({
-  AdminDashboard: () => "admin dashboard"
+  AdminDashboard: (props: unknown) => {
+    hooks.AdminDashboard(props);
+    return "admin dashboard";
+  }
 }));
 
 vi.mock("./features/dashboard/ChecklistMatrix", () => ({
@@ -127,6 +138,78 @@ function installBrowserWindow(href: string) {
   return { addEventListener, pushState, replaceState };
 }
 
+function installBrowserHistoryStack(urls: string[]) {
+  const entries: Array<{ state: unknown; url: URL }> = urls.map((href) => ({
+    state: { ricearkRoute: true },
+    url: new URL(href)
+  }));
+  let index = entries.length - 1;
+  const listeners = new Set<() => void>();
+  const location = {
+    assign: vi.fn(),
+    hash: "",
+    href: "",
+    pathname: "",
+    search: ""
+  };
+  const syncLocation = () => {
+    const current = entries[index];
+    if (!current) throw new Error("History stack has no current entry");
+    location.hash = current.url.hash;
+    location.href = current.url.href;
+    location.pathname = current.url.pathname;
+    location.search = current.url.search;
+  };
+  const navigate = (nextIndex: number) => {
+    if (nextIndex < 0 || nextIndex >= entries.length || nextIndex === index) return;
+    index = nextIndex;
+    syncLocation();
+    for (const listener of listeners) listener();
+  };
+  const pushState = vi.fn((state: unknown, _title: string, href: string | URL | null | undefined) => {
+    const url = new URL(String(href ?? location.href), location.href);
+    entries.splice(index + 1, entries.length, { state, url });
+    index += 1;
+    syncLocation();
+  });
+  const replaceState = vi.fn((state: unknown, _title: string, href: string | URL | null | undefined) => {
+    entries[index] = {
+      state,
+      url: new URL(String(href ?? location.href), location.href)
+    };
+    syncLocation();
+  });
+  const history = {
+    back: vi.fn(() => navigate(index - 1)),
+    forward: vi.fn(() => navigate(index + 1)),
+    pushState,
+    replaceState,
+    get state() {
+      return entries[index]?.state ?? null;
+    }
+  };
+  syncLocation();
+  vi.stubGlobal("window", {
+    addEventListener: vi.fn((event: string, callback: () => void) => {
+      if (event === "popstate") listeners.add(callback);
+    }),
+    history,
+    localStorage: {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn()
+    },
+    location,
+    removeEventListener: vi.fn((event: string, callback: () => void) => {
+      if (event === "popstate") listeners.delete(callback);
+    })
+  });
+  return {
+    currentUrl: () => `${location.pathname}${location.search}${location.hash}`,
+    entries: () => entries.map((entry) => `${entry.url.pathname}${entry.url.search}${entry.url.hash}`),
+    history
+  };
+}
+
 function runLatestEffect() {
   const effect = hooks.effects.at(-1);
   expect(effect).toBeDefined();
@@ -143,6 +226,42 @@ function deferred<T>() {
   });
   return { promise, reject, resolve };
 }
+
+type GuardedAdminDashboardProps = {
+  onNavigationGuardChange?: (guard: AdminBoardNavigationGuard | null) => void;
+  onTabSelected?: (tab: AdminTab) => void;
+  onUserSelected?: (userId: string | null) => void;
+};
+
+function createTestAdminBoardNavigationGuard(
+  request: () => Promise<boolean>
+): AdminBoardNavigationGuard {
+  return Object.assign(vi.fn(request), {
+    supersede: vi.fn()
+  });
+}
+
+const guardedAdminTransitions: Array<{
+  name: string;
+  navigate: (props: GuardedAdminDashboardProps) => void;
+  expectedUrl: string;
+}> = [
+  {
+    name: "user A to user B",
+    navigate: (props) => props.onUserSelected?.("user-b"),
+    expectedUrl: "/?view=admin&adminTab=users&adminUser=user-b"
+  },
+  {
+    name: "user A to no selected user",
+    navigate: (props) => props.onUserSelected?.(null),
+    expectedUrl: "/?view=admin&adminTab=users"
+  },
+  {
+    name: "users tab to audit tab",
+    navigate: (props) => props.onTabSelected?.("audit"),
+    expectedUrl: "/?view=admin&adminTab=audit&adminUser=user-a&adminSheet=sheet-a"
+  }
+];
 
 describe("getAuthErrorMessage", () => {
   it("wraps login start errors in a Korean app message", () => {
@@ -194,32 +313,77 @@ describe("app route helpers", () => {
     expect(getAppRouteState("https://riceark.pages.dev/?sheet=sheet-2")).toEqual({
       activeView: "board",
       shareId: null,
-      sheetId: "sheet-2"
+      sheetId: "sheet-2",
+      adminTab: null,
+      adminUserId: null,
+      adminSheetId: null
     });
     expect(getAppRouteState("https://riceark.pages.dev/?view=shared")).toEqual({
       activeView: "shared",
       shareId: null,
-      sheetId: null
+      sheetId: null,
+      adminTab: null,
+      adminUserId: null,
+      adminSheetId: null
     });
     expect(getAppRouteState(`https://riceark.pages.dev/?share=${shareId}`)).toEqual({
       activeView: "shared",
       shareId,
-      sheetId: null
+      sheetId: null,
+      adminTab: null,
+      adminUserId: null,
+      adminSheetId: null
     });
     expect(getAppRouteState("https://riceark.pages.dev/?view=admin")).toEqual({
       activeView: "admin",
       shareId: null,
-      sheetId: null
+      sheetId: null,
+      adminTab: null,
+      adminUserId: null,
+      adminSheetId: null
     });
   });
 
   it("builds client-side URLs while preserving unrelated query parameters", () => {
     const currentUrl = "https://riceark.pages.dev/?foo=1&share=old&sheet=old-sheet#memo";
 
-    expect(getAppRouteUrl({ activeView: "board", shareId: null, sheetId: "sheet-2" }, currentUrl)).toBe("/?foo=1&sheet=sheet-2#memo");
-    expect(getAppRouteUrl({ activeView: "shared", shareId: null, sheetId: null }, currentUrl)).toBe("/?foo=1&view=shared#memo");
-    expect(getAppRouteUrl({ activeView: "shared", shareId, sheetId: null }, currentUrl)).toBe(`/?foo=1&share=${shareId}#memo`);
-    expect(getAppRouteUrl({ activeView: "admin", shareId: null, sheetId: null }, currentUrl)).toBe("/?foo=1&view=admin#memo");
+    expect(getAppRouteUrl({ activeView: "board", shareId: null, sheetId: "sheet-2", adminTab: null, adminUserId: null, adminSheetId: null }, currentUrl)).toBe("/?foo=1&sheet=sheet-2#memo");
+    expect(getAppRouteUrl({ activeView: "shared", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null }, currentUrl)).toBe("/?foo=1&view=shared#memo");
+    expect(getAppRouteUrl({ activeView: "shared", shareId, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null }, currentUrl)).toBe(`/?foo=1&share=${shareId}#memo`);
+    expect(getAppRouteUrl({ activeView: "admin", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null }, currentUrl)).toBe("/?foo=1&view=admin#memo");
+  });
+
+  it("parses and serializes valid administrator route state while clearing it from other views", () => {
+    const adminRoute = getAppRouteState(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-3"
+    );
+
+    expect(adminRoute).toMatchObject({
+      activeView: "admin",
+      adminTab: "users",
+      adminUserId: "user-2",
+      adminSheetId: "sheet-3"
+    });
+    expect(getAppRouteUrl(adminRoute, "https://riceark.pages.dev/")).toBe(
+      "/?view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-3"
+    );
+    expect(
+      getAppRouteUrl(
+        { ...adminRoute, activeView: "board", sheetId: "owner-sheet" },
+        "https://riceark.pages.dev/?foo=1&view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-3"
+      )
+    ).toBe("/?foo=1&sheet=owner-sheet");
+  });
+
+  it("ignores invalid administrator tab keys and blank internal ids", () => {
+    expect(
+      getAppRouteState("https://riceark.pages.dev/?view=admin&adminTab=unexpected&adminUser=%20%20&adminSheet=%20")
+    ).toMatchObject({
+      activeView: "admin",
+      adminTab: null,
+      adminUserId: null,
+      adminSheetId: null
+    });
   });
 
   it("seeds direct shared detail links with a lookup history entry behind them", () => {
@@ -322,6 +486,108 @@ describe("runDurableLogout", () => {
 
     expect(flushPendingWrites).not.toHaveBeenCalled();
     expect(logout).not.toHaveBeenCalled();
+  });
+
+  it("waits for every board mutation drain before recovery and both unlocks", async () => {
+    const drainFailure = new Error("owner mutation failed");
+    const selectedDrain = deferred<void>();
+    const ownerBoard = {
+      waitForMutations: vi.fn(async () => {
+        throw drainFailure;
+      }),
+      flushPendingWrites: vi.fn(async () => undefined),
+      retryPendingWrites: vi.fn(),
+      discardPendingWrites: vi.fn(),
+      reconcileAfterLogoutFailure: vi.fn(async () => undefined),
+      unlockMutations: vi.fn()
+    };
+    const selectedBoard = {
+      waitForMutations: vi.fn(() => selectedDrain.promise),
+      flushPendingWrites: vi.fn(async () => undefined),
+      retryPendingWrites: vi.fn(),
+      discardPendingWrites: vi.fn(),
+      reconcileAfterLogoutFailure: vi.fn(async () => undefined),
+      unlockMutations: vi.fn()
+    };
+    const logout = vi.fn(async () => undefined);
+
+    const logoutAttempt = runCrossBoardDurableLogoutAttempt({
+      mode: "normal",
+      boards: [ownerBoard, selectedBoard],
+      logout
+    });
+
+    await vi.waitFor(() => {
+      expect(selectedBoard.waitForMutations).toHaveBeenCalledTimes(1);
+    });
+    expect(ownerBoard.reconcileAfterLogoutFailure).not.toHaveBeenCalled();
+    expect(selectedBoard.reconcileAfterLogoutFailure).not.toHaveBeenCalled();
+    expect(ownerBoard.unlockMutations).not.toHaveBeenCalled();
+    expect(selectedBoard.unlockMutations).not.toHaveBeenCalled();
+
+    selectedDrain.resolve();
+    await expect(logoutAttempt).rejects.toMatchObject({
+      stage: "flush",
+      cause: expect.objectContaining({ errors: [drainFailure] })
+    });
+
+    expect(ownerBoard.flushPendingWrites).not.toHaveBeenCalled();
+    expect(selectedBoard.flushPendingWrites).not.toHaveBeenCalled();
+    expect(logout).not.toHaveBeenCalled();
+    expect(ownerBoard.reconcileAfterLogoutFailure).toHaveBeenCalledTimes(1);
+    expect(selectedBoard.reconcileAfterLogoutFailure).toHaveBeenCalledTimes(1);
+    expect(ownerBoard.unlockMutations).toHaveBeenCalledTimes(1);
+    expect(selectedBoard.unlockMutations).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for every board flush before recovery and both unlocks", async () => {
+    const flushFailure = new Error("owner queue failed");
+    const selectedFlush = deferred<void>();
+    const ownerBoard = {
+      waitForMutations: vi.fn(async () => undefined),
+      flushPendingWrites: vi.fn(async () => {
+        throw flushFailure;
+      }),
+      retryPendingWrites: vi.fn(),
+      discardPendingWrites: vi.fn(),
+      reconcileAfterLogoutFailure: vi.fn(async () => undefined),
+      unlockMutations: vi.fn()
+    };
+    const selectedBoard = {
+      waitForMutations: vi.fn(async () => undefined),
+      flushPendingWrites: vi.fn(() => selectedFlush.promise),
+      retryPendingWrites: vi.fn(),
+      discardPendingWrites: vi.fn(),
+      reconcileAfterLogoutFailure: vi.fn(async () => undefined),
+      unlockMutations: vi.fn()
+    };
+    const logout = vi.fn(async () => undefined);
+
+    const logoutAttempt = runCrossBoardDurableLogoutAttempt({
+      mode: "normal",
+      boards: [ownerBoard, selectedBoard],
+      logout
+    });
+
+    await vi.waitFor(() => {
+      expect(selectedBoard.flushPendingWrites).toHaveBeenCalledTimes(1);
+    });
+    expect(ownerBoard.reconcileAfterLogoutFailure).not.toHaveBeenCalled();
+    expect(selectedBoard.reconcileAfterLogoutFailure).not.toHaveBeenCalled();
+    expect(ownerBoard.unlockMutations).not.toHaveBeenCalled();
+    expect(selectedBoard.unlockMutations).not.toHaveBeenCalled();
+
+    selectedFlush.resolve();
+    await expect(logoutAttempt).rejects.toMatchObject({
+      stage: "flush",
+      cause: expect.objectContaining({ errors: [flushFailure] })
+    });
+
+    expect(logout).not.toHaveBeenCalled();
+    expect(ownerBoard.reconcileAfterLogoutFailure).toHaveBeenCalledTimes(1);
+    expect(selectedBoard.reconcileAfterLogoutFailure).toHaveBeenCalledTimes(1);
+    expect(ownerBoard.unlockMutations).toHaveBeenCalledTimes(1);
+    expect(selectedBoard.unlockMutations).toHaveBeenCalledTimes(1);
   });
 
   it("keeps mutations locked until logout recovery reload and UI recovery settle", async () => {
@@ -480,6 +746,7 @@ describe("App", () => {
     hooks.useBoard.mockClear();
     hooks.BoardOverview.mockClear();
     hooks.SharedRiceBinPanel.mockClear();
+    hooks.AdminDashboard.mockClear();
     hooks.useSession.mockClear();
     hooks.useBoard.mockReturnValue({
       activeSheetId: "sheet-1",
@@ -581,6 +848,16 @@ describe("App", () => {
     expect(getSharedRiceBinInteractionProps(true, runMutation)).toEqual({
       runMutation,
       writeLocked: true
+    });
+  });
+
+  it("includes the active selected board in the profile write status", () => {
+    expect(getProfileBoardWriteState(
+      { hasPendingWrites: false, pendingWriteError: null },
+      { hasPendingWrites: true, pendingWriteError: "Target save failed" }
+    )).toEqual({
+      hasPendingWrites: true,
+      pendingWriteError: "Target save failed"
     });
   });
 
@@ -848,6 +1125,313 @@ describe("App", () => {
     expect(hooks.stateUpdates).toContain("sheet-3");
   });
 
+  it("pushes administrator user and sheet selections while replacing normalized sheets", () => {
+    const browser = installBrowserWindow(
+      "https://riceark.pages.dev/?foo=1&view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-1#memo"
+    );
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+      error: null
+    });
+
+    renderToStaticMarkup(createElement(App));
+    const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as {
+      activeTab?: string | null;
+      selectedUserId?: string | null;
+      selectedSheetId?: string | null;
+      onUserSelected?: (userId: string) => void;
+      onSheetSelected?: (sheetId: string) => void;
+      onReplaceSheetId?: (sheetId: string | null) => void;
+    };
+
+    expect(dashboardProps).toMatchObject({
+      activeTab: "users",
+      selectedUserId: "user-2",
+      selectedSheetId: "sheet-1"
+    });
+
+    dashboardProps.onUserSelected?.("user-4");
+    expect(browser.pushState).toHaveBeenCalledWith(expect.any(Object), "", "/?foo=1&view=admin&adminTab=users&adminUser=user-4#memo");
+
+    dashboardProps.onSheetSelected?.("sheet-5");
+    expect(browser.pushState).toHaveBeenLastCalledWith(expect.any(Object), "", "/?foo=1&view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-5#memo");
+
+    dashboardProps.onReplaceSheetId?.("sheet-3");
+    expect(browser.replaceState).toHaveBeenCalledWith(expect.any(Object), "", "/?foo=1&view=admin&adminTab=users&adminUser=user-2&adminSheet=sheet-3#memo");
+  });
+
+  it.each(guardedAdminTransitions)(
+    "waits for the selected board guard before navigating $name",
+    async ({ navigate, expectedUrl }) => {
+      const browser = installBrowserWindow(
+        "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a&adminSheet=sheet-a"
+      );
+      hooks.useSession.mockReturnValue({
+        status: "authenticated",
+        user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+        error: null
+      });
+      const pendingWrites = deferred<boolean>();
+      const guard = createTestAdminBoardNavigationGuard(
+        () => pendingWrites.promise
+      );
+
+      renderToStaticMarkup(createElement(App));
+      const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
+      dashboardProps.onNavigationGuardChange?.(guard);
+
+      navigate(dashboardProps);
+
+      expect(guard).toHaveBeenCalledOnce();
+      expect(browser.pushState).not.toHaveBeenCalled();
+
+      pendingWrites.resolve(true);
+      await vi.waitFor(() => {
+        expect(browser.pushState).toHaveBeenCalledWith(expect.any(Object), "", expectedUrl);
+      });
+    }
+  );
+
+  it("waits for the selected board guard before applying a popstate user change", async () => {
+    const browser = installBrowserWindow(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a"
+    );
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+      error: null
+    });
+    vi.stubGlobal("document", {
+      documentElement: { dataset: {} },
+      querySelector: vi.fn(() => null)
+    });
+    const pendingWrites = deferred<boolean>();
+    const guard = createTestAdminBoardNavigationGuard(
+      () => pendingWrites.promise
+    );
+
+    renderToStaticMarkup(createElement(App));
+    const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
+    dashboardProps.onNavigationGuardChange?.(guard);
+    for (const effect of hooks.effects) effect.callback();
+    const popstate = browser.addEventListener.mock.calls.find(([event]) => event === "popstate")?.[1];
+    const next = new URL(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-b"
+    );
+    Object.assign(window.location, {
+      hash: next.hash,
+      href: next.href,
+      pathname: next.pathname,
+      search: next.search
+    });
+
+    popstate?.();
+
+    expect(guard).toHaveBeenCalledOnce();
+    expect(hooks.stateUpdates).not.toContain("user-b");
+
+    pendingWrites.resolve(true);
+    await vi.waitFor(() => {
+      expect(hooks.stateUpdates).toContain("user-b");
+    });
+  });
+
+  it("preserves the destination through canceled Back, retry, and Forward navigation", async () => {
+    const routeB = "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-b";
+    const routeA = "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a";
+    const browser = installBrowserHistoryStack([routeB, routeA]);
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+      error: null
+    });
+    vi.stubGlobal("document", {
+      documentElement: { dataset: {} },
+      querySelector: vi.fn(() => null)
+    });
+
+    renderToStaticMarkup(createElement(App));
+    const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
+    const decisions = [false, true, true];
+    dashboardProps.onNavigationGuardChange?.(createTestAdminBoardNavigationGuard(
+      async () => decisions.shift() ?? true
+    ));
+    for (const effect of hooks.effects) effect.callback();
+
+    browser.history.back();
+
+    await vi.waitFor(() => {
+      expect(browser.currentUrl()).toBe("/?view=admin&adminTab=users&adminUser=user-a");
+    });
+    expect(browser.entries()).toEqual([
+      "/?view=admin&adminTab=users&adminUser=user-b",
+      "/?view=admin&adminTab=users&adminUser=user-a"
+    ]);
+    expect(hooks.stateUpdates).not.toContain("user-b");
+
+    browser.history.back();
+    await vi.waitFor(() => {
+      expect(hooks.stateUpdates).toContain("user-b");
+    });
+    expect(browser.currentUrl()).toBe("/?view=admin&adminTab=users&adminUser=user-b");
+
+    hooks.stateUpdates.length = 0;
+    browser.history.forward();
+    await vi.waitFor(() => {
+      expect(hooks.stateUpdates).toContain("user-a");
+    });
+    expect(browser.currentUrl()).toBe("/?view=admin&adminTab=users&adminUser=user-a");
+  });
+
+  it("keeps user A mounted when Forward supersedes a delayed guarded Back to user B", async () => {
+    const browser = installBrowserWindow(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a"
+    );
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+      error: null
+    });
+    vi.stubGlobal("document", {
+      documentElement: { dataset: {} },
+      querySelector: vi.fn(() => null)
+    });
+    const pendingWrites = deferred<boolean>();
+    const guard = createTestAdminBoardNavigationGuard(
+      () => pendingWrites.promise
+    );
+
+    renderToStaticMarkup(createElement(App));
+    const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
+    dashboardProps.onNavigationGuardChange?.(guard);
+    for (const effect of hooks.effects) effect.callback();
+    const popstate = browser.addEventListener.mock.calls.find(([event]) => event === "popstate")?.[1];
+
+    const backRoute = new URL(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-b"
+    );
+    Object.assign(window.location, {
+      hash: backRoute.hash,
+      href: backRoute.href,
+      pathname: backRoute.pathname,
+      search: backRoute.search
+    });
+    popstate?.();
+
+    expect(guard).toHaveBeenCalledOnce();
+    expect(hooks.stateUpdates).not.toContain("user-b");
+
+    const forwardRoute = new URL(
+      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a"
+    );
+    Object.assign(window.location, {
+      hash: forwardRoute.hash,
+      href: forwardRoute.href,
+      pathname: forwardRoute.pathname,
+      search: forwardRoute.search
+    });
+    popstate?.();
+    hooks.stateUpdates.length = 0;
+
+    expect(guard.supersede).toHaveBeenCalledOnce();
+
+    pendingWrites.resolve(true);
+    await pendingWrites.promise;
+    await Promise.resolve();
+
+    expect(hooks.stateUpdates).not.toContain("user-b");
+    expect(window.location.search).toBe("?view=admin&adminTab=users&adminUser=user-a");
+  });
+
+  it.each(["user-b", "user-c"])(
+    "applies latest route %s when it reclaims the same delayed subject flush",
+    async (latestUserId) => {
+      const browser = installBrowserWindow(
+        "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a"
+      );
+      hooks.useSession.mockReturnValue({
+        status: "authenticated",
+        user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+        error: null
+      });
+      vi.stubGlobal("document", {
+        documentElement: { dataset: {} },
+        querySelector: vi.fn(() => null)
+      });
+      const pendingWrites = deferred<void>();
+      const runTransition = vi.fn(() => pendingWrites.promise);
+      const unlock = vi.fn();
+      const controller = createAdminSubjectNavigationController({
+        runTransition,
+        unlock
+      });
+
+      renderToStaticMarkup(createElement(App));
+      const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
+      dashboardProps.onNavigationGuardChange?.(controller.navigationGuard);
+      for (const effect of hooks.effects) effect.callback();
+      const popstate = browser.addEventListener.mock.calls.find(([event]) => event === "popstate")?.[1];
+
+      for (const userId of ["user-b", "user-a", latestUserId]) {
+        const route = new URL(
+          `https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=${userId}`
+        );
+        Object.assign(window.location, {
+          hash: route.hash,
+          href: route.href,
+          pathname: route.pathname,
+          search: route.search
+        });
+        popstate?.();
+      }
+      hooks.stateUpdates.length = 0;
+
+      expect(runTransition).toHaveBeenCalledOnce();
+      expect(unlock).not.toHaveBeenCalled();
+
+      pendingWrites.resolve();
+      await vi.waitFor(() => {
+        expect(hooks.stateUpdates).toContain(latestUserId);
+      });
+
+      expect(hooks.stateUpdates).not.toContain("user-a");
+      expect(window.location.search).toBe(
+        `?view=admin&adminTab=users&adminUser=${latestUserId}`
+      );
+      expect(runTransition).toHaveBeenCalledOnce();
+      expect(unlock).not.toHaveBeenCalled();
+    }
+  );
+
+  it("restores administrator tab, user, and sheet state from browser history", () => {
+    const browser = installBrowserWindow("https://riceark.pages.dev/?view=admin&adminTab=overview");
+    vi.stubGlobal("document", {
+      documentElement: { dataset: {} },
+      querySelector: vi.fn(() => null)
+    });
+    hooks.useSession.mockReturnValue({
+      status: "authenticated",
+      user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
+      error: null
+    });
+
+    renderToStaticMarkup(createElement(App));
+    for (const effect of hooks.effects) effect.callback();
+    const popstate = browser.addEventListener.mock.calls.find(([event]) => event === "popstate")?.[1];
+    const next = new URL("https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-3&adminSheet=sheet-2");
+    Object.assign(window.location, {
+      hash: next.hash,
+      href: next.href,
+      pathname: next.pathname,
+      search: next.search
+    });
+
+    popstate?.();
+
+    expect(hooks.stateUpdates).toEqual(expect.arrayContaining(["users", "user-3", "sheet-2"]));
+  });
+
   it("replaces an invalid route sheet while preserving unrelated URL state", () => {
     const browser = installBrowserWindow("https://riceark.pages.dev/?foo=1&sheet=missing#memo");
     hooks.useSession.mockReturnValue({
@@ -946,7 +1530,7 @@ describe("App", () => {
     const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf-8");
 
     expect(source).toContain("const handleOwnBoardSelected = () =>");
-    expect(source).toMatch(/handleOwnBoardSelected[\s\S]{0,220}applyAppRoute\(\{ activeView: "board", shareId: null, sheetId: null \}\)/);
+    expect(source).toContain('requestAppRoute({ activeView: "board", shareId: null, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });');
     expect(source).toContain('onClick={handleOwnBoardSelected}');
   });
 

@@ -1,7 +1,9 @@
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
 import { recordApiError } from "./admin/errorCounters";
-import type { Env } from "./env";
+import { recordAdminAuditLog } from "./admin/userBoardManagement";
+import { getAdminAuditAction } from "./auth/userAccess";
+import type { AppEnv } from "./env";
 import { bodyLimit } from "./http/bodyLimit";
 import { ApiError, jsonError, notFound } from "./http/errors";
 import { adminRoutes } from "./routes/admin";
@@ -15,19 +17,45 @@ import { patchNoteRoutes } from "./routes/patchNotes";
 import { settingsRoutes } from "./routes/settings";
 import { taskRoutes } from "./routes/tasks";
 
-const app = new Hono<{ Bindings: Env }>().basePath("/api");
+const app = new Hono<AppEnv>().basePath("/api");
 
 app.use("*", async (c, next) => {
   const origin = c.env.APP_ORIGIN;
   return cors({
     origin,
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"],
+    allowHeaders: ["Content-Type", "Authorization", "X-RiceArk-Admin-Target-User"],
     credentials: true
   })(c, next);
 });
 
 app.use("*", bodyLimit());
+
+export const adminTargetAuditMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
+  await next();
+
+  const access = c.get("adminTargetAccess");
+  const action = getAdminAuditAction(c.req.method, c.req.path);
+  if (access?.targeted && action && c.res.status >= 200 && c.res.status < 300) {
+    try {
+      await recordAdminAuditLog(c.env, {
+        adminUserId: access.actor.id,
+        targetUserId: access.subject.id,
+        method: c.req.method,
+        action
+      });
+    } catch (error) {
+      console.error("Failed to record administrator audit log", error);
+      await recordApiError(c.env, {
+        status: 500,
+        code: "admin_audit_write_failed",
+        path: "/api/admin/audit-logs"
+      }).catch(() => undefined);
+    }
+  }
+};
+
+app.use("*", adminTargetAuditMiddleware);
 
 app.route("/", authRoutes);
 app.route("/", adminRoutes);

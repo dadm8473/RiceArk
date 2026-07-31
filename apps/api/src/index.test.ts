@@ -1,5 +1,8 @@
+import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
-import app from "./index";
+import { ADMIN_TARGET_USER_HEADER, requireUserAccess } from "./auth/userAccess";
+import app, { adminTargetAuditMiddleware } from "./index";
+import type { AppEnv } from "./env";
 
 const env = {
   APP_ORIGIN: "http://127.0.0.1:5173",
@@ -55,6 +58,24 @@ describe("api shell", () => {
     expect(res.status).not.toBe(413);
   });
 
+  it("allows the administrator target header on CORS preflights", async () => {
+    const res = await app.request(
+      "/api/board/bootstrap",
+      {
+        method: "OPTIONS",
+        headers: {
+          Origin: env.APP_ORIGIN,
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": ADMIN_TARGET_USER_HEADER
+        }
+      },
+      env
+    );
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get("Access-Control-Allow-Headers")).toContain(ADMIN_TARGET_USER_HEADER);
+  });
+
   it.each([
     "/api/board/bootstrap",
     "/api/board/versions",
@@ -76,4 +97,70 @@ describe("api shell", () => {
       });
     }
   );
+});
+
+const auditEntries: unknown[][] = [];
+const TARGET_USER_ID = "12345678-1234-4abc-8def-123456789012";
+
+describe("administrator target audit middleware", () => {
+  it("records successful targeted direct table settings mutations without request content", async () => {
+    const auditApp = new Hono<AppEnv>().basePath("/api");
+    auditApp.use("*", adminTargetAuditMiddleware);
+    auditApp.patch("/board/tables/_audit-test", async (c) => {
+      const access = await requireUserAccess(c, { allowAdminTarget: true });
+      return c.json({ actorId: access.actor.id, subjectId: access.subject.id });
+    });
+    const db = {
+      prepare(sql: string) {
+        const statement = {
+          bind(...values: unknown[]) {
+            return {
+              first: async () => {
+                if (sql.includes("FROM sessions")) {
+                  return { id: "admin-1", display_name: "Admin", avatar_url: null };
+                }
+                if (sql.includes("FROM users")) {
+                  return { id: TARGET_USER_ID, display_name: "User", avatar_url: null };
+                }
+                return null;
+              },
+              all: async () => {
+                if (sql.includes("FROM oauth_accounts")) {
+                  return { results: [{ provider: "discord", provider_user_id: "admin-provider" }] };
+                }
+                return { results: [] };
+              },
+              run: async () => {
+                if (sql.includes("INSERT INTO admin_audit_logs")) auditEntries.push(values);
+                return { success: true };
+              }
+            };
+          }
+        };
+        return statement;
+      }
+    } as unknown as D1Database;
+    auditEntries.length = 0;
+
+    const res = await auditApp.request(
+      "/api/board/tables/_audit-test",
+      {
+        method: "PATCH",
+        headers: {
+          Cookie: "riceark_session=admin-session",
+          [ADMIN_TARGET_USER_HEADER]: TARGET_USER_ID
+        }
+      },
+      {
+        ...env,
+        DB: db,
+        SESSION_SECRET: "test-secret",
+        ADMIN_OAUTH_ALLOWLIST: "discord:admin-provider"
+      }
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ actorId: "admin-1", subjectId: TARGET_USER_ID });
+    expect(auditEntries).toEqual([[expect.any(String), "admin-1", TARGET_USER_ID, "PATCH", "board.update"]]);
+  });
 });

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { ApiClientError } from "../../api/client";
 import {
@@ -234,6 +235,17 @@ function createFakeBoardPollingRuntime(options: {
 expectTypeOf<BoardPayload["settings"]>().toEqualTypeOf<BoardDisplaySettings>();
 
 describe("board data API", () => {
+  it("wires one injected API client into board reads and both reliable write queues", () => {
+    const source = readFileSync(new URL("./useBoard.ts", import.meta.url), "utf8");
+    const hook = source.slice(source.indexOf("export interface UseBoardOptions"));
+
+    expect(hook).toContain("apiClient?: ApiClient");
+    expect(hook).toContain("apiClient = defaultApiClient");
+    expect(hook).toContain("api: createBoardDataApi(apiClient.get)");
+    expect(hook).toContain("writeCoordinatorOptions: { patch: apiClient.patch }");
+    expect(hook).toMatch(/\}, \[apiClient, userId\]\);/);
+  });
+
   it("uses encoded bootstrap and sheet URLs plus the v2 versions endpoint", async () => {
     const calls: string[] = [];
     const get = vi.fn(async (url: string) => {
@@ -1692,6 +1704,40 @@ describe("board observed and applied versions", () => {
 });
 
 describe("BoardWriteCoordinator", () => {
+  it("routes completion and cell-state persistence through the same injected patch dependency", async () => {
+    const patch = vi.fn(async (_path: string) => ({
+      ok: true as const,
+      versions: { sheets: [] }
+    }));
+    const coordinator = createBoardWriteCoordinator("user-1", {
+      attachLifecycle: false,
+      patch
+    });
+    coordinator.enqueueCompletion({
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      periodKey: "daily:2026-07-15",
+      completed: true
+    });
+    coordinator.enqueueCellState({
+      tableId: "table-1",
+      rowItemId: "row-1",
+      columnItemId: "column-1",
+      markType: "fixed",
+      markIcon: "pin",
+      memo: "saved"
+    });
+
+    await coordinator.flushPendingWrites();
+
+    expect(patch.mock.calls.map(([path]) => path).sort()).toEqual([
+      "/api/board/cell-states",
+      "/api/board/completions"
+    ]);
+    coordinator.discardAndDispose();
+  });
+
   it("reapplies pending completion and cell-state intent over a reloaded authoritative board", () => {
     const coordinator = createBoardWriteCoordinator("user-1", { attachLifecycle: false });
     coordinator.setAuthoritativeBase(emptyBoard);

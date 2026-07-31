@@ -1,12 +1,25 @@
-import { useEffect, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent
+} from "react";
 import { RefreshCw } from "lucide-react";
 import { ApiClientError, apiGet } from "../../api/client";
+import { AdminAuditTab } from "./AdminAuditTab";
+import { AdminUserBoardsTab } from "./AdminUserBoardsTab";
 import { DataTab } from "./DataTab";
 import { HealthTab } from "./HealthTab";
 import { OverviewTab } from "./OverviewTab";
 import { UsageTab } from "./UsageTab";
 import { formatGeneratedAt } from "./format";
-import type { AdminHealth, AdminSummary, AdminTab } from "./types";
+import type {
+  AdminBoardDurableControlsChange,
+  AdminBoardNavigationGuardChange,
+  AdminHealth,
+  AdminSummary,
+  AdminTab
+} from "./types";
 
 export type { AdminHealth, AdminSummary, AdminTab } from "./types";
 
@@ -14,34 +27,73 @@ const TAB_LABELS: Array<{ key: AdminTab; label: string }> = [
   { key: "overview", label: "개요" },
   { key: "usage", label: "사용량·비용" },
   { key: "health", label: "헬스·에러" },
-  { key: "data", label: "데이터" }
+  { key: "data", label: "데이터" },
+  { key: "users", label: "사용자 보드" },
+  { key: "audit", label: "관리 기록" }
 ];
+
+export function getAdminTabForKey(
+  activeTab: AdminTab,
+  key: string
+): AdminTab | null {
+  const activeIndex = TAB_LABELS.findIndex((tab) => tab.key === activeTab);
+  if (key === "Home") return TAB_LABELS[0]?.key ?? null;
+  if (key === "End") return TAB_LABELS.at(-1)?.key ?? null;
+  if (key !== "ArrowLeft" && key !== "ArrowRight") return null;
+  const offset = key === "ArrowRight" ? 1 : -1;
+  const nextIndex = (activeIndex + offset + TAB_LABELS.length) % TAB_LABELS.length;
+  return TAB_LABELS[nextIndex]?.key ?? null;
+}
 
 type AdminDashboardContentProps = {
   summary: AdminSummary;
   health: AdminHealth | null;
   healthError?: string | null;
-  initialTab?: AdminTab;
+  activeTab?: AdminTab;
   refreshing?: boolean;
   onRefresh?: () => void;
+  onTabSelected?: (tab: AdminTab) => void;
+  selectedUserId?: string | null;
+  selectedSheetId?: string | null;
+  writeLocked?: boolean;
+  onDurableControlsChange?: AdminBoardDurableControlsChange;
+  onNavigationGuardChange?: AdminBoardNavigationGuardChange;
+  onUserSelected?: (userId: string | null) => void;
+  onSheetSelected?: (sheetId: string) => void;
+  onReplaceSheetId?: (sheetId: string | null) => void;
 };
 
 export function AdminDashboardContent({
   summary,
   health,
   healthError = null,
-  initialTab = "overview",
+  activeTab = "overview",
   refreshing = false,
-  onRefresh
+  onRefresh,
+  onTabSelected = () => undefined,
+  selectedUserId = null,
+  selectedSheetId = null,
+  writeLocked = false,
+  onDurableControlsChange = () => undefined,
+  onNavigationGuardChange = () => undefined,
+  onUserSelected = () => undefined,
+  onSheetSelected = () => undefined,
+  onReplaceSheetId = () => undefined
 }: AdminDashboardContentProps) {
-  const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
+  const tabRefs = useRef<Partial<Record<AdminTab, HTMLButtonElement | null>>>({});
+  const headerDescription =
+    activeTab === "users"
+      ? "승인된 사용자 메타데이터와 보드 관리 기능을 표시합니다."
+      : activeTab === "audit"
+        ? "콘텐츠 내용 없이 관리자 보드 변경 이력만 표시합니다."
+        : "개인정보 없이 집계 지표만 표시합니다.";
 
   return (
-    <div className="admin-dashboard">
+    <div className={`admin-dashboard${activeTab === "users" ? " admin-dashboard-wide" : ""}`}>
       <div className="admin-dashboard-header">
         <div>
           <h2>운영 현황</h2>
-          <p>개인정보 없이 집계 지표만 표시합니다. 기준 시각 {formatGeneratedAt(summary.generatedAt)}</p>
+          <p>{headerDescription} 기준 시각 {formatGeneratedAt(summary.generatedAt)}</p>
         </div>
         {onRefresh ? (
           <button className="secondary-button admin-refresh-button" disabled={refreshing} type="button" onClick={onRefresh}>
@@ -55,24 +107,73 @@ export function AdminDashboardContent({
         {TAB_LABELS.map((tab) => (
           <button
             key={tab.key}
+            ref={(node) => {
+              tabRefs.current[tab.key] = node;
+            }}
+            id={`admin-tab-${tab.key}`}
             type="button"
             role="tab"
             aria-selected={activeTab === tab.key}
+            aria-controls={`admin-panel-${tab.key}`}
+            tabIndex={activeTab === tab.key ? 0 : -1}
             className={`admin-tab${activeTab === tab.key ? " active" : ""}`}
-            onClick={() => setActiveTab(tab.key)}
+            onClick={() => onTabSelected(tab.key)}
+            onKeyDown={(event: KeyboardEvent<HTMLButtonElement>) => {
+              const nextTab = getAdminTabForKey(tab.key, event.key);
+              if (!nextTab) return;
+              event.preventDefault();
+              onTabSelected(nextTab);
+              tabRefs.current[nextTab]?.focus();
+            }}
           >
             {tab.label}
           </button>
         ))}
       </div>
 
-      {activeTab === "overview" ? <OverviewTab summary={summary} health={health} /> : null}
-      {activeTab === "usage" ? <UsageTab summary={summary} /> : null}
-      {activeTab === "health" ? <HealthTab health={health} healthError={healthError} /> : null}
-      {activeTab === "data" ? <DataTab summary={summary} /> : null}
+      {TAB_LABELS.map((tab) => (
+        <div
+          key={tab.key}
+          id={`admin-panel-${tab.key}`}
+          role="tabpanel"
+          aria-labelledby={`admin-tab-${tab.key}`}
+          hidden={activeTab !== tab.key}
+        >
+          {activeTab === tab.key && tab.key === "overview" ? <OverviewTab summary={summary} health={health} /> : null}
+          {activeTab === tab.key && tab.key === "usage" ? <UsageTab summary={summary} /> : null}
+          {activeTab === tab.key && tab.key === "health" ? <HealthTab health={health} healthError={healthError} /> : null}
+          {activeTab === tab.key && tab.key === "data" ? <DataTab summary={summary} /> : null}
+          {activeTab === tab.key && tab.key === "users" ? (
+            <AdminUserBoardsTab
+              selectedUserId={selectedUserId}
+              selectedSheetId={selectedSheetId}
+              writeLocked={writeLocked}
+              onDurableControlsChange={onDurableControlsChange}
+              onNavigationGuardChange={onNavigationGuardChange}
+              onUserSelected={onUserSelected}
+              onSheetSelected={onSheetSelected}
+              onReplaceSheetId={onReplaceSheetId}
+            />
+          ) : null}
+          {activeTab === tab.key && tab.key === "audit" ? <AdminAuditTab /> : null}
+        </div>
+      ))}
     </div>
   );
 }
+
+export type AdminDashboardProps = {
+  activeTab: AdminTab | null;
+  selectedUserId: string | null;
+  selectedSheetId: string | null;
+  writeLocked: boolean;
+  onDurableControlsChange: AdminBoardDurableControlsChange;
+  onNavigationGuardChange: AdminBoardNavigationGuardChange;
+  onTabSelected: (tab: AdminTab) => void;
+  onUserSelected: (userId: string | null) => void;
+  onSheetSelected: (sheetId: string) => void;
+  onReplaceSheetId: (sheetId: string | null) => void;
+};
 
 function getAdminErrorMessage(err: unknown): string {
   if (err instanceof ApiClientError && err.code === "forbidden") return "관리자 권한이 없습니다.";
@@ -80,7 +181,18 @@ function getAdminErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : "운영 현황을 불러오지 못했습니다.";
 }
 
-export function AdminDashboard() {
+export function AdminDashboard({
+  activeTab,
+  selectedUserId,
+  selectedSheetId,
+  writeLocked,
+  onDurableControlsChange,
+  onNavigationGuardChange,
+  onTabSelected,
+  onUserSelected,
+  onSheetSelected,
+  onReplaceSheetId
+}: AdminDashboardProps) {
   const [summary, setSummary] = useState<AdminSummary | null>(null);
   const [health, setHealth] = useState<AdminHealth | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
@@ -120,8 +232,18 @@ export function AdminDashboard() {
         summary={summary}
         health={health}
         healthError={healthError}
+        activeTab={activeTab ?? "overview"}
         refreshing={loading}
         onRefresh={loadAll}
+        onTabSelected={onTabSelected}
+        selectedUserId={selectedUserId}
+        selectedSheetId={selectedSheetId}
+        writeLocked={writeLocked}
+        onDurableControlsChange={onDurableControlsChange}
+        onNavigationGuardChange={onNavigationGuardChange}
+        onUserSelected={onUserSelected}
+        onSheetSelected={onSheetSelected}
+        onReplaceSheetId={onReplaceSheetId}
       />
     );
   }

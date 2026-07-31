@@ -2,13 +2,13 @@ import { zValidator } from "@hono/zod-validator";
 import { buildTaskDefinition } from "@riceark/core";
 import { Hono } from "hono";
 import { z } from "zod";
-import { requireUser } from "../auth/requireUser";
+import { requireSubjectUser } from "../auth/userAccess";
 import { createUserTask, deleteTaskOverride, reorderTasks, updateTaskOverride } from "../db/tasks";
-import type { Env } from "../env";
+import type { AppEnv } from "../env";
 import { ApiError } from "../http/errors";
 import { resourceIdSchema, safeText } from "../http/input";
 
-export const taskRoutes = new Hono<{ Bindings: Env }>();
+export const taskRoutes = new Hono<AppEnv>();
 
 function hasDuplicates(values: string[]): boolean {
   return new Set(values).size !== values.length;
@@ -55,7 +55,7 @@ taskRoutes.patch(
   "/tasks/order",
   zValidator("json", taskOrderSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { taskIds } = c.req.valid("json");
     const updated = await reorderTasks(c.env, user.id, taskIds);
     if (!updated) throw new ApiError(400, "invalid_task_order", "Task order contains unavailable tasks");
@@ -67,7 +67,7 @@ taskRoutes.post(
   "/tasks",
   zValidator("json", createTaskSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const input = c.req.valid("json");
     const task = buildTaskDefinition(input);
     const id = await createUserTask(c.env, user.id, {
@@ -85,7 +85,7 @@ taskRoutes.patch(
   zValidator("param", taskIdParamSchema),
   zValidator("json", updateTaskSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
     const task = buildTaskDefinition({ ...input, scope: "character" });
@@ -99,7 +99,7 @@ taskRoutes.delete(
   "/tasks/:id",
   zValidator("param", taskIdParamSchema),
   async (c) => {
-    const user = await requireUser(c);
+    const user = await requireSubjectUser(c, { allowAdminTarget: true });
     const { id } = c.req.valid("param");
     const deleted = await deleteTaskOverride(c.env, user.id, id);
     if (!deleted) throw new ApiError(404, "task_not_found", "Task not found");

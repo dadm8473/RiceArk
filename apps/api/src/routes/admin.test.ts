@@ -14,14 +14,33 @@ const envBase = {
 
 type FakeDbOptions = {
   providerUserId: string;
+  statements?: string[];
 };
 
 const todayUtc = new Date().toISOString().slice(0, 10);
 const yesterdayUtc = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+const selectedUserId = "00000000-0000-4000-8000-000000000002";
+const auditLogRows = Array.from({ length: 51 }, (_, index) => ({
+  id: `audit-${String(51 - index).padStart(2, "0")}`,
+  admin_user_id: "user-admin",
+  admin_display_name: "Admin",
+  target_user_id: selectedUserId,
+  target_display_name: "Rice",
+  method: "PATCH",
+  action: "board.update",
+  created_at: new Date(Date.UTC(2026, 6, 31, 12, 0, 0) - index * 1_000).toISOString(),
+  email: "rice@example.com",
+  provider_user_id: "discord-private-id",
+  memo: "private memo",
+  body: "private body",
+  payload: "private payload",
+  content: "private content"
+}));
 
-function createAdminDb({ providerUserId }: FakeDbOptions): D1Database {
+function createAdminDb({ providerUserId, statements }: FakeDbOptions): D1Database {
   return {
     prepare(sql: string) {
+      statements?.push(sql);
       const statement = {
         first: async () => {
           if (sql.includes("total_users")) {
@@ -51,12 +70,41 @@ function createAdminDb({ providerUserId }: FakeDbOptions): D1Database {
               tasks: 119
             };
           }
+          if (sql.includes("FROM users")) {
+            return {
+              id: selectedUserId,
+              display_name: "Rice",
+              provider: "discord",
+              created_at: "2026-07-01T12:00:00.000Z",
+              recent_activity_at: "2026-07-30T12:00:00.000Z",
+              email: "rice@example.com",
+              provider_user_id: "discord-private-id"
+            };
+          }
           if (sql.includes("FROM sessions")) {
             return { id: "user-admin", display_name: "수빈", avatar_url: null };
           }
           return null;
         },
         all: async () => {
+          if (sql.includes("WITH page_users AS")) {
+            return {
+              results: [
+                {
+                  id: selectedUserId,
+                  display_name: "Rice",
+                  provider: "discord",
+                  created_at: "2026-07-01T12:00:00.000Z",
+                  recent_activity_at: "2026-07-30T12:00:00.000Z",
+                  email: "rice@example.com",
+                  provider_user_id: "discord-private-id"
+                }
+              ]
+            };
+          }
+          if (sql.includes("FROM admin_audit_logs AS audit")) {
+            return { results: auditLogRows };
+          }
           if (sql.includes("total_users")) {
             return {
               results: [
@@ -117,11 +165,14 @@ function createAdminDb({ providerUserId }: FakeDbOptions): D1Database {
   } as unknown as D1Database;
 }
 
-function envWithAdminDb(providerUserId: string): Env {
+function envWithAdminDb(providerUserId: string, statements?: string[]): Env {
   return {
     ...envBase,
     ADMIN_OAUTH_ALLOWLIST: "discord:326685778656755713",
-    DB: createAdminDb({ providerUserId })
+    DB: createAdminDb({
+      providerUserId,
+      ...(statements === undefined ? {} : { statements })
+    })
   } as unknown as Env;
 }
 
@@ -190,6 +241,97 @@ describe("admin routes", () => {
         requiredSecrets: expect.arrayContaining(["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"])
       }
     });
+  });
+
+  it("returns a privacy-safe user page and direct selected summary", async () => {
+    const response = await app.request(
+      `/api/admin/users?search=rice&selectedUserId=${selectedUserId}`,
+      { headers: { cookie: "riceark_session=test-session" } },
+      envWithAdminDb("326685778656755713")
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("vary")?.split(/,\s*/)).toContain("Cookie");
+    const body = await response.json();
+    expect(body).toEqual({
+      users: [
+        {
+          id: selectedUserId,
+          displayName: "Rice",
+          provider: "discord",
+          createdAt: "2026-07-01T12:00:00.000Z",
+          recentActivityAt: "2026-07-30T12:00:00.000Z"
+        }
+      ],
+      nextCursor: null,
+      selectedUser: {
+        id: selectedUserId,
+        displayName: "Rice",
+        provider: "discord",
+        createdAt: "2026-07-01T12:00:00.000Z",
+        recentActivityAt: "2026-07-30T12:00:00.000Z"
+      }
+    });
+    expect(JSON.stringify(body)).not.toMatch(/email|providerUserId/i);
+  });
+
+  it("returns fifty newest content-free audit records", async () => {
+    const response = await app.request(
+      "/api/admin/audit-logs",
+      { headers: { cookie: "riceark_session=test-session" } },
+      envWithAdminDb("326685778656755713")
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("vary")?.split(/,\s*/)).toContain("Cookie");
+    const body = (await response.json()) as { logs: unknown[]; nextCursor: string | null };
+    expect(body.logs[0]).toEqual({
+      id: "audit-51",
+      adminUserId: "user-admin",
+      adminDisplayName: "Admin",
+      targetUserId: selectedUserId,
+      targetDisplayName: "Rice",
+      method: "PATCH",
+      action: "board.update",
+      createdAt: "2026-07-31T12:00:00.000Z"
+    });
+    expect(body.nextCursor).toEqual(expect.any(String));
+    expect((body as { logs: unknown[] }).logs).toHaveLength(50);
+    expect(JSON.stringify(body)).not.toMatch(/memo|body|payload|content|email|providerUserId/i);
+  });
+
+  it("validates administrator user query values", async () => {
+    const response = await app.request(
+      "/api/admin/users?selectedUserId=user-2",
+      { headers: { cookie: "riceark_session=test-session" } },
+      envWithAdminDb("326685778656755713")
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects malformed administrator pagination cursors", async () => {
+    const response = await app.request(
+      "/api/admin/audit-logs?cursor=not-an-encoded-cursor",
+      { headers: { cookie: "riceark_session=test-session" } },
+      envWithAdminDb("326685778656755713")
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it("authorizes an administrator before looking up the selected user", async () => {
+    const statements: string[] = [];
+    const response = await app.request(
+      `/api/admin/users?selectedUserId=${selectedUserId}`,
+      { headers: { cookie: "riceark_session=test-session" } },
+      envWithAdminDb("other-discord-user", statements)
+    );
+
+    expect(response.status).toBe(403);
+    expect(statements.some((sql) => sql.includes("FROM users"))).toBe(false);
   });
 
   it("includes Cloudflare usage and estimated capacity when usage secrets are configured", async () => {

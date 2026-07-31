@@ -33,10 +33,10 @@ export async function isAdminUser(env: Env, userId: string): Promise<boolean> {
   return results.some((row) => adminKeys.has(getOAuthAdminKey(row)));
 }
 
-export async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<AuthenticatedUser> {
-  const user = await requireUser(c);
-  if (!(await isAdminUser(c.env, user.id))) {
+export async function requireAdmin<E extends { Bindings: Env }>(c: Context<E>): Promise<AuthenticatedUser> {
+  const actor = await requireUser(c);
+  if (!(await isAdminUser(c.env, actor.id))) {
     throw new ApiError(403, "forbidden", "Admin access required");
   }
-  return user;
+  return actor;
 }

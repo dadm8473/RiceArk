@@ -32,6 +32,7 @@ const routeEnv = {
   ENVIRONMENT: "test",
   SESSION_SECRET: "test-secret"
 };
+const TARGET_USER_ID = "12345678-1234-4abc-8def-123456789012";
 
 describe("board route schemas", () => {
   it("accepts only an optional safe bootstrap sheet id", () => {
@@ -672,7 +673,16 @@ describe("board route schemas", () => {
 });
 
 describe("board mutation routes", () => {
-  function createMutationRouteEnv(options: { missingSheet?: boolean; missingNote?: boolean; lastSheet?: boolean; nameConflict?: boolean } = {}) {
+  function createMutationRouteEnv(
+    options: {
+      missingSheet?: boolean;
+      missingNote?: boolean;
+      lastSheet?: boolean;
+      nameConflict?: boolean;
+      actorId?: string;
+      targetUserId?: string;
+    } = {}
+  ) {
     const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
 
     const execute = (statement: { sql: string; values: unknown[] }) => {
@@ -692,7 +702,7 @@ describe("board mutation routes", () => {
       if (sql.includes("INSERT INTO board_manifest_versions")) {
         if (options.missingSheet && sql.includes("WHERE EXISTS")) return result([]);
         if (options.lastSheet && sql.includes("other.id <> target.id")) return result([]);
-        return result([{ user_id: "user-1", version: 8 }]);
+        return result([{ user_id: options.targetUserId ?? "user-1", version: 8 }]);
       }
       if (sql.startsWith("UPDATE sheets") && sql.includes("content_version = content_version + 1")) {
         return options.missingSheet || (sql.includes("FROM board_notes") && options.missingNote)
@@ -718,6 +728,7 @@ describe("board mutation routes", () => {
 
     const env = {
       ...routeEnv,
+      ...(options.targetUserId ? { ADMIN_OAUTH_ALLOWLIST: "discord:admin-provider" } : {}),
       DB: {
         prepare(sql: string) {
           return {
@@ -727,7 +738,14 @@ describe("board mutation routes", () => {
               return { ...this, values };
             },
             async first() {
-              if (sql.includes("FROM sessions")) return { id: "user-1", display_name: "Tester", avatar_url: null };
+              if (sql.includes("FROM sessions")) {
+                return { id: options.actorId ?? "user-1", display_name: "Tester", avatar_url: null };
+              }
+              if (sql.includes("SELECT id, display_name, avatar_url FROM users WHERE id = ?")) {
+                return options.targetUserId
+                  ? { id: options.targetUserId, display_name: "Target", avatar_url: null }
+                  : null;
+              }
               if (sql.includes("SELECT id FROM board_tables WHERE user_id = ? LIMIT 1")) return { id: "table-existing" };
               if (sql.includes("SELECT id, is_default FROM sheets")) {
                 return options.missingSheet ? null : { id: "sheet-1", is_default: 1 };
@@ -746,6 +764,16 @@ describe("board mutation routes", () => {
               }
               return null;
             },
+            async all() {
+              if (sql.includes("FROM oauth_accounts")) {
+                return {
+                  results: options.targetUserId
+                    ? [{ provider: "discord", provider_user_id: "admin-provider" }]
+                    : []
+                };
+              }
+              return { results: [] };
+            },
             async run() {
               return execute(this);
             }
@@ -760,6 +788,28 @@ describe("board mutation routes", () => {
 
     return { env, batches };
   }
+
+  it("writes private board mutations for the targeted user", async () => {
+    const { env, batches } = createMutationRouteEnv({ actorId: "admin-1", targetUserId: TARGET_USER_ID });
+    const response = await app.request(
+      "/api/board/sheets",
+      {
+        method: "POST",
+        headers: {
+          Cookie: "riceark_session=admin-session",
+          "Content-Type": "application/json",
+          "X-RiceArk-Admin-Target-User": TARGET_USER_ID
+        },
+        body: JSON.stringify({ name: "Target board" })
+      },
+      env
+    );
+
+    expect(response.status).toBe(201);
+    const boardUserBindings = batches.flat().flatMap((statement) => statement.values);
+    expect(boardUserBindings).toContain(TARGET_USER_ID);
+    expect(boardUserBindings).not.toContain("admin-1");
+  });
 
   function createRemainingMutationRouteEnv(
     options: {
@@ -1703,6 +1753,8 @@ describe("board owner read routes", () => {
     noDefaultSheet?: boolean;
     snapshotConflict?: "bootstrap" | "sheet";
     databaseError?: boolean;
+    actorId?: string;
+    targetUserId?: string;
   }
 
   const settings = {
@@ -1817,6 +1869,7 @@ describe("board owner read routes", () => {
 
     const env = {
       ...routeEnv,
+      ...(options.targetUserId ? { ADMIN_OAUTH_ALLOWLIST: "discord:admin-provider" } : {}),
       DB: {
         prepare(sql: string) {
           const captured = { sql, values: [] as unknown[] };
@@ -1830,7 +1883,12 @@ describe("board owner read routes", () => {
             },
             async first() {
               if (sql.includes("FROM sessions")) {
-                return { id: "user-1", display_name: "Owner", avatar_url: null };
+                return { id: options.actorId ?? "user-1", display_name: "Owner", avatar_url: null };
+              }
+              if (sql.includes("SELECT id, display_name, avatar_url FROM users WHERE id = ?")) {
+                return options.targetUserId
+                  ? { id: options.targetUserId, display_name: "Target", avatar_url: null }
+                  : null;
               }
               if (sql.includes("SELECT EXISTS(SELECT id FROM board_tables")) {
                 return { has_table: 1, has_sheet: 1, checklist_orientation: "tasks_rows" };
@@ -1842,6 +1900,13 @@ describe("board owner read routes", () => {
               return null;
             },
             async all() {
+              if (sql.includes("FROM oauth_accounts")) {
+                return {
+                  results: options.targetUserId
+                    ? [{ provider: "discord", provider_user_id: "admin-provider" }]
+                    : []
+                };
+              }
               if (options.databaseError && sql.includes("FROM board_tables\n       JOIN sheets")) {
                 throw new Error("database unavailable");
               }
@@ -1964,6 +2029,27 @@ describe("board owner read routes", () => {
     expect(statements).toHaveLength(9);
     expect(statements.filter((statement) => statement.sql.includes("FROM sessions"))).toHaveLength(1);
     expect(statements.filter((statement) => statement.sql.includes("WITH manifest AS"))).toHaveLength(2);
+  });
+
+  it("loads a private board bootstrap for the targeted user", async () => {
+    const { env, statements } = createBoardReadRouteEnv({ actorId: "admin-1", targetUserId: TARGET_USER_ID });
+    const response = await app.request(
+      "/api/board/bootstrap",
+      {
+        headers: {
+          Cookie: "riceark_session=admin-session",
+          "X-RiceArk-Admin-Target-User": TARGET_USER_ID
+        }
+      },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const boardUserBindings = statements
+      .filter((statement) => statement.sql.includes("WITH manifest AS"))
+      .flatMap((statement) => statement.values);
+    expect(boardUserBindings).toContain(TARGET_USER_ID);
+    expect(boardUserBindings).not.toContain("admin-1");
   });
 
   it.each(["sheet-foreign", "sheet-missing"])(
@@ -2155,7 +2241,7 @@ describe("board share routes", () => {
     ]);
   }
 
-  function createShareRouteEnv() {
+  function createShareRouteEnv(options: { actorId?: string } = {}) {
     const batches: Array<Array<{ sql: string; values: unknown[] }>> = [];
     const runs: Array<{ sql: string; values: unknown[] }> = [];
     const statements: Array<{ sql: string; values: unknown[] }> = [];
@@ -2174,7 +2260,9 @@ describe("board share routes", () => {
               return this;
             },
             async first() {
-              if (sql.includes("FROM sessions")) return { id: "user-1", display_name: "냠수", avatar_url: null };
+              if (sql.includes("FROM sessions")) {
+                return { id: options.actorId ?? "user-1", display_name: "냠수", avatar_url: null };
+              }
               if (sql.includes("SELECT id FROM sheets WHERE id = ? AND user_id = ?")) return { id: "sheet-1" };
               if (sql.includes("SELECT share_id FROM board_shares WHERE owner_user_id = ?")) return { share_id: "share-old" };
               if (sql.includes("SELECT share_id FROM board_shares WHERE share_id = ?")) return { share_id: "AbCdEfGhIjKlMnOpQrStUv" };
@@ -2298,6 +2386,41 @@ describe("board share routes", () => {
     expect(batches.at(-1)?.some((statement) => statement.sql.includes("DELETE FROM board_shares"))).toBe(true);
     expect(batches.at(-1)?.some((statement) => statement.sql.includes("board_manifest_versions"))).toBe(false);
     expect(batches.at(-1)?.some((statement) => statement.sql.includes("content_version"))).toBe(false);
+  });
+
+  it("keeps board sharing and favorites actor-owned when a target header is present", async () => {
+    const { env, batches, runs, statements } = createShareRouteEnv({ actorId: "admin-1" });
+    const targetHeaders = {
+      Cookie: "riceark_session=admin-session",
+      "X-RiceArk-Admin-Target-User": "user-2"
+    };
+    const share = await app.request(
+      "/api/board/sheets/sheet-1/share",
+      { method: "POST", headers: targetHeaders },
+      env
+    );
+    const favorite = await app.request(
+      "/api/board/share-favorites",
+      {
+        method: "POST",
+        headers: { ...targetHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ shareId: "AbCdEfGhIjKlMnOpQrStUv" })
+      },
+      env
+    );
+
+    expect(share.status).toBe(201);
+    expect(favorite.status).toBe(201);
+    const sharingBindings = batches.flat().flatMap((statement) => statement.values);
+    const favoriteBindings = runs
+      .filter((statement) => statement.sql.includes("board_share_favorites"))
+      .flatMap((statement) => statement.values);
+    expect(sharingBindings).toContain("admin-1");
+    expect(sharingBindings).not.toContain("user-2");
+    expect(favoriteBindings).toContain("admin-1");
+    expect(favoriteBindings).not.toContain("user-2");
+    expect(statements.some((statement) => statement.sql.includes("FROM oauth_accounts"))).toBe(false);
+    expect(statements.some((statement) => statement.sql.includes("FROM users WHERE id = ?"))).toBe(false);
   });
 
   it("serves shared rice bins without login and blocks public mutation methods", async () => {

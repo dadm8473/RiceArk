@@ -1,7 +1,13 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AdminDashboardContent, type AdminHealth, type AdminSummary, type AdminTab } from "./AdminDashboard";
+import {
+  AdminDashboardContent,
+  getAdminTabForKey,
+  type AdminHealth,
+  type AdminSummary,
+  type AdminTab
+} from "./AdminDashboard";
 
 const summary: AdminSummary = {
   generatedAt: "2026-06-10T07:34:00.000Z",
@@ -137,7 +143,12 @@ function renderTab(tab: AdminTab, props?: { summary?: AdminSummary; health?: Adm
       summary: props?.summary ?? cloudflareSummary,
       health: props?.health === undefined ? health : props.health,
       healthError: props?.healthError ?? null,
-      initialTab: tab
+      activeTab: tab,
+      selectedUserId: null,
+      selectedSheetId: null,
+      onUserSelected: () => undefined,
+      onSheetSelected: () => undefined,
+      onReplaceSheetId: () => undefined
     })
   );
 }
@@ -153,6 +164,62 @@ describe("AdminDashboardContent", () => {
     expect(html).toContain("데이터");
     expect(html).toContain('role="tablist"');
     expect(html).toContain('aria-selected="true"');
+  });
+
+  it("uses controlled administrator tab state for the user-board and audit routing seams", () => {
+    const html = renderToStaticMarkup(
+      createElement(AdminDashboardContent, {
+        summary: cloudflareSummary,
+        health,
+        activeTab: "users",
+        onTabSelected: () => undefined
+      })
+    );
+
+    expect(html).toContain("사용자 보드");
+    expect(html).toContain("관리 기록");
+    expect(html).toMatch(/사용자 보드<\/button>/);
+    expect(html).toMatch(/aria-selected="true"[^>]*>사용자 보드/);
+  });
+
+  it("associates every tab with a stable panel and roves the tab stop", () => {
+    const html = renderTab("users");
+
+    for (const tab of ["overview", "usage", "health", "data", "users", "audit"]) {
+      expect(html).toContain(`id="admin-tab-${tab}"`);
+      expect(html).toContain(`aria-controls="admin-panel-${tab}"`);
+      expect(html).toContain(`id="admin-panel-${tab}"`);
+      expect(html).toContain(`aria-labelledby="admin-tab-${tab}"`);
+    }
+    expect(html.match(/tabindex="0"/g)).toHaveLength(1);
+    expect(html.match(/tabindex="-1"/g)).toHaveLength(5);
+  });
+
+  it("moves tabs with arrows and Home or End using the expected wrap order", () => {
+    expect(getAdminTabForKey("overview", "ArrowLeft")).toBe("audit");
+    expect(getAdminTabForKey("audit", "ArrowRight")).toBe("overview");
+    expect(getAdminTabForKey("health", "Home")).toBe("overview");
+    expect(getAdminTabForKey("health", "End")).toBe("audit");
+    expect(getAdminTabForKey("health", "Enter")).toBeNull();
+  });
+
+  it("renders the user-board tab from controlled route state without mounting a board before selection", () => {
+    const html = renderTab("users");
+
+    expect(html).toContain("사용자 검색");
+    expect(html).toContain("이름 또는 사용자 ID 끝자리");
+    expect(html).toContain("승인된 사용자 메타데이터");
+    expect(html).not.toContain("관리 중:");
+    expect(html).not.toContain("board-overview");
+  });
+
+  it("renders the audit management tab", () => {
+    const html = renderTab("audit");
+
+    expect(html).toContain("관리 기록");
+    expect(html).toContain("콘텐츠 내용 없이");
+    expect(html).toContain('aria-label="관리 기록 새로고침"');
+    expect(html).toContain("관리 기록을 불러오는 중");
   });
 
   it("shows the status strip, core metrics and compact usage bars on the overview tab", () => {

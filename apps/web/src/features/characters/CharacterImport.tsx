@@ -5,7 +5,7 @@ import {
 } from "@riceark/core";
 import { Check, LoaderCircle, Search, UserPlus, X } from "lucide-react";
 import { useState } from "react";
-import { apiGet, apiPost } from "../../api/client";
+import { defaultApiClient, type ApiClient } from "../../api/client";
 import {
   type BoardMutationRunner,
   runBoardMutationDirect
@@ -242,12 +242,18 @@ export function ManualCharacterCreatePanel({
 }
 
 interface CharacterImportProps {
+  apiClient?: ApiClient | undefined;
   tableId?: string | undefined;
   onSaved?: () => void | Promise<void>;
   runMutation?: BoardMutationRunner | undefined;
 }
 
-export function CharacterImport({ tableId, onSaved, runMutation = runBoardMutationDirect }: CharacterImportProps = {}) {
+export function CharacterImport({
+  apiClient = defaultApiClient,
+  tableId,
+  onSaved,
+  runMutation = runBoardMutationDirect
+}: CharacterImportProps = {}) {
   const [name, setName] = useState("");
   const [candidates, setCandidates] = useState<CharacterCandidate[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -280,7 +286,7 @@ export function CharacterImport({ tableId, onSaved, runMutation = runBoardMutati
       const result = await searchCharactersCached(
         normalizedName,
         async (requestedName) => {
-          const payload = await apiGet<{ characters: CharacterCandidate[] }>(
+          const payload = await apiClient.get<{ characters: CharacterCandidate[] }>(
             `/api/characters/search?name=${encodeURIComponent(requestedName)}`
           );
           return payload.characters;
@@ -312,7 +318,7 @@ export function CharacterImport({ tableId, onSaved, runMutation = runBoardMutati
     setSaving(true);
     try {
       await runMutation(async () => {
-        await apiPost(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/characters/import` : "/api/characters/import", {
+        await apiClient.post(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/characters/import` : "/api/characters/import", {
           characters
         });
         if (onSaved) {
@@ -340,7 +346,7 @@ export function CharacterImport({ tableId, onSaved, runMutation = runBoardMutati
     setMessage(null);
     try {
       await runMutation(async () => {
-        await apiPost(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/characters/manual` : "/api/characters/manual", {
+        await apiClient.post(tableId ? `/api/board/tables/${encodeURIComponent(tableId)}/characters/manual` : "/api/characters/manual", {
           name: trimmedName,
           serverName: manualCharacter.serverName.trim(),
           className: manualCharacter.className.trim(),
