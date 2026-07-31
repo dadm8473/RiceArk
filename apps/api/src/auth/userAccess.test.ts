@@ -116,6 +116,13 @@ describe("getAdminAuditAction", () => {
     ]).toEqual(["board.update", "board.update"]);
   });
 
+  it("maps direct table settings mutations and excludes the obsolete settings path", () => {
+    expect([
+      getAdminAuditAction("PATCH", "/api/board/tables/table-1"),
+      getAdminAuditAction("PATCH", "/api/board/tables/table-1/settings")
+    ]).toEqual(["board.update", null]);
+  });
+
   it("maps only supported user-owned mutations", () => {
     expect([
       getAdminAuditAction("PATCH", "/api/board/completions"),

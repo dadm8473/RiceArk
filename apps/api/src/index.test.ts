@@ -102,10 +102,10 @@ describe("api shell", () => {
 const auditEntries: unknown[][] = [];
 
 describe("administrator target audit middleware", () => {
-  it("records successful targeted board mutations without request content", async () => {
+  it("records successful targeted direct table settings mutations without request content", async () => {
     const auditApp = new Hono<AppEnv>().basePath("/api");
     auditApp.use("*", adminTargetAuditMiddleware);
-    auditApp.post("/board/tables/_audit-test/transpose", async (c) => {
+    auditApp.patch("/board/tables/_audit-test", async (c) => {
       const access = await requireUserAccess(c, { allowAdminTarget: true });
       return c.json({ actorId: access.actor.id, subjectId: access.subject.id });
     });
@@ -142,9 +142,9 @@ describe("administrator target audit middleware", () => {
     auditEntries.length = 0;
 
     const res = await auditApp.request(
-      "/api/board/tables/_audit-test/transpose",
+      "/api/board/tables/_audit-test",
       {
-        method: "POST",
+        method: "PATCH",
         headers: {
           Cookie: "riceark_session=admin-session",
           [ADMIN_TARGET_USER_HEADER]: "user-2"
@@ -160,6 +160,6 @@ describe("administrator target audit middleware", () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ actorId: "admin-1", subjectId: "user-2" });
-    expect(auditEntries).toEqual([[expect.any(String), "admin-1", "user-2", "POST", "board.update"]]);
+    expect(auditEntries).toEqual([[expect.any(String), "admin-1", "user-2", "PATCH", "board.update"]]);
   });
 });

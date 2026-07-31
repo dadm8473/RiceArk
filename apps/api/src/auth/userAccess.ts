@@ -66,7 +66,7 @@ const boardMutations: Record<string, RegExp[]> = {
   PATCH: [
     /^\/api\/board\/sheets\/[^/]+$/,
     /^\/api\/board\/notes\/[^/]+(?:\/layout)?$/,
-    /^\/api\/board\/tables\/[^/]+\/(?:settings|layout)$/,
+    /^\/api\/board\/tables\/[^/]+(?:\/layout)?$/,
     /^\/api\/board\/axis-items\/(?:order|[^/]+(?:\/size)?)$/
   ],
   DELETE: [
