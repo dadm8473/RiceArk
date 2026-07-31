@@ -27,6 +27,16 @@ const ADMIN_TABS: readonly AdminTab[] = ["overview", "usage", "health", "data", 
 
 export type DurableLogoutMode = "normal" | "retry" | "discard";
 
+type DurableBoardLogoutControls = Pick<
+  AdminBoardDurableControls,
+  | "waitForMutations"
+  | "flushPendingWrites"
+  | "retryPendingWrites"
+  | "discardPendingWrites"
+  | "reconcileAfterLogoutFailure"
+  | "unlockMutations"
+>;
+
 export class DurableLogoutError extends Error {
   constructor(
     public readonly stage: "flush" | "logout",
@@ -90,7 +100,7 @@ export async function runDurableLogout({
 
 export async function recoverBoardAfterLogoutFailure(
   barrier: Pick<BoardMutationBarrier, "unlock">,
-  board: Pick<ReturnType<typeof useBoard>, "reconcileAfterLogoutFailure">,
+  board: { reconcileAfterLogoutFailure: () => Promise<unknown> },
   onRecovered?: (() => void) | undefined
 ): Promise<void> {
   try {
@@ -101,6 +111,57 @@ export async function recoverBoardAfterLogoutFailure(
     barrier.unlock();
   }
   onRecovered?.();
+}
+
+async function settleBoardDurabilityOperations(
+  operations: ReadonlyArray<() => Promise<unknown>>
+): Promise<void> {
+  const results = await Promise.allSettled(
+    operations.map(async (operation) => operation())
+  );
+  const errors = results
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason);
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "One or more board durability operations failed");
+  }
+}
+
+export async function runCrossBoardDurableLogoutAttempt({
+  mode,
+  boards,
+  logout
+}: {
+  mode: DurableLogoutMode;
+  boards: readonly DurableBoardLogoutControls[];
+  logout: () => Promise<void>;
+}): Promise<void> {
+  try {
+    await runDurableLogout({
+      mode,
+      waitForMutations: () => settleBoardDurabilityOperations(
+        boards.map((board) => () => board.waitForMutations())
+      ),
+      flushPendingWrites: () => settleBoardDurabilityOperations(
+        boards.map((board) => () => board.flushPendingWrites())
+      ),
+      retryPendingWrites: () => {
+        boards.forEach((board) => board.retryPendingWrites());
+      },
+      discardPendingWrites: () => {
+        boards.forEach((board) => board.discardPendingWrites());
+      },
+      logout
+    });
+  } catch (error) {
+    await Promise.all(
+      boards.map((board) => recoverBoardAfterLogoutFailure(
+        { unlock: () => board.unlockMutations() },
+        { reconcileAfterLogoutFailure: () => board.reconcileAfterLogoutFailure() }
+      ))
+    );
+    throw error;
+  }
 }
 
 export function getOwnerBoardInteractionProps(
@@ -507,50 +568,30 @@ export function App() {
 
   const attemptLogout = async (mode: DurableLogoutMode) => {
     const selectedAdminBoardControls = selectedAdminBoardControlsRef.current;
-    const mutationDrain = Promise.all([
-      boardMutationBarrier.lockAndDrain(),
-      selectedAdminBoardControls?.waitForMutations() ?? Promise.resolve()
-    ]).then(() => undefined);
+    const durableBoards: DurableBoardLogoutControls[] = [
+      {
+        waitForMutations: () => boardMutationBarrier.lockAndDrain(),
+        flushPendingWrites: () => board.flushPendingWrites(),
+        retryPendingWrites: () => board.retryPendingWrites(),
+        discardPendingWrites: () => board.discardPendingWrites(),
+        reconcileAfterLogoutFailure: () => board.reconcileAfterLogoutFailure(),
+        unlockMutations: () => boardMutationBarrier.unlock()
+      }
+    ];
+    if (selectedAdminBoardControls) durableBoards.push(selectedAdminBoardControls);
     setLogoutPending(true);
     setAuthMenuOpen(false);
     setLogoutBlocked(false);
     setLogoutError(null);
     try {
-      await runDurableLogout({
+      await runCrossBoardDurableLogoutAttempt({
         mode,
-        waitForMutations: () => mutationDrain,
-        flushPendingWrites: async () => {
-          await Promise.all([
-            board.flushPendingWrites(),
-            selectedAdminBoardControls?.flushPendingWrites() ?? Promise.resolve()
-          ]);
-        },
-        retryPendingWrites: () => {
-          board.retryPendingWrites();
-          selectedAdminBoardControls?.retryPendingWrites();
-        },
-        discardPendingWrites: () => {
-          board.discardPendingWrites();
-          selectedAdminBoardControls?.discardPendingWrites();
-        },
+        boards: durableBoards,
         logout: () => apiPostNoContent("/api/auth/logout")
       });
       window.location.assign("/");
     } catch (err) {
       const failure = getDurableLogoutFailureState(err);
-      await Promise.all([
-        recoverBoardAfterLogoutFailure(boardMutationBarrier, board),
-        (async () => {
-          if (!selectedAdminBoardControls) return;
-          try {
-            await selectedAdminBoardControls.reconcileAfterLogoutFailure();
-          } catch {
-            // The selected board's existing error surface reports reconciliation failures.
-          } finally {
-            selectedAdminBoardControls.unlockMutations();
-          }
-        })()
-      ]);
       setLogoutPending(false);
       setAuthMenuOpen(true);
       setLogoutBlocked(failure.logoutBlocked);

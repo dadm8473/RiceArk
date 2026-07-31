@@ -17,6 +17,7 @@ import {
   getAppThemeColor,
   getUrlWithoutSharedRiceBinId,
   recoverBoardAfterLogoutFailure,
+  runCrossBoardDurableLogoutAttempt,
   runDurableLogout,
   storeAppTheme
 } from "./App";
@@ -485,6 +486,108 @@ describe("runDurableLogout", () => {
 
     expect(flushPendingWrites).not.toHaveBeenCalled();
     expect(logout).not.toHaveBeenCalled();
+  });
+
+  it("waits for every board mutation drain before recovery and both unlocks", async () => {
+    const drainFailure = new Error("owner mutation failed");
+    const selectedDrain = deferred<void>();
+    const ownerBoard = {
+      waitForMutations: vi.fn(async () => {
+        throw drainFailure;
+      }),
+      flushPendingWrites: vi.fn(async () => undefined),
+      retryPendingWrites: vi.fn(),
+      discardPendingWrites: vi.fn(),
+      reconcileAfterLogoutFailure: vi.fn(async () => undefined),
+      unlockMutations: vi.fn()
+    };
+    const selectedBoard = {
+      waitForMutations: vi.fn(() => selectedDrain.promise),
+      flushPendingWrites: vi.fn(async () => undefined),
+      retryPendingWrites: vi.fn(),
+      discardPendingWrites: vi.fn(),
+      reconcileAfterLogoutFailure: vi.fn(async () => undefined),
+      unlockMutations: vi.fn()
+    };
+    const logout = vi.fn(async () => undefined);
+
+    const logoutAttempt = runCrossBoardDurableLogoutAttempt({
+      mode: "normal",
+      boards: [ownerBoard, selectedBoard],
+      logout
+    });
+
+    await vi.waitFor(() => {
+      expect(selectedBoard.waitForMutations).toHaveBeenCalledTimes(1);
+    });
+    expect(ownerBoard.reconcileAfterLogoutFailure).not.toHaveBeenCalled();
+    expect(selectedBoard.reconcileAfterLogoutFailure).not.toHaveBeenCalled();
+    expect(ownerBoard.unlockMutations).not.toHaveBeenCalled();
+    expect(selectedBoard.unlockMutations).not.toHaveBeenCalled();
+
+    selectedDrain.resolve();
+    await expect(logoutAttempt).rejects.toMatchObject({
+      stage: "flush",
+      cause: expect.objectContaining({ errors: [drainFailure] })
+    });
+
+    expect(ownerBoard.flushPendingWrites).not.toHaveBeenCalled();
+    expect(selectedBoard.flushPendingWrites).not.toHaveBeenCalled();
+    expect(logout).not.toHaveBeenCalled();
+    expect(ownerBoard.reconcileAfterLogoutFailure).toHaveBeenCalledTimes(1);
+    expect(selectedBoard.reconcileAfterLogoutFailure).toHaveBeenCalledTimes(1);
+    expect(ownerBoard.unlockMutations).toHaveBeenCalledTimes(1);
+    expect(selectedBoard.unlockMutations).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for every board flush before recovery and both unlocks", async () => {
+    const flushFailure = new Error("owner queue failed");
+    const selectedFlush = deferred<void>();
+    const ownerBoard = {
+      waitForMutations: vi.fn(async () => undefined),
+      flushPendingWrites: vi.fn(async () => {
+        throw flushFailure;
+      }),
+      retryPendingWrites: vi.fn(),
+      discardPendingWrites: vi.fn(),
+      reconcileAfterLogoutFailure: vi.fn(async () => undefined),
+      unlockMutations: vi.fn()
+    };
+    const selectedBoard = {
+      waitForMutations: vi.fn(async () => undefined),
+      flushPendingWrites: vi.fn(() => selectedFlush.promise),
+      retryPendingWrites: vi.fn(),
+      discardPendingWrites: vi.fn(),
+      reconcileAfterLogoutFailure: vi.fn(async () => undefined),
+      unlockMutations: vi.fn()
+    };
+    const logout = vi.fn(async () => undefined);
+
+    const logoutAttempt = runCrossBoardDurableLogoutAttempt({
+      mode: "normal",
+      boards: [ownerBoard, selectedBoard],
+      logout
+    });
+
+    await vi.waitFor(() => {
+      expect(selectedBoard.flushPendingWrites).toHaveBeenCalledTimes(1);
+    });
+    expect(ownerBoard.reconcileAfterLogoutFailure).not.toHaveBeenCalled();
+    expect(selectedBoard.reconcileAfterLogoutFailure).not.toHaveBeenCalled();
+    expect(ownerBoard.unlockMutations).not.toHaveBeenCalled();
+    expect(selectedBoard.unlockMutations).not.toHaveBeenCalled();
+
+    selectedFlush.resolve();
+    await expect(logoutAttempt).rejects.toMatchObject({
+      stage: "flush",
+      cause: expect.objectContaining({ errors: [flushFailure] })
+    });
+
+    expect(logout).not.toHaveBeenCalled();
+    expect(ownerBoard.reconcileAfterLogoutFailure).toHaveBeenCalledTimes(1);
+    expect(selectedBoard.reconcileAfterLogoutFailure).toHaveBeenCalledTimes(1);
+    expect(ownerBoard.unlockMutations).toHaveBeenCalledTimes(1);
+    expect(selectedBoard.unlockMutations).toHaveBeenCalledTimes(1);
   });
 
   it("keeps mutations locked until logout recovery reload and UI recovery settle", async () => {
