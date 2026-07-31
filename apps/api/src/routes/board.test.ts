@@ -32,6 +32,7 @@ const routeEnv = {
   ENVIRONMENT: "test",
   SESSION_SECRET: "test-secret"
 };
+const TARGET_USER_ID = "12345678-1234-4abc-8def-123456789012";
 
 describe("board route schemas", () => {
   it("accepts only an optional safe bootstrap sheet id", () => {
@@ -789,7 +790,7 @@ describe("board mutation routes", () => {
   }
 
   it("writes private board mutations for the targeted user", async () => {
-    const { env, batches } = createMutationRouteEnv({ actorId: "admin-1", targetUserId: "user-2" });
+    const { env, batches } = createMutationRouteEnv({ actorId: "admin-1", targetUserId: TARGET_USER_ID });
     const response = await app.request(
       "/api/board/sheets",
       {
@@ -797,7 +798,7 @@ describe("board mutation routes", () => {
         headers: {
           Cookie: "riceark_session=admin-session",
           "Content-Type": "application/json",
-          "X-RiceArk-Admin-Target-User": "user-2"
+          "X-RiceArk-Admin-Target-User": TARGET_USER_ID
         },
         body: JSON.stringify({ name: "Target board" })
       },
@@ -806,7 +807,7 @@ describe("board mutation routes", () => {
 
     expect(response.status).toBe(201);
     const boardUserBindings = batches.flat().flatMap((statement) => statement.values);
-    expect(boardUserBindings).toContain("user-2");
+    expect(boardUserBindings).toContain(TARGET_USER_ID);
     expect(boardUserBindings).not.toContain("admin-1");
   });
 
@@ -2031,13 +2032,13 @@ describe("board owner read routes", () => {
   });
 
   it("loads a private board bootstrap for the targeted user", async () => {
-    const { env, statements } = createBoardReadRouteEnv({ actorId: "admin-1", targetUserId: "user-2" });
+    const { env, statements } = createBoardReadRouteEnv({ actorId: "admin-1", targetUserId: TARGET_USER_ID });
     const response = await app.request(
       "/api/board/bootstrap",
       {
         headers: {
           Cookie: "riceark_session=admin-session",
-          "X-RiceArk-Admin-Target-User": "user-2"
+          "X-RiceArk-Admin-Target-User": TARGET_USER_ID
         }
       },
       env
@@ -2047,7 +2048,7 @@ describe("board owner read routes", () => {
     const boardUserBindings = statements
       .filter((statement) => statement.sql.includes("WITH manifest AS"))
       .flatMap((statement) => statement.values);
-    expect(boardUserBindings).toContain("user-2");
+    expect(boardUserBindings).toContain(TARGET_USER_ID);
     expect(boardUserBindings).not.toContain("admin-1");
   });
 

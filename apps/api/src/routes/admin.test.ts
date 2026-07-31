@@ -28,7 +28,7 @@ const auditLogRows = Array.from({ length: 51 }, (_, index) => ({
   target_display_name: "Rice",
   method: "PATCH",
   action: "board.update",
-  created_at: `2026-07-${String(31 - index).padStart(2, "0")}T12:00:00.000Z`,
+  created_at: new Date(Date.UTC(2026, 6, 31, 12, 0, 0) - index * 1_000).toISOString(),
   email: "rice@example.com",
   provider_user_id: "discord-private-id",
   memo: "private memo",

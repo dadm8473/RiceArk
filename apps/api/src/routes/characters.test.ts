@@ -10,6 +10,8 @@ import {
   characterSearchSchema
 } from "./characters";
 
+const TARGET_USER_ID = "12345678-1234-4abc-8def-123456789012";
+
 describe("characterDisplayNameSchema", () => {
   it("accepts optional compact display names", () => {
     expect(characterDisplayNameSchema.safeParse({ displayName: "냠1" }).success).toBe(true);
@@ -300,9 +302,9 @@ describe("character route targeting", () => {
             async first() {
               if (sql.includes("FROM sessions")) {
                 return { id: "admin-1", display_name: "Admin", avatar_url: null };
-              }
-              if (sql.includes("SELECT id, display_name, avatar_url FROM users WHERE id = ?")) {
-                return { id: "user-2", display_name: "Target", avatar_url: null };
+            }
+            if (sql.includes("SELECT id, display_name, avatar_url FROM users WHERE id = ?")) {
+              return { id: TARGET_USER_ID, display_name: "Target", avatar_url: null };
               }
               if (sql.includes("MAX(sort_order)")) return { max_sort: 0 };
               return null;
@@ -362,7 +364,7 @@ describe("character route targeting", () => {
 
   const targetHeaders = {
     Cookie: "riceark_session=admin-session",
-    "X-RiceArk-Admin-Target-User": "user-2"
+    "X-RiceArk-Admin-Target-User": TARGET_USER_ID
   };
 
   it("writes manual character CRUD data for the targeted user", async () => {
@@ -381,7 +383,7 @@ describe("character route targeting", () => {
     const characterBindings = runs
       .filter((statement) => statement.sql.includes("INSERT INTO characters"))
       .flatMap((statement) => statement.values);
-    expect(characterBindings).toContain("user-2");
+    expect(characterBindings).toContain(TARGET_USER_ID);
     expect(characterBindings).not.toContain("admin-1");
   });
 
@@ -401,7 +403,7 @@ describe("character route targeting", () => {
 
     expect(response.status).toBe(200);
     const characterBindings = batches.flat().flatMap((statement) => statement.values);
-    expect(characterBindings).toContain("user-2");
+    expect(characterBindings).toContain(TARGET_USER_ID);
     expect(characterBindings).not.toContain("admin-1");
   });
 
@@ -417,7 +419,7 @@ describe("character route targeting", () => {
     const refreshBindings = statements
       .filter((statement) => statement.sql.includes("characters.last_refresh_attempt_at"))
       .flatMap((statement) => statement.values);
-    expect(refreshBindings).toContain("user-2");
+    expect(refreshBindings).toContain(TARGET_USER_ID);
     expect(refreshBindings).not.toContain("admin-1");
   });
 

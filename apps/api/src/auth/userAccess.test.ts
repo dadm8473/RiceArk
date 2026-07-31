@@ -7,6 +7,8 @@ type ContextOptions = {
   headers?: Record<string, string>;
 };
 
+const TARGET_USER_ID = "12345678-1234-4abc-8def-123456789012";
+
 function context(options: ContextOptions = {}): AppContext {
   const values = new Map<string, unknown>();
   const headers = new Headers({
@@ -14,7 +16,7 @@ function context(options: ContextOptions = {}): AppContext {
     ...options.headers
   });
   const actor = { id: "admin-1", display_name: "Admin", avatar_url: null };
-  const subject = { id: "user-2", display_name: "User", avatar_url: null };
+  const subject = { id: TARGET_USER_ID, display_name: "User", avatar_url: null };
   let targetReads = 0;
   let adminReads = 0;
   const db = {
@@ -78,12 +80,12 @@ describe("requireUserAccess", () => {
   });
 
   it("resolves an existing target only for an allowlisted actor", async () => {
-    const c = context({ headers: { [ADMIN_TARGET_USER_HEADER]: "user-2" } });
+    const c = context({ headers: { [ADMIN_TARGET_USER_HEADER]: TARGET_USER_ID } });
     const access = await requireUserAccess(c, { allowAdminTarget: true });
 
     expect(access).toMatchObject({
       actor: { id: "admin-1" },
-      subject: { id: "user-2" },
+      subject: { id: TARGET_USER_ID },
       targeted: true
     });
     expect(c.get("adminTargetAccess")).toEqual(access);
@@ -99,9 +101,30 @@ describe("requireUserAccess", () => {
     expect((c as unknown as { targetReads: () => number }).targetReads()).toBe(0);
   });
 
+  it("rejects malformed target syntax for an administrator before target lookup", async () => {
+    const c = context({ headers: { [ADMIN_TARGET_USER_HEADER]: "not-a-uuid" } });
+
+    await expect(requireUserAccess(c, { allowAdminTarget: true })).rejects.toMatchObject({
+      status: 400,
+      code: "invalid_admin_target"
+    });
+    expect((c as unknown as { adminReads: () => number }).adminReads()).toBe(1);
+    expect((c as unknown as { targetReads: () => number }).targetReads()).toBe(0);
+  });
+
+  it("keeps malformed target syntax private from non-administrators", async () => {
+    const c = nonAdminContext({ [ADMIN_TARGET_USER_HEADER]: "not-a-uuid" });
+
+    await expect(requireUserAccess(c, { allowAdminTarget: true })).rejects.toMatchObject({
+      status: 403,
+      code: "forbidden"
+    });
+    expect((c as unknown as { targetReads: () => number }).targetReads()).toBe(0);
+  });
+
   it("rejects the target header on a route that did not opt in", async () => {
     await expect(
-      requireUserAccess(context({ headers: { [ADMIN_TARGET_USER_HEADER]: "user-2" } }), {
+      requireUserAccess(context({ headers: { [ADMIN_TARGET_USER_HEADER]: TARGET_USER_ID } }), {
         allowAdminTarget: false
       })
     ).rejects.toMatchObject({ status: 403, code: "admin_target_not_allowed" });

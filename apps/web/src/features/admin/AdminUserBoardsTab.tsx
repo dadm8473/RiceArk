@@ -18,6 +18,7 @@ import {
 } from "../board/mutationBarrier";
 import { useBoard } from "../board/useBoard";
 import type {
+  AdminBoardDurableControlsChange,
   AdminBoardNavigationGuard,
   AdminBoardNavigationGuardChange,
   AdminUserPage,
@@ -29,6 +30,8 @@ export const ADMIN_USER_SEARCH_DEBOUNCE_MS = 300;
 type AdminUserBoardsTabProps = {
   selectedUserId: string | null;
   selectedSheetId: string | null;
+  writeLocked: boolean;
+  onDurableControlsChange: AdminBoardDurableControlsChange;
   onNavigationGuardChange: AdminBoardNavigationGuardChange;
   onUserSelected: (userId: string | null) => void;
   onSheetSelected: (sheetId: string) => void;
@@ -432,6 +435,8 @@ export function SelectedUserLookupState({
 function SelectedUserBoard({
   selectedUser,
   selectedSheetId,
+  writeLocked,
+  onDurableControlsChange,
   onNavigationGuardChange,
   onUserSelected,
   onSheetSelected,
@@ -439,6 +444,8 @@ function SelectedUserBoard({
 }: {
   selectedUser: AdminUserSummary;
   selectedSheetId: string | null;
+  writeLocked: boolean;
+  onDurableControlsChange: AdminBoardDurableControlsChange;
   onNavigationGuardChange: AdminBoardNavigationGuardChange;
   onUserSelected: (userId: string | null) => void;
   onSheetSelected: (sheetId: string) => void;
@@ -493,6 +500,30 @@ function SelectedUserBoard({
   }
   const navigationController = navigationControllerRef.current;
 
+  const durableControls = useMemo(() => ({
+    waitForMutations: mutationBarrier.lockAndDrain,
+    flushPendingWrites: board.flushPendingWrites,
+    retryPendingWrites: board.retryPendingWrites,
+    discardPendingWrites: board.discardPendingWrites,
+    reconcileAfterLogoutFailure: board.reconcileAfterLogoutFailure,
+    unlockMutations: mutationBarrier.unlock,
+    hasPendingWrites: board.hasPendingWrites,
+    pendingWriteError: board.pendingWriteError
+  }), [
+    board.discardPendingWrites,
+    board.flushPendingWrites,
+    board.hasPendingWrites,
+    board.pendingWriteError,
+    board.reconcileAfterLogoutFailure,
+    board.retryPendingWrites,
+    mutationBarrier
+  ]);
+
+  useEffect(() => {
+    onDurableControlsChange(durableControls);
+    return () => onDurableControlsChange(null);
+  }, [durableControls, onDurableControlsChange]);
+
   useEffect(() => {
     onNavigationGuardChange(navigationController.navigationGuard);
     return () => {
@@ -514,7 +545,7 @@ function SelectedUserBoard({
     <section className="admin-selected-user-board">
       <SelectedUserContext
         user={selectedUser}
-        busy={transitionPending || transitionBlocked}
+        busy={writeLocked || transitionPending || transitionBlocked}
         onChooseAnother={() => onUserSelected(null)}
       />
 
@@ -569,7 +600,7 @@ function SelectedUserBoard({
             onBoardSheetStale={board.markSheetStale}
             onSheetSelected={handleSheetSelected}
             runMutation={mutationBarrier.run}
-            writeLocked={transitionPending || transitionBlocked}
+            writeLocked={writeLocked || transitionPending || transitionBlocked}
           />
         </div>
       ) : null}
@@ -580,6 +611,8 @@ function SelectedUserBoard({
 export function AdminUserBoardsTab({
   selectedUserId,
   selectedSheetId,
+  writeLocked,
+  onDurableControlsChange,
   onNavigationGuardChange,
   onUserSelected,
   onSheetSelected,
@@ -660,6 +693,8 @@ export function AdminUserBoardsTab({
       <SelectedUserBoard
         selectedUser={selectedUser}
         selectedSheetId={selectedSheetId}
+        writeLocked={writeLocked}
+        onDurableControlsChange={onDurableControlsChange}
         onNavigationGuardChange={onNavigationGuardChange}
         onUserSelected={onUserSelected}
         onSheetSelected={onSheetSelected}

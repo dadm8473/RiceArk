@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { z } from "zod";
 import { type AdminAuditAction } from "../admin/userBoardManagement";
 import type { AppEnv, Env } from "../env";
 import { ApiError } from "../http/errors";
@@ -41,6 +42,9 @@ export async function requireUserAccess(
   }
   if (!(await isAdminUser(c.env, actor.id))) {
     throw new ApiError(403, "forbidden", "Admin access required");
+  }
+  if (!z.string().uuid().safeParse(targetUserId).success) {
+    throw new ApiError(400, "invalid_admin_target", "Administrator target must be a UUID");
   }
 
   const subject = await findUserById(c.env, targetUserId);

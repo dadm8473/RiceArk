@@ -52,6 +52,19 @@ type AuditLogRow = {
 };
 
 type Cursor = [createdAt: string, id: string];
+const SQLITE_UTC_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+
+function normalizeAdminTimestamp(value: string): string {
+  const explicitTimestamp = SQLITE_UTC_TIMESTAMP_PATTERN.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value;
+  const timestamp = new Date(explicitTimestamp);
+  if (Number.isNaN(timestamp.getTime())) {
+    throw new Error("Invalid administrator timestamp");
+  }
+  return timestamp.toISOString();
+}
 
 function decodeCursor(cursor: string | null | undefined): Cursor | null {
   if (!cursor) return null;
@@ -80,8 +93,10 @@ function userSummary(row: UserRow): AdminUserSummary {
     id: row.id,
     displayName: row.display_name,
     provider: row.provider,
-    createdAt: row.created_at,
+    createdAt: normalizeAdminTimestamp(row.created_at),
     recentActivityAt: row.recent_activity_at
+      ? normalizeAdminTimestamp(row.recent_activity_at)
+      : null
   };
 }
 
@@ -96,34 +111,38 @@ const USER_SUMMARY_COLUMNS = `
     LIMIT 1
   ), 'unknown') AS provider,
   users.created_at,
-  (
-    SELECT MAX(activity_at)
-    FROM (
-      SELECT sessions.created_at AS activity_at
+  NULLIF(MAX(
+    COALESCE((
+      SELECT MAX(sessions.created_at)
       FROM sessions
       WHERE sessions.user_id = users.id
-      UNION ALL
-      SELECT completions.updated_at AS activity_at
+    ), ''),
+    COALESCE((
+      SELECT MAX(completions.updated_at)
       FROM completions
       WHERE completions.user_id = users.id
-      UNION ALL
-      SELECT board_cell_completions.updated_at AS activity_at
+    ), ''),
+    COALESCE((
+      SELECT MAX(board_cell_completions.updated_at)
       FROM board_cell_completions
       WHERE board_cell_completions.user_id = users.id
-      UNION ALL
-      SELECT sheets.updated_at AS activity_at
+    ), ''),
+    COALESCE((
+      SELECT MAX(sheets.updated_at)
       FROM sheets
       WHERE sheets.user_id = users.id
-      UNION ALL
-      SELECT characters.updated_at AS activity_at
+    ), ''),
+    COALESCE((
+      SELECT MAX(characters.updated_at)
       FROM characters
       WHERE characters.user_id = users.id
-      UNION ALL
-      SELECT tasks.updated_at AS activity_at
+    ), ''),
+    COALESCE((
+      SELECT MAX(tasks.updated_at)
       FROM tasks
       WHERE tasks.user_id = users.id
-    )
-  ) AS recent_activity_at`;
+    ), '')
+  ), '') AS recent_activity_at`;
 
 export async function recordAdminAuditLog(
   env: Env,
@@ -229,7 +248,7 @@ export async function listAdminAuditLogs(env: Env, cursorValue: string | null = 
       targetDisplayName: row.target_display_name,
       method: row.method,
       action: row.action,
-      createdAt: row.created_at
+      createdAt: normalizeAdminTimestamp(row.created_at)
     })),
     nextCursor: rows.length > AUDIT_PAGE_SIZE && finalRow ? encodeCursor([finalRow.created_at, finalRow.id]) : null
   };

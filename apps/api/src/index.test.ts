@@ -100,6 +100,7 @@ describe("api shell", () => {
 });
 
 const auditEntries: unknown[][] = [];
+const TARGET_USER_ID = "12345678-1234-4abc-8def-123456789012";
 
 describe("administrator target audit middleware", () => {
   it("records successful targeted direct table settings mutations without request content", async () => {
@@ -119,7 +120,7 @@ describe("administrator target audit middleware", () => {
                   return { id: "admin-1", display_name: "Admin", avatar_url: null };
                 }
                 if (sql.includes("FROM users")) {
-                  return { id: "user-2", display_name: "User", avatar_url: null };
+                  return { id: TARGET_USER_ID, display_name: "User", avatar_url: null };
                 }
                 return null;
               },
@@ -147,7 +148,7 @@ describe("administrator target audit middleware", () => {
         method: "PATCH",
         headers: {
           Cookie: "riceark_session=admin-session",
-          [ADMIN_TARGET_USER_HEADER]: "user-2"
+          [ADMIN_TARGET_USER_HEADER]: TARGET_USER_ID
         }
       },
       {
@@ -159,7 +160,7 @@ describe("administrator target audit middleware", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ actorId: "admin-1", subjectId: "user-2" });
-    expect(auditEntries).toEqual([[expect.any(String), "admin-1", "user-2", "PATCH", "board.update"]]);
+    expect(await res.json()).toEqual({ actorId: "admin-1", subjectId: TARGET_USER_ID });
+    expect(auditEntries).toEqual([[expect.any(String), "admin-1", TARGET_USER_ID, "PATCH", "board.update"]]);
   });
 });

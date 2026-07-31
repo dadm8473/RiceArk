@@ -8,8 +8,9 @@ import {
 } from "./userBoardManagement";
 
 type CapturedStatement = { sql: string; values: unknown[] };
+type CapturedResult = Record<string, unknown> | Array<Record<string, unknown>> | null;
 
-function createCapturingEnv(rows: Array<Record<string, unknown> | null> = []): {
+function createCapturingEnv(rows: CapturedResult[] = []): {
   env: Env;
   statements: CapturedStatement[];
 } {
@@ -19,9 +20,16 @@ function createCapturingEnv(rows: Array<Record<string, unknown> | null> = []): {
     prepare(sql: string) {
       const statement: CapturedStatement = { sql, values: [] };
       statements.push(statement);
-      const result = () => ({
-        results: rows[resultIndex++] === null ? [] : rows[resultIndex - 1] ? [rows[resultIndex - 1]] : []
-      });
+      const result = () => {
+        const next = rows[resultIndex++];
+        return {
+          results: next === null || next === undefined
+            ? []
+            : Array.isArray(next)
+              ? next
+              : [next]
+        };
+      };
       return {
         bind: (...values: unknown[]) => {
           statement.values = values;
@@ -92,8 +100,8 @@ describe("administrator user board management data access", () => {
           id: "user-1",
           displayName: "Rice Player",
           provider: "google",
-          createdAt: "2026-07-01 00:00:00",
-          recentActivityAt: "2026-07-02 00:00:00"
+          createdAt: "2026-07-01T00:00:00.000Z",
+          recentActivityAt: "2026-07-02T00:00:00.000Z"
         }
       ],
       nextCursor: null
@@ -119,7 +127,7 @@ describe("administrator user board management data access", () => {
       id: "user-1",
       displayName: "Rice Player",
       provider: "discord",
-      createdAt: "2026-07-01 00:00:00",
+      createdAt: "2026-07-01T00:00:00.000Z",
       recentActivityAt: null
     });
     expect(statements[0]?.values).toEqual(["user-1"]);
@@ -153,7 +161,7 @@ describe("administrator user board management data access", () => {
           targetDisplayName: "Rice Player",
           method: "PATCH",
           action: "board.completions.update",
-          createdAt: "2026-07-02 00:00:00"
+          createdAt: "2026-07-02T00:00:00.000Z"
         }
       ],
       nextCursor: null
@@ -161,5 +169,93 @@ describe("administrator user board management data access", () => {
     expect(statements[0]?.sql).toContain("ORDER BY audit.created_at DESC, audit.id DESC");
     expect(statements[0]?.sql).toContain("audit.created_at < ?1");
     expect(statements[0]?.sql).toContain("audit.id < ?2");
+  });
+
+  it("trims 31 users to 30 and decodes the returned cursor for page two", async () => {
+    const firstPageRows = Array.from({ length: 31 }, (_, index) => {
+      const day = String(31 - index).padStart(2, "0");
+      return {
+        id: `user-${day}`,
+        display_name: `User ${day}`,
+        provider: "discord",
+        created_at: `2026-07-${day} 00:00:00`,
+        recent_activity_at: null
+      };
+    });
+    const { env, statements } = createCapturingEnv([
+      firstPageRows,
+      [firstPageRows[30] as Record<string, unknown>]
+    ]);
+
+    const firstPage = await listAdminUsers(env, { search: "", cursor: null });
+    expect(firstPage.users).toHaveLength(30);
+    expect(firstPage.users.at(-1)).toMatchObject({
+      id: "user-02",
+      createdAt: "2026-07-02T00:00:00.000Z"
+    });
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+    const secondPage = await listAdminUsers(env, {
+      search: "",
+      cursor: firstPage.nextCursor
+    });
+    expect(statements[1]?.values).toEqual([
+      "",
+      "2026-07-02 00:00:00",
+      "user-02"
+    ]);
+    expect(secondPage).toEqual({
+      users: [
+        {
+          id: "user-01",
+          displayName: "User 01",
+          provider: "discord",
+          createdAt: "2026-07-01T00:00:00.000Z",
+          recentActivityAt: null
+        }
+      ],
+      nextCursor: null
+    });
+  });
+
+  it("normalizes SQLite UTC and offset ISO timestamps at the API boundary", async () => {
+    const previousTimezone = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      const { env } = createCapturingEnv([
+        {
+          id: "user-1",
+          display_name: "Rice Player",
+          provider: "google",
+          created_at: "2026-07-01 12:00:00",
+          recent_activity_at: "2026-07-02T03:00:00+09:00"
+        },
+        {
+          id: "audit-1",
+          admin_user_id: "admin-1",
+          admin_display_name: "Admin",
+          target_user_id: "user-1",
+          target_display_name: "Rice Player",
+          method: "PATCH",
+          action: "board.completions.update",
+          created_at: "2026-07-03 01:02:03"
+        }
+      ]);
+
+      const users = await listAdminUsers(env, { search: "", cursor: null });
+      const audit = await listAdminAuditLogs(env);
+
+      expect(users.users[0]).toMatchObject({
+        createdAt: "2026-07-01T12:00:00.000Z",
+        recentActivityAt: "2026-07-01T18:00:00.000Z"
+      });
+      expect(audit.logs[0]?.createdAt).toBe("2026-07-03T01:02:03.000Z");
+    } finally {
+      if (previousTimezone === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = previousTimezone;
+      }
+    }
   });
 });

@@ -120,6 +120,21 @@ export type AdminBoardNavigationGuardChange = (
   guard: AdminBoardNavigationGuard | null
 ) => void;
 
+export type AdminBoardDurableControls = {
+  waitForMutations: () => Promise<void>;
+  flushPendingWrites: () => Promise<void>;
+  retryPendingWrites: () => void;
+  discardPendingWrites: () => void;
+  reconcileAfterLogoutFailure: () => Promise<unknown>;
+  unlockMutations: () => void;
+  hasPendingWrites: boolean;
+  pendingWriteError: string | null;
+};
+
+export type AdminBoardDurableControlsChange = (
+  controls: AdminBoardDurableControls | null
+) => void;
+
 export type AdminUserSummary = {
   id: string;
   displayName: string;

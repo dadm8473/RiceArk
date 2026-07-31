@@ -11,6 +11,7 @@ import {
   getDurableLogoutFailureState,
   getDirectSharedRiceBinHistoryUrls,
   getOwnerBoardInteractionProps,
+  getProfileBoardWriteState,
   getSharedRiceBinInteractionProps,
   getStoredAppTheme,
   getAppThemeColor,
@@ -134,6 +135,78 @@ function installBrowserWindow(href: string) {
     removeEventListener: vi.fn()
   });
   return { addEventListener, pushState, replaceState };
+}
+
+function installBrowserHistoryStack(urls: string[]) {
+  const entries: Array<{ state: unknown; url: URL }> = urls.map((href) => ({
+    state: { ricearkRoute: true },
+    url: new URL(href)
+  }));
+  let index = entries.length - 1;
+  const listeners = new Set<() => void>();
+  const location = {
+    assign: vi.fn(),
+    hash: "",
+    href: "",
+    pathname: "",
+    search: ""
+  };
+  const syncLocation = () => {
+    const current = entries[index];
+    if (!current) throw new Error("History stack has no current entry");
+    location.hash = current.url.hash;
+    location.href = current.url.href;
+    location.pathname = current.url.pathname;
+    location.search = current.url.search;
+  };
+  const navigate = (nextIndex: number) => {
+    if (nextIndex < 0 || nextIndex >= entries.length || nextIndex === index) return;
+    index = nextIndex;
+    syncLocation();
+    for (const listener of listeners) listener();
+  };
+  const pushState = vi.fn((state: unknown, _title: string, href: string | URL | null | undefined) => {
+    const url = new URL(String(href ?? location.href), location.href);
+    entries.splice(index + 1, entries.length, { state, url });
+    index += 1;
+    syncLocation();
+  });
+  const replaceState = vi.fn((state: unknown, _title: string, href: string | URL | null | undefined) => {
+    entries[index] = {
+      state,
+      url: new URL(String(href ?? location.href), location.href)
+    };
+    syncLocation();
+  });
+  const history = {
+    back: vi.fn(() => navigate(index - 1)),
+    forward: vi.fn(() => navigate(index + 1)),
+    pushState,
+    replaceState,
+    get state() {
+      return entries[index]?.state ?? null;
+    }
+  };
+  syncLocation();
+  vi.stubGlobal("window", {
+    addEventListener: vi.fn((event: string, callback: () => void) => {
+      if (event === "popstate") listeners.add(callback);
+    }),
+    history,
+    localStorage: {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn()
+    },
+    location,
+    removeEventListener: vi.fn((event: string, callback: () => void) => {
+      if (event === "popstate") listeners.delete(callback);
+    })
+  });
+  return {
+    currentUrl: () => `${location.pathname}${location.search}${location.hash}`,
+    entries: () => entries.map((entry) => `${entry.url.pathname}${entry.url.search}${entry.url.hash}`),
+    history
+  };
 }
 
 function runLatestEffect() {
@@ -675,6 +748,16 @@ describe("App", () => {
     });
   });
 
+  it("includes the active selected board in the profile write status", () => {
+    expect(getProfileBoardWriteState(
+      { hasPendingWrites: false, pendingWriteError: null },
+      { hasPendingWrites: true, pendingWriteError: "Target save failed" }
+    )).toEqual({
+      hasPendingWrites: true,
+      pendingWriteError: "Target save failed"
+    });
+  });
+
   it("wires the live barrier runner into the rendered shared workspace", () => {
     installBrowserWindow("https://riceark.pages.dev/?view=shared");
     hooks.useSession.mockReturnValue({
@@ -1051,10 +1134,10 @@ describe("App", () => {
     });
   });
 
-  it("restores the selected user route when a guarded popstate change is canceled", async () => {
-    const browser = installBrowserWindow(
-      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a"
-    );
+  it("preserves the destination through canceled Back, retry, and Forward navigation", async () => {
+    const routeB = "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-b";
+    const routeA = "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-a";
+    const browser = installBrowserHistoryStack([routeB, routeA]);
     hooks.useSession.mockReturnValue({
       status: "authenticated",
       user: { id: "user-admin", displayName: "RiceArk Admin", avatarUrl: null, isAdmin: true },
@@ -1067,31 +1150,35 @@ describe("App", () => {
 
     renderToStaticMarkup(createElement(App));
     const dashboardProps = hooks.AdminDashboard.mock.lastCall?.[0] as GuardedAdminDashboardProps;
-    dashboardProps.onNavigationGuardChange?.(
-      createTestAdminBoardNavigationGuard(async () => false)
-    );
+    const decisions = [false, true, true];
+    dashboardProps.onNavigationGuardChange?.(createTestAdminBoardNavigationGuard(
+      async () => decisions.shift() ?? true
+    ));
     for (const effect of hooks.effects) effect.callback();
-    const popstate = browser.addEventListener.mock.calls.find(([event]) => event === "popstate")?.[1];
-    const next = new URL(
-      "https://riceark.pages.dev/?view=admin&adminTab=users&adminUser=user-b"
-    );
-    Object.assign(window.location, {
-      hash: next.hash,
-      href: next.href,
-      pathname: next.pathname,
-      search: next.search
-    });
 
-    popstate?.();
+    browser.history.back();
 
     await vi.waitFor(() => {
-      expect(browser.replaceState).toHaveBeenCalledWith(
-        expect.any(Object),
-        "",
-        "/?view=admin&adminTab=users&adminUser=user-a"
-      );
+      expect(browser.currentUrl()).toBe("/?view=admin&adminTab=users&adminUser=user-a");
     });
+    expect(browser.entries()).toEqual([
+      "/?view=admin&adminTab=users&adminUser=user-b",
+      "/?view=admin&adminTab=users&adminUser=user-a"
+    ]);
     expect(hooks.stateUpdates).not.toContain("user-b");
+
+    browser.history.back();
+    await vi.waitFor(() => {
+      expect(hooks.stateUpdates).toContain("user-b");
+    });
+    expect(browser.currentUrl()).toBe("/?view=admin&adminTab=users&adminUser=user-b");
+
+    hooks.stateUpdates.length = 0;
+    browser.history.forward();
+    await vi.waitFor(() => {
+      expect(hooks.stateUpdates).toContain("user-a");
+    });
+    expect(browser.currentUrl()).toBe("/?view=admin&adminTab=users&adminUser=user-a");
   });
 
   it("keeps user A mounted when Forward supersedes a delayed guarded Back to user B", async () => {

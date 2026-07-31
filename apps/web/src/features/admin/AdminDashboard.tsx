@@ -1,4 +1,9 @@
-import { useEffect, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent
+} from "react";
 import { RefreshCw } from "lucide-react";
 import { ApiClientError, apiGet } from "../../api/client";
 import { AdminAuditTab } from "./AdminAuditTab";
@@ -9,6 +14,7 @@ import { OverviewTab } from "./OverviewTab";
 import { UsageTab } from "./UsageTab";
 import { formatGeneratedAt } from "./format";
 import type {
+  AdminBoardDurableControlsChange,
   AdminBoardNavigationGuardChange,
   AdminHealth,
   AdminSummary,
@@ -26,6 +32,19 @@ const TAB_LABELS: Array<{ key: AdminTab; label: string }> = [
   { key: "audit", label: "관리 기록" }
 ];
 
+export function getAdminTabForKey(
+  activeTab: AdminTab,
+  key: string
+): AdminTab | null {
+  const activeIndex = TAB_LABELS.findIndex((tab) => tab.key === activeTab);
+  if (key === "Home") return TAB_LABELS[0]?.key ?? null;
+  if (key === "End") return TAB_LABELS.at(-1)?.key ?? null;
+  if (key !== "ArrowLeft" && key !== "ArrowRight") return null;
+  const offset = key === "ArrowRight" ? 1 : -1;
+  const nextIndex = (activeIndex + offset + TAB_LABELS.length) % TAB_LABELS.length;
+  return TAB_LABELS[nextIndex]?.key ?? null;
+}
+
 type AdminDashboardContentProps = {
   summary: AdminSummary;
   health: AdminHealth | null;
@@ -36,6 +55,8 @@ type AdminDashboardContentProps = {
   onTabSelected?: (tab: AdminTab) => void;
   selectedUserId?: string | null;
   selectedSheetId?: string | null;
+  writeLocked?: boolean;
+  onDurableControlsChange?: AdminBoardDurableControlsChange;
   onNavigationGuardChange?: AdminBoardNavigationGuardChange;
   onUserSelected?: (userId: string | null) => void;
   onSheetSelected?: (sheetId: string) => void;
@@ -52,11 +73,14 @@ export function AdminDashboardContent({
   onTabSelected = () => undefined,
   selectedUserId = null,
   selectedSheetId = null,
+  writeLocked = false,
+  onDurableControlsChange = () => undefined,
   onNavigationGuardChange = () => undefined,
   onUserSelected = () => undefined,
   onSheetSelected = () => undefined,
   onReplaceSheetId = () => undefined
 }: AdminDashboardContentProps) {
+  const tabRefs = useRef<Partial<Record<AdminTab, HTMLButtonElement | null>>>({});
   const headerDescription =
     activeTab === "users"
       ? "승인된 사용자 메타데이터와 보드 관리 기능을 표시합니다."
@@ -83,32 +107,57 @@ export function AdminDashboardContent({
         {TAB_LABELS.map((tab) => (
           <button
             key={tab.key}
+            ref={(node) => {
+              tabRefs.current[tab.key] = node;
+            }}
+            id={`admin-tab-${tab.key}`}
             type="button"
             role="tab"
             aria-selected={activeTab === tab.key}
+            aria-controls={`admin-panel-${tab.key}`}
+            tabIndex={activeTab === tab.key ? 0 : -1}
             className={`admin-tab${activeTab === tab.key ? " active" : ""}`}
             onClick={() => onTabSelected(tab.key)}
+            onKeyDown={(event: KeyboardEvent<HTMLButtonElement>) => {
+              const nextTab = getAdminTabForKey(tab.key, event.key);
+              if (!nextTab) return;
+              event.preventDefault();
+              onTabSelected(nextTab);
+              tabRefs.current[nextTab]?.focus();
+            }}
           >
             {tab.label}
           </button>
         ))}
       </div>
 
-      {activeTab === "overview" ? <OverviewTab summary={summary} health={health} /> : null}
-      {activeTab === "usage" ? <UsageTab summary={summary} /> : null}
-      {activeTab === "health" ? <HealthTab health={health} healthError={healthError} /> : null}
-      {activeTab === "data" ? <DataTab summary={summary} /> : null}
-      {activeTab === "users" ? (
-        <AdminUserBoardsTab
-          selectedUserId={selectedUserId}
-          selectedSheetId={selectedSheetId}
-          onNavigationGuardChange={onNavigationGuardChange}
-          onUserSelected={onUserSelected}
-          onSheetSelected={onSheetSelected}
-          onReplaceSheetId={onReplaceSheetId}
-        />
-      ) : null}
-      {activeTab === "audit" ? <AdminAuditTab /> : null}
+      {TAB_LABELS.map((tab) => (
+        <div
+          key={tab.key}
+          id={`admin-panel-${tab.key}`}
+          role="tabpanel"
+          aria-labelledby={`admin-tab-${tab.key}`}
+          hidden={activeTab !== tab.key}
+        >
+          {activeTab === tab.key && tab.key === "overview" ? <OverviewTab summary={summary} health={health} /> : null}
+          {activeTab === tab.key && tab.key === "usage" ? <UsageTab summary={summary} /> : null}
+          {activeTab === tab.key && tab.key === "health" ? <HealthTab health={health} healthError={healthError} /> : null}
+          {activeTab === tab.key && tab.key === "data" ? <DataTab summary={summary} /> : null}
+          {activeTab === tab.key && tab.key === "users" ? (
+            <AdminUserBoardsTab
+              selectedUserId={selectedUserId}
+              selectedSheetId={selectedSheetId}
+              writeLocked={writeLocked}
+              onDurableControlsChange={onDurableControlsChange}
+              onNavigationGuardChange={onNavigationGuardChange}
+              onUserSelected={onUserSelected}
+              onSheetSelected={onSheetSelected}
+              onReplaceSheetId={onReplaceSheetId}
+            />
+          ) : null}
+          {activeTab === tab.key && tab.key === "audit" ? <AdminAuditTab /> : null}
+        </div>
+      ))}
     </div>
   );
 }
@@ -117,6 +166,8 @@ export type AdminDashboardProps = {
   activeTab: AdminTab | null;
   selectedUserId: string | null;
   selectedSheetId: string | null;
+  writeLocked: boolean;
+  onDurableControlsChange: AdminBoardDurableControlsChange;
   onNavigationGuardChange: AdminBoardNavigationGuardChange;
   onTabSelected: (tab: AdminTab) => void;
   onUserSelected: (userId: string | null) => void;
@@ -134,6 +185,8 @@ export function AdminDashboard({
   activeTab,
   selectedUserId,
   selectedSheetId,
+  writeLocked,
+  onDurableControlsChange,
   onNavigationGuardChange,
   onTabSelected,
   onUserSelected,
@@ -185,6 +238,8 @@ export function AdminDashboard({
         onTabSelected={onTabSelected}
         selectedUserId={selectedUserId}
         selectedSheetId={selectedSheetId}
+        writeLocked={writeLocked}
+        onDurableControlsChange={onDurableControlsChange}
         onNavigationGuardChange={onNavigationGuardChange}
         onUserSelected={onUserSelected}
         onSheetSelected={onSheetSelected}

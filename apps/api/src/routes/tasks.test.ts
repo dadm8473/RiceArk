@@ -11,6 +11,7 @@ const taskRouteEnv = {
   ENVIRONMENT: "test",
   SESSION_SECRET: "test-secret"
 };
+const TARGET_USER_ID = "12345678-1234-4abc-8def-123456789012";
 
 interface CapturedTaskStatement {
   sql: string;
@@ -107,7 +108,7 @@ function createTargetedTaskRouteEnv() {
               return { id: "admin-1", display_name: "Admin", avatar_url: null };
             }
             if (sql.includes("SELECT id, display_name, avatar_url FROM users WHERE id = ?")) {
-              return { id: "user-2", display_name: "Target", avatar_url: null };
+              return { id: TARGET_USER_ID, display_name: "Target", avatar_url: null };
             }
             if (sql.includes("MAX(sort_order)")) return { max_sort: 0 };
             return null;
@@ -265,7 +266,7 @@ describe("task route targeting", () => {
         headers: {
           Cookie: "riceark_session=admin-session",
           "Content-Type": "application/json",
-          "X-RiceArk-Admin-Target-User": "user-2"
+          "X-RiceArk-Admin-Target-User": TARGET_USER_ID
         },
         body: JSON.stringify({ name: "Target task", resetType: "daily" })
       },
@@ -276,7 +277,7 @@ describe("task route targeting", () => {
     const taskUserBindings = runs
       .filter((statement) => statement.sql.includes("INSERT INTO tasks"))
       .flatMap((statement) => statement.values);
-    expect(taskUserBindings).toContain("user-2");
+    expect(taskUserBindings).toContain(TARGET_USER_ID);
     expect(taskUserBindings).not.toContain("admin-1");
   });
 });

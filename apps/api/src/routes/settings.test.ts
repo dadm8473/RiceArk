@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import app from "../index";
 import { settingsPatchSchema } from "./settings";
 
+const TARGET_USER_ID = "12345678-1234-4abc-8def-123456789012";
+
 function createTargetedUserRouteEnv() {
   const statements: Array<{ sql: string; values: unknown[] }> = [];
   const runs: Array<{ sql: string; values: unknown[] }> = [];
@@ -25,7 +27,7 @@ function createTargetedUserRouteEnv() {
               return { id: "admin-1", display_name: "Admin", avatar_url: null };
             }
             if (sql.includes("SELECT id, display_name, avatar_url FROM users WHERE id = ?")) {
-              return { id: "user-2", display_name: "Target", avatar_url: null };
+              return { id: TARGET_USER_ID, display_name: "Target", avatar_url: null };
             }
             return null;
           },
@@ -86,7 +88,7 @@ describe("settingsPatchSchema", () => {
 describe("settings route targeting", () => {
   const targetHeaders = {
     Cookie: "riceark_session=admin-session",
-    "X-RiceArk-Admin-Target-User": "user-2"
+    "X-RiceArk-Admin-Target-User": TARGET_USER_ID
   };
 
   it("updates settings for the targeted user", async () => {
@@ -105,7 +107,7 @@ describe("settings route targeting", () => {
     const settingsBindings = runs
       .filter((statement) => statement.sql.includes("INSERT INTO user_settings"))
       .flatMap((statement) => statement.values);
-    expect(settingsBindings).toContain("user-2");
+    expect(settingsBindings).toContain(TARGET_USER_ID);
     expect(settingsBindings).not.toContain("admin-1");
   });
 
@@ -126,12 +128,12 @@ describe("settings route targeting", () => {
       .filter((statement) => statement.sql.includes("UPDATE users SET display_name"))
       .flatMap((statement) => statement.values);
     expect(profileBindings).toContain("admin-1");
-    expect(profileBindings).not.toContain("user-2");
+    expect(profileBindings).not.toContain(TARGET_USER_ID);
     const adminCheckBindings = statements
       .filter((statement) => statement.sql.includes("FROM oauth_accounts"))
       .flatMap((statement) => statement.values);
     expect(adminCheckBindings).toContain("admin-1");
-    expect(adminCheckBindings).not.toContain("user-2");
+    expect(adminCheckBindings).not.toContain(TARGET_USER_ID);
     expect(statements.some((statement) => statement.sql.includes("FROM users WHERE id = ?"))).toBe(false);
   });
 });

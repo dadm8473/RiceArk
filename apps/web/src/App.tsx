@@ -3,6 +3,7 @@ import { Activity, Calculator, FileText } from "lucide-react";
 import { apiPatch, apiPostNoContent } from "./api/client";
 import { AdminDashboard } from "./features/admin/AdminDashboard";
 import type {
+  AdminBoardDurableControls,
   AdminBoardNavigationGuard,
   AdminBoardNavigationGuardChange,
   AdminTab
@@ -127,6 +128,22 @@ export function getSharedRiceBinInteractionProps(
   return {
     runMutation,
     writeLocked: logoutPending
+  };
+}
+
+export function getProfileBoardWriteState(
+  ownerBoard: { hasPendingWrites: boolean; pendingWriteError: string | null },
+  selectedAdminBoard: { hasPendingWrites: boolean; pendingWriteError: string | null } | null
+): { hasPendingWrites: boolean; pendingWriteError: string | null } {
+  const errors = [
+    ownerBoard.pendingWriteError,
+    selectedAdminBoard?.pendingWriteError ?? null
+  ].filter((error): error is string => error !== null);
+  return {
+    hasPendingWrites:
+      ownerBoard.hasPendingWrites ||
+      (selectedAdminBoard?.hasPendingWrites ?? false),
+    pendingWriteError: [...new Set(errors)].join(" ") || null
   };
 }
 
@@ -366,7 +383,7 @@ export function App() {
       if (!restoreRoute || typeof window === "undefined") return;
       pendingGuardedPopstateRouteRef.current = null;
       const currentUrl = getAppRouteUrl(restoreRoute, window.location.href);
-      window.history.replaceState(
+      window.history.pushState(
         getHistoryState(window.history.state),
         "",
         currentUrl
@@ -426,6 +443,20 @@ export function App() {
     boardMutationBarrierRef.current = createBoardMutationBarrier();
   }
   const boardMutationBarrier = boardMutationBarrierRef.current;
+  const selectedAdminBoardControlsRef = useRef<AdminBoardDurableControls | null>(null);
+  const [selectedAdminBoardWriteState, setSelectedAdminBoardWriteState] = useState<{
+    hasPendingWrites: boolean;
+    pendingWriteError: string | null;
+  } | null>(null);
+  const handleAdminBoardDurableControlsChange = useCallback((controls: AdminBoardDurableControls | null) => {
+    selectedAdminBoardControlsRef.current = controls;
+    setSelectedAdminBoardWriteState(controls
+      ? {
+          hasPendingWrites: controls.hasPendingWrites,
+          pendingWriteError: controls.pendingWriteError
+        }
+      : null);
+  }, []);
   const [authMenuOpen, setAuthMenuOpen] = useState(false);
   const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [patchNotesOpen, setPatchNotesOpen] = useState(false);
@@ -475,7 +506,11 @@ export function App() {
   }, [activeView, isAdmin, session.status]);
 
   const attemptLogout = async (mode: DurableLogoutMode) => {
-    const mutationDrain = boardMutationBarrier.lockAndDrain();
+    const selectedAdminBoardControls = selectedAdminBoardControlsRef.current;
+    const mutationDrain = Promise.all([
+      boardMutationBarrier.lockAndDrain(),
+      selectedAdminBoardControls?.waitForMutations() ?? Promise.resolve()
+    ]).then(() => undefined);
     setLogoutPending(true);
     setAuthMenuOpen(false);
     setLogoutBlocked(false);
@@ -484,20 +519,42 @@ export function App() {
       await runDurableLogout({
         mode,
         waitForMutations: () => mutationDrain,
-        flushPendingWrites: board.flushPendingWrites,
-        retryPendingWrites: board.retryPendingWrites,
-        discardPendingWrites: board.discardPendingWrites,
+        flushPendingWrites: async () => {
+          await Promise.all([
+            board.flushPendingWrites(),
+            selectedAdminBoardControls?.flushPendingWrites() ?? Promise.resolve()
+          ]);
+        },
+        retryPendingWrites: () => {
+          board.retryPendingWrites();
+          selectedAdminBoardControls?.retryPendingWrites();
+        },
+        discardPendingWrites: () => {
+          board.discardPendingWrites();
+          selectedAdminBoardControls?.discardPendingWrites();
+        },
         logout: () => apiPostNoContent("/api/auth/logout")
       });
       window.location.assign("/");
     } catch (err) {
       const failure = getDurableLogoutFailureState(err);
-      await recoverBoardAfterLogoutFailure(boardMutationBarrier, board, () => {
-        setLogoutPending(false);
-        setAuthMenuOpen(true);
-        setLogoutBlocked(failure.logoutBlocked);
-        setLogoutError(failure.logoutError);
-      });
+      await Promise.all([
+        recoverBoardAfterLogoutFailure(boardMutationBarrier, board),
+        (async () => {
+          if (!selectedAdminBoardControls) return;
+          try {
+            await selectedAdminBoardControls.reconcileAfterLogoutFailure();
+          } catch {
+            // The selected board's existing error surface reports reconciliation failures.
+          } finally {
+            selectedAdminBoardControls.unlockMutations();
+          }
+        })()
+      ]);
+      setLogoutPending(false);
+      setAuthMenuOpen(true);
+      setLogoutBlocked(failure.logoutBlocked);
+      setLogoutError(failure.logoutError);
       console.error(err);
     }
   };
@@ -586,6 +643,7 @@ export function App() {
   const handleSharedBoardOpened = (shareId: string) => {
     applyAppRoute({ activeView: "shared", shareId, sheetId: null, adminTab: null, adminUserId: null, adminSheetId: null });
   };
+  const profileBoardWriteState = getProfileBoardWriteState(board, selectedAdminBoardWriteState);
 
   return (
     <main className="app-shell" data-theme={theme}>
@@ -623,7 +681,7 @@ export function App() {
             문의하기
           </a>
           <AuthMenu
-            hasPendingWrites={board.hasPendingWrites}
+            hasPendingWrites={profileBoardWriteState.hasPendingWrites}
             logoutBlocked={logoutBlocked}
             logoutError={logoutError}
             logoutPending={logoutPending}
@@ -631,7 +689,7 @@ export function App() {
             status={session.status}
             theme={theme}
             user={session.user}
-            pendingWriteError={board.pendingWriteError}
+            pendingWriteError={profileBoardWriteState.pendingWriteError}
             onDisplayNameSave={handleDisplayNameSave}
             onDiscardLogout={handleDiscardLogout}
             onLogout={handleLogout}
@@ -654,6 +712,8 @@ export function App() {
               activeTab={routeAdminTab}
               selectedUserId={routeAdminUserId}
               selectedSheetId={routeAdminSheetId}
+              writeLocked={logoutPending}
+              onDurableControlsChange={handleAdminBoardDurableControlsChange}
               onNavigationGuardChange={handleAdminBoardNavigationGuardChange}
               onTabSelected={handleAdminTabSelected}
               onUserSelected={handleAdminUserSelected}

@@ -1,7 +1,13 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AdminDashboardContent, type AdminHealth, type AdminSummary, type AdminTab } from "./AdminDashboard";
+import {
+  AdminDashboardContent,
+  getAdminTabForKey,
+  type AdminHealth,
+  type AdminSummary,
+  type AdminTab
+} from "./AdminDashboard";
 
 const summary: AdminSummary = {
   generatedAt: "2026-06-10T07:34:00.000Z",
@@ -174,6 +180,27 @@ describe("AdminDashboardContent", () => {
     expect(html).toContain("관리 기록");
     expect(html).toMatch(/사용자 보드<\/button>/);
     expect(html).toMatch(/aria-selected="true"[^>]*>사용자 보드/);
+  });
+
+  it("associates every tab with a stable panel and roves the tab stop", () => {
+    const html = renderTab("users");
+
+    for (const tab of ["overview", "usage", "health", "data", "users", "audit"]) {
+      expect(html).toContain(`id="admin-tab-${tab}"`);
+      expect(html).toContain(`aria-controls="admin-panel-${tab}"`);
+      expect(html).toContain(`id="admin-panel-${tab}"`);
+      expect(html).toContain(`aria-labelledby="admin-tab-${tab}"`);
+    }
+    expect(html.match(/tabindex="0"/g)).toHaveLength(1);
+    expect(html.match(/tabindex="-1"/g)).toHaveLength(5);
+  });
+
+  it("moves tabs with arrows and Home or End using the expected wrap order", () => {
+    expect(getAdminTabForKey("overview", "ArrowLeft")).toBe("audit");
+    expect(getAdminTabForKey("audit", "ArrowRight")).toBe("overview");
+    expect(getAdminTabForKey("health", "Home")).toBe("overview");
+    expect(getAdminTabForKey("health", "End")).toBe("audit");
+    expect(getAdminTabForKey("health", "Enter")).toBeNull();
   });
 
   it("renders the user-board tab from controlled route state without mounting a board before selection", () => {
