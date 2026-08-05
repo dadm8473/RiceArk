@@ -31,6 +31,7 @@ export const LOST_ARK_TASK_PRESETS: LostArkTaskPreset[] = [
   { id: "act-4", title: "4막 : 파멸의 성채", label: "4막", resetType: "weekly", color: "#b45309" },
   { id: "finale", title: "종막 : 최후의 날", label: "종막", resetType: "weekly", color: "#7c3aed" },
   { id: "serka", title: "고통의 마녀, 세르카", label: "세르카", resetType: "weekly", color: "#be123c" },
+  { id: "velgardin", title: "죽음의 계율자, 벨가르딘", label: "벨가", resetType: "weekly", color: "#1d4ed8" },
   { id: "cathedral", title: "지평의 성당", label: "성당", resetType: "weekly", color: "#0f766e" },
   { id: "paradise-heaven", title: "낙원 : 천상", label: "천상", resetType: "weekly", color: "#4f46e5" },
   { id: "paradise-proof", title: "낙원 : 증명", label: "증명", resetType: "weekly", color: "#db2777" }
